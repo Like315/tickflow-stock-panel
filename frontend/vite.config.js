@@ -14,7 +14,7 @@ export default defineConfig({
         proxy: {
             // dev 时 /api 转发到 FastAPI
             '/api': {
-                target: 'http://localhost:3018',
+                target: 'http://localhost:3020',
                 // SSE 端点需要禁用缓冲
                 configure: (proxy) => {
                     proxy.on('proxyReq', (_proxyReq, req) => {
@@ -26,7 +26,7 @@ export default defineConfig({
                     });
                 },
             },
-            '/health': 'http://localhost:3018',
+            '/health': 'http://localhost:3020',
         },
     },
     build: {

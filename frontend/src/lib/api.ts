@@ -2321,6 +2321,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ strategy_id: strategyId, code, name: meta?.name ?? '', description: meta?.description ?? '' }),
     }),
+
+  // ===== US Market (美股) =====
+  usMarketOverview: () =>
+    request<UsMarketOverview>('/api/us/overview/market'),
 }
 
 // ===== Pipeline =====
@@ -2531,4 +2535,59 @@ export interface AnalysisMenu {
   created_at?: string | null
   updated_at?: string | null
   builtin?: boolean
+}
+
+// ===== US Market Types (美股) =====
+export interface UsIndexQuote {
+  symbol: string
+  name: string
+  price: number | null
+  change: number | null
+  change_pct: number | null
+}
+
+export interface UsStockRow {
+  symbol: string
+  name: string
+  sector: string
+  price: number | null
+  change_pct: number | null
+  volume: number | null
+  market_cap: number | null
+}
+
+export interface UsSectorPerformance {
+  name: string
+  avg_pct: number
+  count: number
+  up_count: number
+  down_count: number
+  leader: { symbol: string; name: string; change_pct: number | null } | null
+}
+
+export interface UsDistributionItem {
+  label: string
+  count: number
+  pct: number
+}
+
+export interface UsMarketOverview {
+  as_of: string | null
+  market_open: boolean
+  indices: UsIndexQuote[]
+  breadth: {
+    total: number
+    up: number
+    down: number
+    flat: number
+    up_pct: number
+    down_pct: number
+    avg_pct: number
+  }
+  sectors: UsSectorPerformance[]
+  top_gainers: UsStockRow[]
+  top_losers: UsStockRow[]
+  most_active: UsStockRow[]
+  market_cap_leaders: UsStockRow[]
+  distribution: UsDistributionItem[]
 }
