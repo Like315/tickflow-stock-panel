@@ -16,6 +16,7 @@ const Financials = lazy(() => import('./pages/Financials').then(m => ({ default:
 const Data = lazy(() => import('./pages/Data').then(m => ({ default: m.Data })))
 const Monitor = lazy(() => import('./pages/Monitor').then(m => ({ default: m.Monitor })))
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })))
+const UsMarketDashboard = lazy(() => import('./pages/UsMarketDashboard').then(m => ({ default: m.UsMarketDashboard })))
 const AnalysisDetail = lazy(() => import('./pages/AnalysisDetail').then(m => ({ default: m.AnalysisDetail })))
 const ConceptAnalysis = lazy(() => import('./pages/ConceptAnalysis').then(m => ({ default: m.ConceptAnalysis })))
 const IndustryAnalysis = lazy(() => import('./pages/IndustryAnalysis').then(m => ({ default: m.IndustryAnalysis })))
@@ -27,7 +28,6 @@ const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.S
 const Indices = lazy(() => import('./pages/Indices').then(m => ({ default: m.Indices })))
 const Regime = lazy(() => import('./pages/Regime').then(m => ({ default: m.Regime })))
 const Dev = lazy(() => import('./pages/Dev').then(m => ({ default: m.Dev })))
-const UsDashboard = lazy(() => import('./pages/UsDashboard').then(m => ({ default: m.UsDashboard })))
 
 // 首次使用守卫 —— 未完成向导则重定向到 /onboarding
 // 只挂在根路由上;/onboarding 本身不被守卫,避免循环重定向。
@@ -69,6 +69,7 @@ export const router = createBrowserRouter([
     ),
     children: [
       { index: true, element: <Dashboard /> },
+      { path: 'us-market', element: <UsMarketDashboard /> },
       { path: 'overview', element: <Navigate to="/" replace /> },
       { path: 'analysis', element: <Navigate to="/settings?tab=ext-pages" replace /> },
       { path: 'analysis/:menuId', element: <AnalysisDetail /> },
@@ -84,7 +85,7 @@ export const router = createBrowserRouter([
       { path: 'monitor', element: <Monitor /> },
       { path: 'limit-ladder', element: <LimitUpLadder /> },
       { path: 'indices', element: <Indices /> },
-      { path: 'us-dashboard', element: <UsDashboard /> },
+      { path: 'us-dashboard', element: <Navigate to="/us-market" replace /> },
     { path: 'regime', element: <Regime /> },
       { path: 'branding', element: <Branding /> },
       { path: 'settings', element: <Settings /> },

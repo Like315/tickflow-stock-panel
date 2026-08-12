@@ -18,6 +18,11 @@ export const QK = {
   quoteStatus:    ['quote-status'] as const,
   quoteInterval:  ['quote-interval'] as const,
   overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
+  usMarketOverview: ['us-market-overview'] as const,
+  researchAgentStatus: ['research-agent', 'status'] as const,
+  researchAgentLatest: ['research-agent', 'recommendations', 'latest'] as const,
+  researchAgentRecommendations: ['research-agent', 'recommendations'] as const,
+  researchAgentReviews: (batchId?: string) => ['research-agent', 'reviews', batchId ?? 'all'] as const,
   indexQuotes:    ['index-quotes'] as const,
   indexList:      ['index-list'] as const,
 
@@ -90,9 +95,6 @@ export const QK = {
   regimeLatest:         ['regime-latest'] as const,
   regimeStates:         (days: number) => ['regime-states', days] as const,
   regimeCoverage:       ['regime-coverage'] as const,
-
-  // US Market (美股看板)
-  usMarketOverview:     ['us-market-overview'] as const,
 } as const
 
 // ===== SSE 应该 invalidate 的 key 前缀列表 =====

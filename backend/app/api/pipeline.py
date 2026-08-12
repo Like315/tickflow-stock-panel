@@ -64,6 +64,7 @@ async def run_now(request: Request) -> dict:
             job_store.succeed(job_id, result)
             invalidate_storage_cache()
             repo.refresh_cache()  # 刷新 Polars 缓存
+            daily_pipeline._submit_research_agent_cycle(request.app.state)
         except Exception as e:  # noqa: BLE001
             logger.exception("pipeline failed")
             job_store.fail(job_id, str(e))
