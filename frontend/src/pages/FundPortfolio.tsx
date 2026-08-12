@@ -3,11 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowDownRight,
   ArrowUpRight,
+  Bot,
   Clock3,
   Edit3,
   Loader2,
   Plus,
   RefreshCw,
+  ScanSearch,
   Trash2,
   Upload,
   WalletCards,
@@ -17,6 +19,7 @@ import { FundPositionDialog } from '@/components/funds/FundPositionDialog'
 import { toast } from '@/components/Toast'
 import { api, type FundPosition } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { askResearchAgent } from '@/lib/researchAgentStore'
 
 const AUTO_REFRESH_MS = 10 * 60 * 1000
 const ALLOCATION_COLORS = ['bg-accent', 'bg-bull', 'bg-bear', 'bg-warning', 'bg-cyan-500', 'bg-fuchsia-500']
@@ -166,6 +169,18 @@ export function FundPortfolio() {
     remove.mutate(position.code)
   }
 
+  const researchPortfolio = (question: string) => {
+    askResearchAgent(question, { context: 'fund_portfolio', contextLabel: '当前基金组合' })
+  }
+
+  const researchFund = (position: FundPosition) => {
+    const label = position.name || position.code
+    askResearchAgent(
+      `请研究我持有的 ${label}（${position.code}），结合其组合权重、持有盈亏和公开净值历史，分析表现、风险、反向证据和后续验证点。`,
+      { context: 'fund', fundCode: position.code, contextLabel: label },
+    )
+  }
+
   return (
     <div className="mx-auto max-w-[1600px] p-4 md:p-5">
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-4">
@@ -185,6 +200,7 @@ export function FundPortfolio() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <button type="button" disabled={summary.position_count === 0} onClick={() => researchPortfolio('请对我的当前基金组合做一次完整体检，重点分析集中度、盈亏贡献、风险来源、数据缺口，并给出后续验证清单。')} className="inline-flex items-center gap-1.5 rounded-btn border border-purple-500/35 bg-purple-500/10 px-3 py-1.5 text-xs text-purple-400 hover:bg-purple-500/15 disabled:cursor-not-allowed disabled:opacity-40"><Bot className="h-3.5 w-3.5" />AI 组合体检</button>
           <button type="button" onClick={openCreate} className="inline-flex items-center gap-1.5 rounded-btn border border-border bg-surface px-3 py-1.5 text-xs text-secondary hover:border-accent/40 hover:text-foreground"><Plus className="h-3.5 w-3.5" />添加基金</button>
           <button type="button" onClick={() => setImportOpen(true)} className="inline-flex items-center gap-1.5 rounded-btn border border-border bg-surface px-3 py-1.5 text-xs text-secondary hover:border-accent/40 hover:text-foreground"><Upload className="h-3.5 w-3.5" />同步快照</button>
           <button type="button" disabled={summary.position_count === 0 || refresh.isPending} onClick={() => refresh.mutate()} className="inline-flex items-center gap-1.5 rounded-btn bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50">
@@ -199,6 +215,17 @@ export function FundPortfolio() {
         <SummaryMetric label={hasIntradayEstimate ? '盘中估算收益' : '最新单日收益'} value={`¥${money(summary.total_day_profit, true)}`} detail={hasIntradayEstimate ? '按公开基金估值推算' : '按最近公布净值日涨跌计算'} tone={changeClass(summary.total_day_profit)} />
         <SummaryMetric label="行情状态" value={refresh.isPending ? '刷新中' : data.quotes_refreshed_at ? '已更新' : '待刷新'} detail="页面开启时每 10 分钟更新" tone={refresh.isPending ? 'text-warning' : data.quotes_refreshed_at ? 'text-bear' : 'text-muted'} />
       </section>
+
+      {summary.position_count > 0 && (
+        <section className="mt-3 flex flex-wrap items-center gap-2 border-y border-border bg-surface/45 px-3 py-2.5">
+          <span className="mr-1 inline-flex items-center gap-1.5 text-[10px] font-medium text-secondary"><ScanSearch className="h-3.5 w-3.5 text-purple-400" />基金 AI 研究</span>
+          <button type="button" onClick={() => researchPortfolio('请对我的当前基金组合做一次完整体检，重点分析集中度、盈亏贡献、风险来源、数据缺口，并给出后续验证清单。')} className="rounded-btn border border-border bg-surface px-2.5 py-1.5 text-[10px] text-secondary hover:border-purple-500/35 hover:text-foreground">组合体检</button>
+          <button type="button" onClick={() => researchPortfolio('请分析当前基金组合的收益来源：哪些持仓贡献最大，是否依赖少数基金，并说明支持证据和反向证据。')} className="rounded-btn border border-border bg-surface px-2.5 py-1.5 text-[10px] text-secondary hover:border-purple-500/35 hover:text-foreground">收益归因</button>
+          <button type="button" onClick={() => researchPortfolio('请扫描当前基金组合风险，重点关注集中度、回撤、波动、净值时效和证据不足，不要给出确定性收益承诺。')} className="rounded-btn border border-border bg-surface px-2.5 py-1.5 text-[10px] text-secondary hover:border-purple-500/35 hover:text-foreground">风险扫描</button>
+          <button type="button" onClick={() => researchPortfolio('请逐只分析当前基金：结合我的成本盈亏和组合权重、最新定期报告披露的前十大持仓与资产配置、基金净值趋势和大盘趋势，给出继续持有观察、降低风险暴露、进入卖出评估或信息不足四档研判，并列明触发条件与失效条件。')} className="rounded-btn border border-purple-500/30 bg-purple-500/[0.06] px-2.5 py-1.5 text-[10px] text-purple-400 hover:bg-purple-500/10">持有/卖出研判</button>
+          <span className="ml-auto text-[9px] text-muted">使用本地持仓快照与公开净值，不上传支付宝登录信息</span>
+        </section>
+      )}
 
       {summary.position_count === 0 ? (
         <section className="mt-4 flex min-h-[420px] items-center justify-center border-y border-border bg-surface/50 px-6 text-center">
@@ -257,6 +284,7 @@ export function FundPortfolio() {
                       <td className="px-3 py-3 text-right font-mono text-secondary">{numberText(position.shares)}</td>
                       <td className="px-3 py-3">
                         <div className="flex justify-end gap-1">
+                          <button type="button" onClick={() => researchFund(position)} className="inline-flex h-7 w-7 items-center justify-center rounded-btn text-muted hover:bg-purple-500/10 hover:text-purple-400" title="AI 研究"><Bot className="h-3.5 w-3.5" /></button>
                           <button type="button" onClick={() => openEdit(position)} className="inline-flex h-7 w-7 items-center justify-center rounded-btn text-muted hover:bg-elevated hover:text-foreground" title="编辑持仓"><Edit3 className="h-3.5 w-3.5" /></button>
                           <button type="button" disabled={remove.isPending} onClick={() => deletePosition(position)} className="inline-flex h-7 w-7 items-center justify-center rounded-btn text-muted hover:bg-danger/10 hover:text-danger disabled:opacity-50" title="删除持仓"><Trash2 className="h-3.5 w-3.5" /></button>
                         </div>

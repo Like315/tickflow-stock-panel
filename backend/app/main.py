@@ -16,8 +16,9 @@ from app.api import analysis, auth as auth_api, backtest, data, ext_data, financ
 from app.api.routes import router as core_router
 from app.config import settings
 from app.jobs import daily_pipeline
-from app.services.quote_service import QuoteService
 from app.services.fund_portfolio import FundPortfolioService
+from app.services.fund_research import FundResearchService
+from app.services.quote_service import QuoteService
 from app.services.research_agent import ResearchAgentService
 from app.services.us_market_overview import UsMarketOverviewService
 from app.tickflow import client as tf_client
@@ -53,7 +54,16 @@ async def lifespan(app: FastAPI):
     app.state.repo = repo
     app.state.fund_portfolio_service = FundPortfolioService(store.data_dir)
     app.state.us_market_overview_service = UsMarketOverviewService(store.data_dir)
-    app.state.research_agent_service = ResearchAgentService(repo, store.data_dir)
+    app.state.fund_research_service = FundResearchService(
+        app.state.fund_portfolio_service,
+        repo=repo,
+        global_market_service=app.state.us_market_overview_service,
+    )
+    app.state.research_agent_service = ResearchAgentService(
+        repo,
+        store.data_dir,
+        fund_research_service=app.state.fund_research_service,
+    )
     # 在接受回测请求前固定 managed generation，避免首批并发 worker 各自创建版本。
     if settings.backtest_matrix_disk_cache_enabled:
         repo.get_matrix_data_generation("stock")
@@ -274,6 +284,9 @@ async def lifespan(app: FastAPI):
     research_service = getattr(app.state, "research_agent_service", None)
     if research_service:
         research_service.close()
+    fund_research_service = getattr(app.state, "fund_research_service", None)
+    if fund_research_service:
+        fund_research_service.close()
     fund_portfolio_service = getattr(app.state, "fund_portfolio_service", None)
     if fund_portfolio_service:
         fund_portfolio_service.close()

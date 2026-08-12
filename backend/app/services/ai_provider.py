@@ -250,7 +250,7 @@ async def _run_openai_once(
         resp = await client.chat.completions.create(
             model=model,
             messages=req_messages,
-            **_openai_kwargs(temperature=temperature, max_tokens=max_tokens),
+            **_openai_kwargs(temperature=temperature, max_tokens=max_tokens, model=model),
         )
     except Exception as exc:
         # Reasoning 类模型 (如 kimi-k2.7-code, deepseek-r1, o 系列) 拒绝非约定
@@ -260,7 +260,7 @@ async def _run_openai_once(
             resp = await client.chat.completions.create(
                 model=model,
                 messages=req_messages,
-                **_openai_kwargs(temperature=None, max_tokens=max_tokens),
+                **_openai_kwargs(temperature=None, max_tokens=max_tokens, model=model),
             )
         else:
             if _is_openai_transport_error(exc):
@@ -296,7 +296,7 @@ async def _stream_openai(
         stream = await client.chat.completions.create(
             model=model,
             messages=req_messages,
-            **_openai_kwargs(temperature=temperature, max_tokens=max_tokens),
+            **_openai_kwargs(temperature=temperature, max_tokens=max_tokens, model=model),
             stream=True,
         )
     except Exception as exc:
@@ -305,7 +305,7 @@ async def _stream_openai(
             stream = await client.chat.completions.create(
                 model=model,
                 messages=req_messages,
-                **_openai_kwargs(temperature=None, max_tokens=max_tokens),
+                **_openai_kwargs(temperature=None, max_tokens=max_tokens, model=model),
                 stream=True,
             )
         else:
@@ -350,11 +350,20 @@ def _is_temperature_rejected(exc: Exception) -> bool:
     return any(h in text.lower() for h in _TEMP_REJECT_HINTS)
 
 
-def _openai_kwargs(*, temperature: float | None, max_tokens: int) -> dict:
+def _openai_kwargs(
+    *,
+    temperature: float | None,
+    max_tokens: int,
+    model: str | None = None,
+) -> dict:
     """Build OpenAI create() kwargs; temperature omitted when None."""
     kwargs: dict = {"max_tokens": max_tokens}
     if temperature is not None:
         kwargs["temperature"] = temperature
+    if (model or "").strip().lower().startswith("deepseek-v4-"):
+        # V4 defaults to thinking mode, whose hidden reasoning shares the output budget.
+        # Panel analyses need a complete user-facing answer rather than reasoning_content.
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     return kwargs
 
 

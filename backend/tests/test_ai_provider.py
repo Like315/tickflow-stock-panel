@@ -9,6 +9,7 @@ from app.services import ai_provider
 from app.services.ai_provider import (
     _format_openai_error,
     _is_temperature_rejected,
+    _openai_kwargs,
     normalize_openai_base_url,
 )
 
@@ -143,6 +144,26 @@ def test_is_temperature_rejected_false_for_non_400():
     )
     exc = openai.AuthenticationError("unauthorized", response=response, body=None)
     assert _is_temperature_rejected(exc) is False
+
+
+def test_openai_kwargs_disables_hidden_thinking_for_deepseek_v4():
+    kwargs = _openai_kwargs(
+        temperature=0.25,
+        max_tokens=5000,
+        model="deepseek-v4-flash",
+    )
+
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_openai_kwargs_keeps_other_compatible_models_unchanged():
+    kwargs = _openai_kwargs(
+        temperature=0.25,
+        max_tokens=5000,
+        model="deepseek-chat",
+    )
+
+    assert "extra_body" not in kwargs
 
 
 def test_codex_process_env_excludes_application_secrets(monkeypatch, tmp_path):

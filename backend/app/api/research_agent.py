@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.services.research_agent_terms import find_term, list_terms
 
@@ -17,6 +17,14 @@ def _service(request: Request):
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     symbol: str | None = Field(default=None, max_length=32)
+    context: str = Field(default="general", pattern=r"^(general|fund_portfolio|fund)$")
+    fund_code: str | None = Field(default=None, pattern=r"^\d{6}$")
+
+    @model_validator(mode="after")
+    def validate_fund_context(self):
+        if self.context == "fund" and not self.fund_code:
+            raise ValueError("单基金研究需要提供 6 位基金代码")
+        return self
 
 
 class RunRequest(BaseModel):
@@ -34,7 +42,12 @@ def terms(q: str | None = Query(default=None, max_length=100)) -> dict:
 @router.post("/chat")
 async def chat(request: Request, payload: ChatRequest) -> StreamingResponse:
     return StreamingResponse(
-        _service(request).chat_stream(payload.question.strip(), payload.symbol),
+        _service(request).chat_stream(
+            payload.question.strip(),
+            payload.symbol,
+            context=payload.context,
+            fund_code=payload.fund_code,
+        ),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

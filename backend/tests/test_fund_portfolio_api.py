@@ -104,3 +104,21 @@ def test_manual_upsert_refresh_and_delete(tmp_path: Path) -> None:
     deleted = client.delete("/api/funds/positions/005827")
     assert deleted.status_code == 200
     assert deleted.json()["positions"] == []
+
+
+def test_fund_lookup_returns_name_for_six_digit_code(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/api/funds/lookup/005827")
+
+    assert response.status_code == 200
+    assert response.json() == {"code": "005827", "name": "基金005827"}
+
+
+def test_fund_lookup_rejects_invalid_code(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/api/funds/lookup/123")
+
+    assert response.status_code == 404
+    assert "6 位" in response.json()["detail"]

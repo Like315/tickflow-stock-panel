@@ -137,6 +137,15 @@ def test_refresh_quote_updates_market_value_and_estimated_day_profit(tmp_path: P
     assert position["quote_status"] == "estimate"
 
 
+def test_lookup_fund_returns_provider_name_without_changing_portfolio(tmp_path: Path) -> None:
+    service = FundPortfolioService(tmp_path, quote_provider=FakeQuoteProvider())
+
+    result = service.lookup_fund("005827")
+
+    assert result == {"code": "005827", "name": "易方达蓝筹精选混合"}
+    assert service.get_portfolio()["positions"] == []
+
+
 class FakeOfficialQuoteProvider:
     name = "fake-official"
 

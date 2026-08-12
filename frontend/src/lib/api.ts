@@ -1283,6 +1283,8 @@ export const api = {
   usMarketRefresh: () => request<UsMarketOverview>('/api/us-market/refresh', { method: 'POST' }),
 
   fundPortfolio: () => request<FundPortfolio>('/api/funds/portfolio'),
+  fundLookup: (code: string) =>
+    request<{ code: string; name: string }>(`/api/funds/lookup/${encodeURIComponent(code)}`, { quiet: true }),
   fundOcrStatus: () =>
     request<{ provider: string; available: boolean }>('/api/funds/ocr-status'),
   fundImportPreview: (file: File, signal?: AbortSignal, quiet = false) => {
@@ -1338,10 +1340,15 @@ export const api = {
     ),
   researchAgentStatus: () =>
     request<ResearchAgentStatus>('/api/research-agent/status'),
-  async *researchAgentChatStream(question: string, symbol?: string): AsyncGenerator<{
+  async *researchAgentChatStream(question: string, options: {
+    symbol?: string
+    context?: 'general' | 'fund_portfolio' | 'fund'
+    fundCode?: string
+  } = {}): AsyncGenerator<{
     type: 'meta' | 'delta' | 'error' | 'done'
     mode?: string
     symbol?: string | null
+    fund_code?: string | null
     as_of?: string | null
     term?: ResearchTerm
     content?: string
@@ -1350,7 +1357,12 @@ export const api = {
     const res = await fetch('/api/research-agent/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, symbol: symbol ?? null }),
+      body: JSON.stringify({
+        question,
+        symbol: options.symbol ?? null,
+        context: options.context ?? 'general',
+        fund_code: options.fundCode ?? null,
+      }),
     })
     if (!res.ok) {
       let detail = ''

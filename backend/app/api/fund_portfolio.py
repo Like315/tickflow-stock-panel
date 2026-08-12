@@ -58,6 +58,14 @@ def get_portfolio(request: Request):
     return _service(request).get_portfolio()
 
 
+@router.get("/lookup/{code}")
+async def lookup_fund(code: str, request: Request):
+    try:
+        return await anyio.to_thread.run_sync(lambda: _service(request).lookup_fund(code))
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @router.get("/ocr-status")
 def ocr_status(request: Request):
     provider = _ocr_provider(request)

@@ -25,8 +25,16 @@ class FakeStore:
 class FakeService:
     store = FakeStore()
 
-    async def chat_stream(self, question, symbol=None):
-        yield json.dumps({"type": "delta", "content": question}, ensure_ascii=False) + "\n"
+    async def chat_stream(self, question, symbol=None, context=None, fund_code=None):
+        yield json.dumps(
+            {
+                "type": "delta",
+                "content": question,
+                "context": context,
+                "fund_code": fund_code,
+            },
+            ensure_ascii=False,
+        ) + "\n"
         yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
 
     async def run_recommendations(self, force=False, trigger="manual"):
@@ -68,3 +76,24 @@ def test_recommendation_review_and_status_contracts() -> None:
     assert reviews["reviews"][0]["symbol"] == "600000.SH"
     assert client.post("/api/research-agent/daily/run").json()["status"] == "started"
     assert client.get("/api/research-agent/status").json()["ai_configured"] is True
+
+
+def test_fund_chat_context_contract() -> None:
+    client = _client()
+    response = client.post(
+        "/api/research-agent/chat",
+        json={
+            "question": "分析当前组合",
+            "context": "fund_portfolio",
+            "fund_code": None,
+        },
+    )
+    first = json.loads(response.text.splitlines()[0])
+    assert first["context"] == "fund_portfolio"
+    assert first["fund_code"] is None
+
+    invalid = client.post(
+        "/api/research-agent/chat",
+        json={"question": "研究基金", "context": "fund", "fund_code": "123"},
+    )
+    assert invalid.status_code == 422

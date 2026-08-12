@@ -3,6 +3,13 @@ import { api, type ResearchTerm } from './api'
 
 export type ResearchAgentTab = 'chat' | 'picks' | 'reviews'
 export type ResearchAgentPhase = 'idle' | 'loading' | 'streaming' | 'done' | 'error'
+export type ResearchAgentContext = 'general' | 'fund_portfolio' | 'fund'
+
+export interface ResearchAgentRequestOptions {
+  context?: ResearchAgentContext
+  fundCode?: string
+  contextLabel?: string
+}
 
 export interface ResearchAgentChat {
   id: string
@@ -14,6 +21,9 @@ export interface ResearchAgentChat {
   symbol?: string | null
   asOf?: string | null
   term?: ResearchTerm
+  context: ResearchAgentContext
+  fundCode?: string
+  contextLabel?: string
 }
 
 interface State {
@@ -63,24 +73,37 @@ function patchChat(id: string, patch: Partial<ResearchAgentChat>) {
   emit()
 }
 
-export function askResearchAgent(question: string) {
+export function askResearchAgent(question: string, options: ResearchAgentRequestOptions = {}) {
   const normalized = question.trim()
   if (!normalized) return
   const id = `research_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+  const context = options.context ?? 'general'
   state = {
     open: true,
     tab: 'chat',
-    chat: { id, question: normalized, phase: 'loading', content: '', error: '' },
+    chat: {
+      id,
+      question: normalized,
+      phase: 'loading',
+      content: '',
+      error: '',
+      context,
+      fundCode: options.fundCode,
+      contextLabel: options.contextLabel,
+    },
   }
   emit()
-  void runChat(id, normalized)
+  void runChat(id, normalized, options)
 }
 
-async function runChat(id: string, question: string) {
+async function runChat(id: string, question: string, options: ResearchAgentRequestOptions) {
   try {
     let content = ''
     let sawDone = false
-    for await (const event of api.researchAgentChatStream(question)) {
+    for await (const event of api.researchAgentChatStream(question, {
+      context: options.context,
+      fundCode: options.fundCode,
+    })) {
       if (event.type === 'meta') {
         patchChat(id, {
           mode: event.mode,

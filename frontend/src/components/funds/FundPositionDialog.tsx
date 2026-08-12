@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Loader2, Save, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { CheckCircle2, Loader2, Save, X } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Modal } from '@/components/Modal'
 import { toast } from '@/components/Toast'
@@ -35,9 +35,13 @@ const FIELDS: Array<{ key: keyof Omit<FundPositionInput, 'code' | 'name'>; label
 export function FundPositionDialog({ open, position, onClose }: Props) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<FundPositionInput>(EMPTY)
+  const [lookupStatus, setLookupStatus] = useState<'idle' | 'loading' | 'found' | 'missing'>('idle')
+  const lastAutoName = useRef('')
 
   useEffect(() => {
     if (!open) return
+    lastAutoName.current = ''
+    setLookupStatus('idle')
     setForm(position ? {
       code: position.code,
       name: position.name,
@@ -49,6 +53,35 @@ export function FundPositionDialog({ open, position, onClose }: Props) {
       day_profit: position.day_profit,
     } : EMPTY)
   }, [open, position])
+
+  useEffect(() => {
+    if (!open || position || !/^\d{6}$/.test(form.code)) {
+      setLookupStatus('idle')
+      return
+    }
+    let cancelled = false
+    const code = form.code
+    setLookupStatus('loading')
+    const timer = window.setTimeout(() => {
+      void api.fundLookup(code).then(result => {
+        if (cancelled) return
+        setForm(previous => {
+          if (previous.code !== code) return previous
+          const canAutofill = !previous.name.trim() || previous.name === lastAutoName.current
+          if (!canAutofill) return previous
+          lastAutoName.current = result.name
+          return { ...previous, name: result.name }
+        })
+        setLookupStatus('found')
+      }).catch(() => {
+        if (!cancelled) setLookupStatus('missing')
+      })
+    }, 350)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [form.code, open, position])
 
   const save = useMutation({
     mutationFn: () => {
@@ -75,11 +108,23 @@ export function FundPositionDialog({ open, position, onClose }: Props) {
       <div className="grid gap-3 px-4 py-4 sm:grid-cols-2">
         <label className="block text-[11px] text-muted">
           基金代码
-          <input autoFocus disabled={!!position} value={form.code} onChange={event => setForm(previous => ({ ...previous, code: event.target.value.replace(/\D/g, '').slice(0, 6) }))} placeholder="6 位基金代码" className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-2 font-mono text-xs text-foreground outline-none focus:border-accent disabled:opacity-60" />
+          <input autoFocus disabled={!!position} value={form.code} onChange={event => {
+            const code = event.target.value.replace(/\D/g, '').slice(0, 6)
+            setForm(previous => ({
+              ...previous,
+              code,
+              name: previous.name === lastAutoName.current ? '' : previous.name,
+            }))
+          }} placeholder="6 位基金代码" className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-2 font-mono text-xs text-foreground outline-none focus:border-accent disabled:opacity-60" />
+          {!position && lookupStatus === 'loading' && <span className="mt-1 flex items-center gap-1 text-[10px] text-muted"><Loader2 className="h-3 w-3 animate-spin" />正在查询基金名称</span>}
+          {!position && lookupStatus === 'missing' && <span className="mt-1 block text-[10px] text-warning">未查询到名称，可手工填写后保存</span>}
         </label>
         <label className="block text-[11px] text-muted">
-          基金名称
-          <input value={form.name} onChange={event => setForm(previous => ({ ...previous, name: event.target.value }))} placeholder="可留空，刷新行情后补全" className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-2 text-xs text-foreground outline-none focus:border-accent" />
+          <span className="flex items-center gap-1">基金名称{lookupStatus === 'found' && <CheckCircle2 className="h-3 w-3 text-bear" />}</span>
+          <input value={form.name} onChange={event => {
+            lastAutoName.current = ''
+            setForm(previous => ({ ...previous, name: event.target.value }))
+          }} placeholder="输入代码后自动查询" className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-2 text-xs text-foreground outline-none focus:border-accent" />
         </label>
         {FIELDS.map(field => (
           <label key={field.key} className="block text-[11px] text-muted">

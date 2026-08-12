@@ -530,5 +530,15 @@ class FundPortfolioService:
             "portfolio": self.get_portfolio(),
         }
 
+    def lookup_fund(self, code: str) -> dict[str, str]:
+        if not re.fullmatch(r"\d{6}", str(code).strip()):
+            raise ValueError("基金代码必须是 6 位数字")
+        normalized_code = _normalize_code(code)
+        quote = self._quote_provider.fetch_quote(normalized_code)
+        name = str(quote.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"未查询到基金 {normalized_code} 的名称")
+        return {"code": normalized_code, "name": name}
+
     def close(self) -> None:
         self._quote_provider.close()

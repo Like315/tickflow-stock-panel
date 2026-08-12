@@ -221,6 +221,79 @@ async def test_term_chat_works_without_ai(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_fund_portfolio_chat_uses_specialized_context_and_current_ai(tmp_path) -> None:
+    captured: dict = {}
+
+    class FakeFundResearch:
+        def build_context(self, fund_code=None):
+            assert fund_code is None
+            return {
+                "scope": "portfolio",
+                "as_of": "2026-08-12",
+                "currency": "CNY",
+                "analytics": {"top1_weight_pct": 60.0},
+                "positions": [{"code": "005827", "weight_pct": 60.0}],
+                "data_gaps": [],
+            }
+
+    async def stream(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        yield "组合集中度偏高。"
+
+    service = ResearchAgentService(
+        FakeRepo(),
+        tmp_path,
+        store=ResearchAgentStore(tmp_path),
+        stream_text=stream,
+        configured=lambda: True,
+        fund_research_service=FakeFundResearch(),
+    )
+    events = [
+        json.loads(value)
+        async for value in service.chat_stream(
+            "分析我的基金组合",
+            context="fund_portfolio",
+        )
+    ]
+    service.close()
+
+    assert events[0]["mode"] == "fund_portfolio"
+    assert events[0]["as_of"] == "2026-08-12"
+    assert events[1]["content"] == "组合集中度偏高。"
+    assert "基金研究 Agent" in captured["messages"][0]["content"]
+    assert '"top1_weight_pct": 60.0' in captured["messages"][1]["content"]
+    assert captured["kwargs"]["max_tokens"] == 6500
+    assert "继续持有观察 / 降低风险暴露 / 进入卖出评估 / 信息不足" in captured["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_single_fund_chat_passes_fund_code_and_reports_context_error(tmp_path) -> None:
+    class FakeFundResearch:
+        def build_context(self, fund_code=None):
+            raise ValueError(f"基金 {fund_code} 不在当前基金账本中")
+
+    service = ResearchAgentService(
+        FakeRepo(),
+        tmp_path,
+        store=ResearchAgentStore(tmp_path),
+        configured=lambda: True,
+        fund_research_service=FakeFundResearch(),
+    )
+    events = [
+        json.loads(value)
+        async for value in service.chat_stream(
+            "研究这只基金",
+            context="fund",
+            fund_code="005827",
+        )
+    ]
+    service.close()
+
+    assert events == [{"type": "error", "message": "基金 005827 不在当前基金账本中"}]
+
+
+@pytest.mark.asyncio
 async def test_recommendations_repair_once_and_save(monkeypatch, tmp_path) -> None:
     screen = type("Screen", (), {
         "as_of": date(2026, 8, 11),
