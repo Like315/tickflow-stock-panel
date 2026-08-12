@@ -9,6 +9,8 @@ import { AiAnalysisHost } from '@/components/financials/AiAnalysisHost'
 import { AiReportBubble } from '@/components/financials/AiReportBubble'
 import { StockAnalysisHost } from '@/components/stock-analysis/StockAnalysisHost'
 import { StockAnalysisBubble } from '@/components/stock-analysis/StockAnalysisBubble'
+import { ResearchAgentHost } from '@/components/research-agent/ResearchAgentHost'
+import { ResearchAgentTopBar } from '@/components/research-agent/ResearchAgentTopBar'
 import {
   useCapabilities,
   useSettings,
@@ -47,6 +49,7 @@ import {
   Moon,
   X,
   WifiOff,
+  Globe2,
 } from 'lucide-react'
 import { Logo } from './Logo'
 import { api, type IndexQuote } from '@/lib/api'
@@ -69,6 +72,7 @@ type CoreIndex = (typeof CORE_INDEXES)[number]
 
 const nav = [
   { to: '/',                label: '看板',     icon: LayoutDashboard },
+  { to: '/us-market',       label: '美股看板', icon: Globe2 },
   { to: '/watchlist',  label: '自选',   icon: Star },
   { to: '/screener',   label: '策略',   icon: ScanSearch },
   { to: '/backtest',   label: '回测',   icon: History },
@@ -665,8 +669,9 @@ export function Layout() {
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-        className="h-full overflow-auto scrollbar-gutter-stable"
+        className="flex h-full min-w-0 flex-col overflow-hidden"
       >
+        <ResearchAgentTopBar />
         {streamStatus === 'reconnecting' && (
           <div
             role="status"
@@ -677,15 +682,17 @@ export function Layout() {
             与服务连接已断开 · 正在重连
           </div>
         )}
-        <Suspense
-          fallback={
-            <div className="flex items-center justify-center py-24">
-              <Loader2 className="h-5 w-5 animate-spin text-muted" />
-            </div>
-          }
-        >
-          <Outlet />
-        </Suspense>
+        <div className="min-h-0 flex-1 overflow-auto scrollbar-gutter-stable">
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center py-24">
+                <Loader2 className="h-5 w-5 animate-spin text-muted" />
+              </div>
+            }
+          >
+            <Outlet />
+          </Suspense>
+        </div>
       </motion.main>
       <ToastContainer />
       <AlertToastContainer />
@@ -693,6 +700,7 @@ export function Layout() {
       <AiReportBubble />
       <StockAnalysisHost />
       <StockAnalysisBubble />
+      <ResearchAgentHost />
     </div>
   )
 }

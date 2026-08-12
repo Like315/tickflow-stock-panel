@@ -1035,9 +1035,226 @@ export interface StrategyAlertEvent {
   [key: string]: unknown
 }
 
+export type UsMarketDataStatus = 'live' | 'snapshot' | 'partial'
+
+export interface UsMarketQuote {
+  symbol: string
+  name: string
+  last_price: number | null
+  change_amount: number | null
+  change_pct: number | null
+  volume: number | null
+  amount: number | null
+  amount_estimated: boolean
+  timestamp: number | null
+}
+
+export interface UsMarketBreadth {
+  total: number
+  up: number
+  down: number
+  flat: number
+  strong: number
+  weak: number
+  up_ratio: number
+  down_ratio: number
+}
+
+export interface UsMarketOverview {
+  schema_version: number
+  status: UsMarketDataStatus
+  source: string
+  message: string
+  as_of: number
+  market_time: string | null
+  beijing_time: string | null
+  session: string
+  breadth: UsMarketBreadth | null
+  distribution: Array<{ label: string; count: number; ratio: number }>
+  benchmarks: UsMarketQuote[]
+  sectors: UsMarketQuote[]
+  rankings: {
+    gainers: UsMarketQuote[]
+    losers: UsMarketQuote[]
+    active: UsMarketQuote[]
+  }
+}
+
+export interface ResearchTerm {
+  id: string
+  name: string
+  aliases: string[]
+  definition: string
+  interpretation: string
+  limitation: string
+  combine_with: string[]
+}
+
+export type ResearchStance = '偏买入' | '观察' | '偏卖出' | '回避'
+export type ThesisState = '增强' | '维持' | '减弱' | '失效'
+
+export interface ResearchEvidenceItem {
+  dimension: '技术面' | '情绪面' | '行业面' | '基本面' | '信息面'
+  conclusion: string
+  supports: string[]
+  risks: string[]
+  source: string
+  evidence_refs: string[]
+  source_url?: string | null
+  as_of: string
+}
+
+export interface ResearchRecommendationPick {
+  symbol: string
+  name: string
+  stance: ResearchStance
+  confidence: number
+  thesis: string
+  horizon_days: string
+  evidence: ResearchEvidenceItem[]
+  counter_evidence: string[]
+  catalysts: string[]
+  risks: string[]
+  watch_zone?: string | null
+  risk_level?: string | null
+  invalidation_conditions: string[]
+  missing_data: string[]
+}
+
+export interface ResearchRecommendationBatch {
+  id: string
+  as_of: string
+  created_at: string
+  trigger: 'automatic' | 'manual'
+  version: number
+  parent_batch_id?: string | null
+  model: string
+  status: 'official' | 'degraded'
+  message?: string | null
+  screen_summary: { eligible_count?: number; excluded?: Record<string, number> }
+  candidates: Array<Record<string, unknown>>
+  picks: ResearchRecommendationPick[]
+}
+
+export interface ResearchDailyReview {
+  batch_id: string
+  symbol: string
+  trade_date: string
+  holding_day: number
+  daily_return?: number | null
+  cumulative_return?: number | null
+  max_gain?: number | null
+  max_drawdown?: number | null
+  benchmark_return?: number | null
+  relative_return?: number | null
+  thesis_state: ThesisState
+  support_changes: string[]
+  counter_changes: string[]
+  risks: string[]
+  reflection: string
+  analysis_status: 'succeeded' | 'degraded' | 'backfill'
+  is_backfill: boolean
+}
+
+export interface ResearchStageReview {
+  batch_id: string
+  symbol: string
+  stage_day: 5 | 10 | 20
+  trade_date: string
+  summary: string
+  thesis_state: ThesisState
+}
+
+export interface ResearchAgentStatus {
+  running: boolean
+  ai_configured: boolean
+  latest_data_date?: string | null
+  last_run?: {
+    id: string
+    kind: string
+    as_of?: string | null
+    trigger: string
+    status: string
+    started_at: string
+    finished_at?: string | null
+    error?: string | null
+  } | null
+  last_successful_at?: string | null
+  degraded_reason?: string | null
+}
+
 // ===== API surface =====
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
+
+  usMarketOverview: () => request<UsMarketOverview>('/api/us-market/overview'),
+  usMarketRefresh: () => request<UsMarketOverview>('/api/us-market/refresh', { method: 'POST' }),
+
+  researchAgentTerms: (q?: string) =>
+    request<{ terms?: ResearchTerm[]; term?: ResearchTerm | null }>(
+      `/api/research-agent/terms${q ? `?q=${encodeURIComponent(q)}` : ''}`,
+    ),
+  researchAgentLatest: () =>
+    request<{ batch: ResearchRecommendationBatch | null }>('/api/research-agent/recommendations/latest'),
+  researchAgentRecommendations: (limit = 20, offset = 0) =>
+    request<{ batches: ResearchRecommendationBatch[]; limit: number; offset: number }>(
+      `/api/research-agent/recommendations?limit=${limit}&offset=${offset}`,
+    ),
+  researchAgentRunRecommendations: (force = false) =>
+    request<{ status: string; message?: string; batch?: ResearchRecommendationBatch; screen?: Record<string, unknown> }>(
+      '/api/research-agent/recommendations/run',
+      { method: 'POST', body: JSON.stringify({ force }) },
+    ),
+  researchAgentReviews: (batchId?: string) => {
+    const suffix = batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ''
+    return request<{ reviews: ResearchDailyReview[]; stages: ResearchStageReview[] }>(
+      `/api/research-agent/reviews${suffix}`,
+    )
+  },
+  researchAgentRunReviews: () =>
+    request<{ status: string; message?: string; saved?: number; stage_saved?: number }>(
+      '/api/research-agent/reviews/run', { method: 'POST' },
+    ),
+  researchAgentStatus: () =>
+    request<ResearchAgentStatus>('/api/research-agent/status'),
+  async *researchAgentChatStream(question: string, symbol?: string): AsyncGenerator<{
+    type: 'meta' | 'delta' | 'error' | 'done'
+    mode?: string
+    symbol?: string | null
+    as_of?: string | null
+    term?: ResearchTerm
+    content?: string
+    message?: string
+  }> {
+    const res = await fetch('/api/research-agent/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, symbol: symbol ?? null }),
+    })
+    if (!res.ok) {
+      let detail = ''
+      try { const body = JSON.parse(await res.text()); detail = body.detail ?? body.message ?? '' } catch { /* ignore */ }
+      throw new Error(detail || `${res.status} ${res.statusText}`)
+    }
+    if (!res.body) throw new Error('响应无 body')
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try { yield JSON.parse(line) } catch { throw new Error('AI 响应格式异常') }
+      }
+    }
+    if (buffer.trim()) {
+      try { yield JSON.parse(buffer) } catch { throw new Error('AI 响应格式异常') }
+    }
+  },
 
   // ===== Auth (访问认证) =====
   authStatus: () =>

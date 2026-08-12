@@ -12,11 +12,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.api import analysis, auth as auth_api, backtest, data, ext_data, financials, indices, intraday, kline, market_recap, monitor_rules, alerts, overview, pipeline, regime, rps, screener, settings as settings_api, signals, stock_analysis, strategy, watchlist
+from app.api import analysis, auth as auth_api, backtest, data, ext_data, financials, indices, intraday, kline, market_recap, monitor_rules, alerts, overview, pipeline, regime, research_agent, rps, screener, settings as settings_api, signals, stock_analysis, strategy, us_market, watchlist
 from app.api.routes import router as core_router
 from app.config import settings
 from app.jobs import daily_pipeline
 from app.services.quote_service import QuoteService
+from app.services.research_agent import ResearchAgentService
+from app.services.us_market_overview import UsMarketOverviewService
 from app.tickflow import client as tf_client
 from app.tickflow.policy import detect_capabilities
 from app.tickflow.repository import DataStore, KlineRepository
@@ -48,6 +50,8 @@ async def lifespan(app: FastAPI):
     repo = KlineRepository(store)
     app.state.datastore = store
     app.state.repo = repo
+    app.state.us_market_overview_service = UsMarketOverviewService(store.data_dir)
+    app.state.research_agent_service = ResearchAgentService(repo, store.data_dir)
     # 在接受回测请求前固定 managed generation，避免首批并发 worker 各自创建版本。
     if settings.backtest_matrix_disk_cache_enabled:
         repo.get_matrix_data_generation("stock")
@@ -261,6 +265,9 @@ async def lifespan(app: FastAPI):
     wbot = getattr(app.state, "wecom_bot_service", None)
     if wbot:
         wbot.stop()
+    research_service = getattr(app.state, "research_agent_service", None)
+    if research_service:
+        research_service.close()
     logger.info("shutdown")
 
 
@@ -338,6 +345,7 @@ app.include_router(backtest.router)
 app.include_router(intraday.router)
 app.include_router(indices.router)
 app.include_router(overview.router)
+app.include_router(us_market.router)
 app.include_router(regime.router)
 app.include_router(analysis.router)
 app.include_router(pipeline.router)
@@ -346,6 +354,7 @@ app.include_router(ext_data.router)
 app.include_router(financials.router)
 app.include_router(stock_analysis.router)
 app.include_router(market_recap.router)
+app.include_router(research_agent.router)
 app.include_router(settings_api.router)
 app.include_router(strategy.router)
 app.include_router(signals.router)

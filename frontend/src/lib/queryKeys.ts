@@ -18,6 +18,11 @@ export const QK = {
   quoteStatus:    ['quote-status'] as const,
   quoteInterval:  ['quote-interval'] as const,
   overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
+  usMarketOverview: ['us-market-overview'] as const,
+  researchAgentStatus: ['research-agent', 'status'] as const,
+  researchAgentLatest: ['research-agent', 'recommendations', 'latest'] as const,
+  researchAgentRecommendations: ['research-agent', 'recommendations'] as const,
+  researchAgentReviews: (batchId?: string) => ['research-agent', 'reviews', batchId ?? 'all'] as const,
   indexQuotes:    ['index-quotes'] as const,
   indexList:      ['index-list'] as const,
 

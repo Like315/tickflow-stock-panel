@@ -659,6 +659,19 @@ def _run_tracked(fn, job_label: str) -> None:
         release_run_slot()
 
 
+def _submit_research_agent_cycle(app_state=None) -> dict | None:
+    """行情缓存刷新后提交 Agent 任务；失败不能反向污染行情流水线状态。"""
+    state = app_state or _get_app_state()
+    service = getattr(state, "research_agent_service", None) if state else None
+    if service is None:
+        return None
+    try:
+        return service.submit_daily_cycle(trigger="automatic")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("research agent cycle submit failed: %s", e)
+        return None
+
+
 # ================================================================
 # 定时复盘 (AI 大盘复盘报告)
 # ================================================================
@@ -913,6 +926,7 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
             # 仍需刷进内存缓存, 否则 live_agg 基准列停留在旧交易日。放 finally 保证部分
             # 成功也生效; 随后异常继续上抛, 由 _run_tracked 标记任务 failed。
             repo.refresh_cache()
+        _submit_research_agent_cycle(app_state)
         return result
 
     scheduler.add_job(
