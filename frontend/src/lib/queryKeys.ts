@@ -19,6 +19,7 @@ export const QK = {
   quoteInterval:  ['quote-interval'] as const,
   overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
   usMarketOverview: ['us-market-overview'] as const,
+  fundPortfolio: ['fund-portfolio'] as const,
   researchAgentStatus: ['research-agent', 'status'] as const,
   researchAgentLatest: ['research-agent', 'recommendations', 'latest'] as const,
   researchAgentRecommendations: ['research-agent', 'recommendations'] as const,

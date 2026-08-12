@@ -1218,12 +1218,98 @@ export interface ResearchAgentStatus {
   degraded_reason?: string | null
 }
 
+// ===== Fund Portfolio =====
+export interface FundPositionInput {
+  code: string
+  name: string
+  holding_amount: number | null
+  shares: number | null
+  cost_amount: number | null
+  holding_profit: number | null
+  holding_profit_pct: number | null
+  day_profit: number | null
+}
+
+export interface FundPosition extends FundPositionInput {
+  market_value: number | null
+  official_nav?: number | null
+  official_nav_date?: string | null
+  estimated_nav?: number | null
+  estimated_change_pct?: number | null
+  quote_time?: string | null
+  quote_source?: string | null
+  quote_status?: 'estimate' | 'official' | null
+  day_profit_estimated?: boolean
+  updated_at: string
+}
+
+export interface FundPortfolio {
+  source: string | null
+  synced_at: string | null
+  quotes_refreshed_at: string | null
+  summary: {
+    currency: 'CNY'
+    position_count: number
+    total_market_value: number
+    total_cost_amount: number
+    total_holding_profit: number
+    holding_profit_pct: number | null
+    total_day_profit: number
+  }
+  positions: FundPosition[]
+}
+
+export interface FundImportPreview {
+  source: 'alipay_screenshot' | 'csv'
+  provider: string
+  candidates: FundPositionInput[]
+  warnings: string[]
+}
+
+export interface FundRefreshResult {
+  refresh: {
+    updated: number
+    failed: number
+    failures: Array<{ code: string; message: string }>
+  }
+  portfolio: FundPortfolio
+}
+
 // ===== API surface =====
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
 
   usMarketOverview: () => request<UsMarketOverview>('/api/us-market/overview'),
   usMarketRefresh: () => request<UsMarketOverview>('/api/us-market/refresh', { method: 'POST' }),
+
+  fundPortfolio: () => request<FundPortfolio>('/api/funds/portfolio'),
+  fundOcrStatus: () =>
+    request<{ provider: string; available: boolean }>('/api/funds/ocr-status'),
+  fundImportPreview: (file: File, signal?: AbortSignal, quiet = false) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<FundImportPreview>('/api/funds/import-preview', {
+      method: 'POST',
+      body: fd,
+      signal,
+      quiet,
+    })
+  },
+  fundImportConfirm: (source: string, positions: FundPositionInput[]) =>
+    request<FundPortfolio>('/api/funds/import-confirm', {
+      method: 'POST',
+      body: JSON.stringify({ source, positions }),
+    }),
+  fundUpsertPosition: (code: string, position: Omit<FundPositionInput, 'code'>) =>
+    request<FundPortfolio>(`/api/funds/positions/${encodeURIComponent(code)}`, {
+      method: 'PUT',
+      body: JSON.stringify(position),
+    }),
+  fundDeletePosition: (code: string) =>
+    request<FundPortfolio>(`/api/funds/positions/${encodeURIComponent(code)}`, {
+      method: 'DELETE',
+    }),
+  fundRefresh: () => request<FundRefreshResult>('/api/funds/refresh', { method: 'POST' }),
 
   researchAgentTerms: (q?: string) =>
     request<{ terms?: ResearchTerm[]; term?: ResearchTerm | null }>(

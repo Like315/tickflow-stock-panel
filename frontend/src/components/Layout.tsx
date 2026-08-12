@@ -50,6 +50,7 @@ import {
   X,
   WifiOff,
   Globe2,
+  WalletCards,
 } from 'lucide-react'
 import { Logo } from './Logo'
 import { api, type IndexQuote } from '@/lib/api'
@@ -73,6 +74,7 @@ type CoreIndex = (typeof CORE_INDEXES)[number]
 const nav = [
   { to: '/',                label: '看板',     icon: LayoutDashboard },
   { to: '/us-market',       label: '美股看板', icon: Globe2 },
+  { to: '/funds',           label: '基金账户', icon: WalletCards },
   { to: '/watchlist',  label: '自选',   icon: Star },
   { to: '/screener',   label: '策略',   icon: ScanSearch },
   { to: '/backtest',   label: '回测',   icon: History },

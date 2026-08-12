@@ -12,11 +12,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.api import analysis, auth as auth_api, backtest, data, ext_data, financials, indices, intraday, kline, market_recap, monitor_rules, alerts, overview, pipeline, regime, research_agent, rps, screener, settings as settings_api, signals, stock_analysis, strategy, us_market, watchlist
+from app.api import analysis, auth as auth_api, backtest, data, ext_data, financials, fund_portfolio, indices, intraday, kline, market_recap, monitor_rules, alerts, overview, pipeline, regime, research_agent, rps, screener, settings as settings_api, signals, stock_analysis, strategy, us_market, watchlist
 from app.api.routes import router as core_router
 from app.config import settings
 from app.jobs import daily_pipeline
 from app.services.quote_service import QuoteService
+from app.services.fund_portfolio import FundPortfolioService
 from app.services.research_agent import ResearchAgentService
 from app.services.us_market_overview import UsMarketOverviewService
 from app.tickflow import client as tf_client
@@ -50,6 +51,7 @@ async def lifespan(app: FastAPI):
     repo = KlineRepository(store)
     app.state.datastore = store
     app.state.repo = repo
+    app.state.fund_portfolio_service = FundPortfolioService(store.data_dir)
     app.state.us_market_overview_service = UsMarketOverviewService(store.data_dir)
     app.state.research_agent_service = ResearchAgentService(repo, store.data_dir)
     # 在接受回测请求前固定 managed generation，避免首批并发 worker 各自创建版本。
@@ -272,6 +274,9 @@ async def lifespan(app: FastAPI):
     research_service = getattr(app.state, "research_agent_service", None)
     if research_service:
         research_service.close()
+    fund_portfolio_service = getattr(app.state, "fund_portfolio_service", None)
+    if fund_portfolio_service:
+        fund_portfolio_service.close()
     logger.info("shutdown")
 
 
@@ -344,6 +349,7 @@ app.include_router(core_router)
 app.include_router(auth_api.router)
 app.include_router(kline.router)
 app.include_router(watchlist.router)
+app.include_router(fund_portfolio.router)
 app.include_router(screener.router)
 app.include_router(backtest.router)
 app.include_router(intraday.router)
