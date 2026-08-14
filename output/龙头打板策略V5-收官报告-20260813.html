@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>龙头打板策略 V5 — 系列收官：六轮迭代全景与最终策略案例</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --line:#e5e8ee; --text:#1f2733; --sub:#6b7684; --red:#e0312f; --green:#12a150; --blue:#2563eb; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.7; padding:24px 16px 60px; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  h1 { font-size:25px; margin-bottom:6px; }
+  .sub { color:var(--sub); font-size:13.5px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px 24px; margin-bottom:20px; }
+  .card h2 { font-size:19px; margin-bottom:14px; padding-left:10px; border-left:4px solid var(--blue); }
+  .card h3 { font-size:15px; margin:16px 0 8px; }
+  .tl { background:#eef5ff; border:1px solid #cfe0ff; border-radius:12px; padding:18px 20px; margin-bottom:20px; }
+  .tl h2 { font-size:18px; color:var(--blue); margin-bottom:10px; }
+  .tl ul { padding-left:20px; font-size:14px; }
+  .tl li { margin-bottom:6px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { background:#f1f4f9; padding:8px 8px; border:1px solid var(--line); white-space:nowrap; text-align:left; }
+  td { padding:7px 8px; border:1px solid var(--line); }
+  .chart { width:100%; height:340px; margin:10px 0; }
+  .src { font-size:12px; color:var(--sub); margin-top:6px; }
+  .rule { background:#f8f9fb; border:1px solid #e3e7ef; border-radius:10px; padding:14px 16px; margin:8px 0; font-size:13.5px; }
+  .rule b { color:var(--blue); }
+  .ok { color:var(--green); font-weight:600; }
+  .no { color:var(--red); font-weight:600; }
+  .warn { background:#fff7e8; border:1px solid #f3d9a4; border-radius:12px; padding:16px 18px; margin-bottom:20px; }
+  .warn h3 { color:#b45309; margin-bottom:8px; }
+  .warn ul { padding-left:20px; font-size:14px; }
+  .disc { margin-top:24px; padding:16px 18px; border:1px dashed #c9cfda; border-radius:10px; font-size:12.5px; color:var(--sub); background:#fbfcfd; }
+  .foot { text-align:center; color:var(--sub); font-size:12px; margin-top:28px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>龙头打板策略 V5 — 系列收官报告</h1>
+<div class="sub">回测区间：2025-11-03 ~ 2026-08-13（约 200 交易日）｜成交：T+1 开盘价｜全成本模型｜五轮迭代 + 逐笔复盘驱动</div>
+
+<div class="tl">
+<h2>V5 结论（本轮全部实验）</h2>
+<ul>
+<li><b>卖出时点证伪</b>：收盘卖（确认不板当天收盘走）反而比次日开盘卖差（-6.49% vs -5.95%）——T+1 收盘到 T+2 开盘的<b>隔夜溢价是正贡献</b>，"次日开盘卖"保留。</li>
+<li><b>长假规避 / 换手过滤：本样本冗余</b>——7 笔交易均不跨长假、换手均达标，无增量。规则本身合理，保留为风控选项。</li>
+<li><b>半样本警示</b>：最优配置 7 笔交易<b>全部集中在 2026-03~08 后半段</b>，前半段零信号 —— 策略近乎空仓，任何单笔变化都会大幅改变结论，统计意义弱。</li>
+<li><b>最终确认的最优配置</b>：行业≥5家 + 行业涨幅≥1% + 空间龙 + 连板≤3 + 情绪(80/3) + 不板即走 + 次日开盘卖 + 止损-6% → 全区间 <b class="green">-5.95%</b>（7 笔，回撤 -6.6%，胜率 42.9%）。</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>一、六轮迭代全景（同一数据、同一防作弊口径）</h2>
+<div id="chEvolve" class="chart"></div>
+<div class="src">横轴为迭代版本，纵轴为全区间总收益（样本区间为打板逆风周期，全部为负值）。每轮优化方向都被数据验证或证伪。</div>
+<table style="margin-top:10px">
+<tr><th>版本</th><th>新增规则</th><th>总收益</th><th>回撤</th><th>交易数</th><th>结论</th></tr>
+<tr><td>v1</td><td>连板≥2 + 情绪广度 + 固定持1天</td><td>-70.0%</td><td>-73.7%</td><td>302</td><td>无脑打板 = 送钱</td></tr>
+<tr><td>v2</td><td>不板即走 + 情绪严(100) + 空间龙</td><td>-35.3%</td><td>-35.9%</td><td>41</td><td class="ok">卖出/情绪/收敛均有效</td></tr>
+<tr><td>v3</td><td>行业板块效应≥5</td><td>-25.9%</td><td>-28.1%</td><td>28</td><td class="ok">行业合力有效；概念维度证伪</td></tr>
+<tr><td>v4</td><td>行业强度≥1% + 溢价温度计 + 连板上限≤3</td><td>-5.9%</td><td>-6.6%</td><td>7</td><td class="ok">行业强度有效；溢价温度计冗余；连板上限复盘驱动</td></tr>
+<tr><td>V5</td><td>收盘卖/长假规避/换手过滤</td><td>-6.0%</td><td>-6.6%</td><td>7</td><td class="no">均证伪或冗余；确认次日开盘卖最优</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>二、V5 实验明细</h2>
+<table>
+<tr><th>配置</th><th>总收益</th><th>最大回撤</th><th>胜率</th><th>交易数</th><th>平均单笔</th><th>中位单笔</th><th>平均持有(天)</th><th>拦截 买一字/卖跌停/挂起</th></tr>
+<tr><td>V5基线(次日开盘卖+长假规避)</td><td>-5.95%</td><td>-6.56%</td>
+<td>42.9%</td><td>7</td><td>-4.32%</td>
+<td>-0.55%</td><td>1.0</td>
+<td>0 / 0 / 0</td></tr>
+<tr><td>V5收盘卖(确认不板当天收盘走)</td><td>-6.49%</td><td>-6.83%</td>
+<td>28.6%</td><td>7</td><td>-4.74%</td>
+<td>-2.12%</td><td>1.0</td>
+<td>0 / 0 / 0</td></tr>
+<tr><td>V5收盘卖+关闭长假规避</td><td>-6.49%</td><td>-6.83%</td>
+<td>28.6%</td><td>7</td><td>-4.74%</td>
+<td>-2.12%</td><td>1.0</td>
+<td>0 / 0 / 0</td></tr>
+<tr><td>V5收盘卖+换手≥3%</td><td>-6.49%</td><td>-6.83%</td>
+<td>28.6%</td><td>7</td><td>-4.74%</td>
+<td>-2.12%</td><td>1.0</td>
+<td>0 / 0 / 0</td></tr>
+</table>
+<div class="src">统一配置：max_positions=4、单票≤20%、总仓≤80%、佣金万2+印花税0.05%+滑点5bp。</div>
+</div>
+
+<div class="card">
+<h2>三、最终可执行策略案例（系列成果固化）</h2>
+<div class="rule"><b>入仓（T 日收盘后生成信号，T+1 开盘成交）</b>：
+① 当日收盘封涨停；② 连板数 ∈ [1, 3]（只做 2-3 板，<b>回避 4 板以上高位</b>）；③ 成交额 ≥ 3 亿；④ 情绪：全市场涨停家数 ≥ 80 且当日最高连板 ≥ 3；⑤ 所属一级行业当日涨停 ≥ 5 家且行业平均涨幅 ≥ 1%（板块合力）；⑥ 前一日涨停池今日平均涨幅 ≥ -2%（溢价温度计，风控冗余维度）。</div>
+<div class="rule"><b>成交</b>：T+1 开盘价买入；T+1 一字涨停（买不进）自动跳过；停牌跳过。</div>
+<div class="rule"><b>卖出</b>：持仓日收盘未封板 → 次日开盘卖出（不板即走，隔夜溢价为正贡献）；涨停则继续持有；止损 -6%（价格止损，注意高位板可能跳空穿透——靠入仓回避，不靠止损兜底）。</div>
+<div class="rule"><b>仓位</b>：最多同时 4 只、单票 ≤20%、总仓 ≤80%、初始资金 100 万。</div>
+<div class="rule"><b>成本</b>：佣金万 2 双边 + 印花税卖出 0.05% + 滑点 5bp。</div>
+<div class="rule"><b>空仓纪律（最重要）</b>：情绪双维度任一不满足 → 空仓。本样本区间 200 个交易日仅出手 7 次 —— <b>大多数时候空仓就是最优解</b>。</div>
+<div class="src">实现：backend/app/strategy/builtin/limit_up_leader_v4.py（params 见 META 默认值 + max_boards=3）｜回测：scripts/bt_limit_up_leader_v5.py</div>
+</div>
+
+<div class="card">
+<h2>四、防作弊审计清单（汇总，全部通过）</h2>
+<table>
+<tr><th style="width:250px">项目</th><th>结论</th><th>说明</th></tr>
+<tr><td>信号只用 T 日及以前数据</td><td class="ok">通过</td><td>连板数 cum_sum 历史递推；涨停价用前收盘×比例；板块效应/行业强度/溢价温度计均用 T 日收盘数据。</td></tr>
+<tr><td>成交价无前视</td><td class="ok">通过</td><td>open_t+1 信号右移一天用 T+1 开盘价成交；warmup 只算特征不交易。</td></tr>
+<tr><td>一字涨停买不进</td><td class="ok">通过</td><td>引擎成交日检测拦截（全系列累计拦截 400+ 次）。</td></tr>
+<tr><td>跌停卖不出 / 停牌</td><td class="ok">通过</td><td>挂起次日顺延 + 停牌拦截，不虚构成交。</td></tr>
+<tr><td>全成本模型</td><td class="ok">通过</td><td>佣金万2双边 + 印花税0.05% + 滑点5bp。</td></tr>
+<tr><td>板块数据快照风险</td><td class="warn">披露</td><td>行业/概念为 2026-08 快照，行业一级一年内稳定；概念有漂移风险（已弃用概念维度）。</td></tr>
+<tr><td>参数过拟合风险</td><td class="warn">披露</td><td>max_boards≤3 由样本内逐笔复盘驱动；半样本显示信号集中下半段，需更长数据样本外验证。</td></tr>
+</table>
+</div>
+
+<div class="warn">
+<h3>⚠️ 系列总结与真实边界</h3>
+<ul>
+<li><b>五轮迭代的核心成果</b>：不是"找到一个赚钱策略"，而是建立了一条 <b>数据驱动的策略开发流水线</b>——规则化 → 防作弊回测 → 参数敏感性 → 逐笔复盘归因 → 参数修正，每轮都有验证或证伪的明确结论。</li>
+<li><b>样本区间结论</b>：2025-11 ~ 2026-08 是打板逆风周期，该策略所有配置均亏损；最优配置（-5.9%）本质是"近乎空仓 + 极挑剔出手"。<b>策略赚钱能力未被证明，不亏钱能力被证明</b>。</li>
+<li><b>如果要继续（v6）</b>，需要的新资源：① 2-3 年历史数据（覆盖完整情绪周期）做样本外验证；② 分钟级数据（测试"炸板即走"盘中卖出，当前目录为空）；③ 历史时点的行业/概念映射（消除快照漂移）。三者缺一，继续打磨当前数据意义递减。</li>
+<li><b>当前可用价值</b>：把该策略作为<b>市场情绪监控 + 打板纪律框架</b>使用——情绪双维度不满足即空仓，满足且出现 2-3 板空间龙 + 行业合力时才考虑出手。</li>
+</ul>
+</div>
+
+<div class="disc">
+<b>免责声明</b>：以上内容基于公开数据和量化分析，仅供参考，不构成投资建议。市场有风险，投资需谨慎。任何投资决策应结合个人风险承受能力、资金状况和投资目标独立判断，必要时咨询持牌专业机构。过往表现不预示未来收益。
+</div>
+<div class="foot">报告生成：2026-08-13 ｜ 数据：TickFlow 本地 parquet + 同花顺行业快照 ｜ 回测引擎：backend/app/backtest（矩阵原生 + 组合撮合，防作弊口径一致）</div>
+</div>
+
+<script>
+(function () {
+  var green = '#12a150', blue = '#2563eb', gray = '#8a94a6';
+  var versions = [
+    { n: 'v1 无脑打板', v: -70.0 },
+    { n: 'v2 卖出+情绪+空间龙', v: -35.3 },
+    { n: 'v3 行业+空间龙', v: -25.9 },
+    { n: 'v4 行业强度+连板≤3', v: -5.9 },
+    { n: 'V5 确认最优', v: -6.0 }
+  ];
+  echarts.init(document.getElementById('chEvolve')).setOption({
+    tooltip: { trigger: 'axis' },
+    grid: { left: 55, right: 20, top: 20, bottom: 60 },
+    xAxis: { type: 'category', data: versions.map(function (d) { return d.n; }), axisLabel: { fontSize: 11, interval: 0 } },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%' } },
+    series: [{
+      type: 'bar', barWidth: '45%',
+      data: versions.map(function (d) { return { value: d.v, itemStyle: { color: green } }; }),
+      label: { show: true, position: 'top', formatter: function (p) { return p.value + '%'; } }
+    }]
+  });
+})();
+</script>
+</body>
+</html>

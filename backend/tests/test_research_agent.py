@@ -210,6 +210,66 @@ def _fake_stock_evidence(*args, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_fund_market_chat_uses_market_context_without_positions(tmp_path) -> None:
+    captured: dict = {}
+
+    class FakeFundMarketResearch:
+        def build_context(self, codes=None):
+            return {
+                "scope": "fund_market",
+                "as_of": "2026-08-12",
+                "market_regime": {"regime": "上行"},
+                "funds": [{"code": "005827", "recommendation": {"tier": "可买入"}}],
+                "data_gaps": [],
+            }
+
+    async def stream(messages, **kwargs):
+        captured["messages"] = messages
+        yield "大盘上行，005827 可买入。"
+
+    service = ResearchAgentService(
+        FakeRepo(),
+        tmp_path,
+        store=ResearchAgentStore(tmp_path),
+        stream_text=stream,
+        configured=lambda: True,
+        fund_market_research_service=FakeFundMarketResearch(),
+    )
+    events = [
+        json.loads(value)
+        async for value in service.chat_stream(
+            "哪些基金值得买入？",
+            context="fund_market",
+        )
+    ]
+    service.close()
+
+    assert events[0]["mode"] == "fund_market"
+    assert events[0]["as_of"] == "2026-08-12"
+    assert events[1]["content"] == "大盘上行，005827 可买入。"
+    assert "长期持有 / 减仓 / 可买入 / 观望" in captured["messages"][0]["content"]
+    assert '"regime": "上行"' in captured["messages"][1]["content"]
+    assert "不包含用户持仓" in captured["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_fund_market_chat_reports_uninitialized_service(tmp_path) -> None:
+    service = ResearchAgentService(
+        FakeRepo(),
+        tmp_path,
+        store=ResearchAgentStore(tmp_path),
+        configured=lambda: True,
+    )
+    events = [
+        json.loads(value)
+        async for value in service.chat_stream("基金研究", context="fund_market")
+    ]
+    service.close()
+    assert events[0]["type"] == "error"
+    assert "尚未初始化" in events[0]["message"]
+
+
+@pytest.mark.asyncio
 async def test_term_chat_works_without_ai(tmp_path) -> None:
     service = ResearchAgentService(
         FakeRepo(), tmp_path, store=ResearchAgentStore(tmp_path), configured=lambda: False

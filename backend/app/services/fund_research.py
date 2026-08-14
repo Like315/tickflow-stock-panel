@@ -358,7 +358,12 @@ class EastmoneyFundResearchProvider:
             },
         )
 
-    def research_snapshot(self, code: str) -> dict[str, Any]:
+    def _base_snapshot(
+        self,
+        code: str,
+        *,
+        include_history: bool,
+    ) -> dict[str, Any]:
         if len(code) != 6 or not code.isdigit():
             raise ValueError("基金代码必须是 6 位数字")
         search_response = self._client.get(
@@ -397,8 +402,25 @@ class EastmoneyFundResearchProvider:
         if len(history) < 2:
             raise RuntimeError("公开行情源的净值历史样本不足")
         metrics = calculate_nav_metrics(history)
-        latest_date = history[-1]["date"] if history else None
-        asset_allocation = _parse_asset_allocation(nav_response.text)
+        managers = [value.strip() for value in str(base.get("JJJL") or "").split(",") if value.strip()]
+        result = {
+            "code": code,
+            "name": str(exact.get("NAME") or "").strip(),
+            "fund_type": str(base.get("FTYPE") or exact.get("CATEGORYDESC") or "").strip() or None,
+            "company": str(base.get("JJGS") or "").strip() or None,
+            "managers": managers,
+            "nav_as_of": history[-1]["date"] if history else None,
+            "asset_allocation": _parse_asset_allocation(nav_response.text),
+            **metrics,
+            "source": self.name,
+        }
+        if include_history:
+            result["history"] = history
+        return result
+
+    def research_snapshot(self, code: str) -> dict[str, Any]:
+        result = self._base_snapshot(code, include_history=False)
+        code = str(result["code"])
         disclosure_gap = None
         try:
             holdings_response = self._client.get(
@@ -411,15 +433,7 @@ class EastmoneyFundResearchProvider:
         except Exception as exc:
             holdings_as_of, top_holdings = None, []
             disclosure_gap = f"最新定期报告持仓明细暂不可用：{str(exc)[:100]}"
-        managers = [value.strip() for value in str(base.get("JJJL") or "").split(",") if value.strip()]
-        return {
-            "code": code,
-            "name": str(exact.get("NAME") or "").strip(),
-            "fund_type": str(base.get("FTYPE") or exact.get("CATEGORYDESC") or "").strip() or None,
-            "company": str(base.get("JJGS") or "").strip() or None,
-            "managers": managers,
-            "nav_as_of": latest_date,
-            "asset_allocation": asset_allocation,
+        result.update({
             "top_holdings_as_of": holdings_as_of,
             "top_holdings": top_holdings,
             "top_holdings_total_weight_pct": _rounded(
@@ -427,9 +441,20 @@ class EastmoneyFundResearchProvider:
             ),
             "holdings_disclosure_note": "仅为最新定期报告披露，不代表当前实时持仓",
             "disclosure_gap": disclosure_gap,
-            **metrics,
-            "source": self.name,
-        }
+        })
+        return result
+
+    def market_snapshot(
+        self,
+        code: str,
+        *,
+        include_history: bool = False,
+    ) -> dict[str, Any]:
+        """轻量快照：基金元数据 + 官方净值历史 + 风险收益指标。
+
+        与 research_snapshot 的区别：不抓取定期报告持仓明细，适合对基金池批量研究。
+        """
+        return self._base_snapshot(code, include_history=include_history)
 
     def close(self) -> None:
         self._client.close()

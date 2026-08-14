@@ -92,6 +92,13 @@ def test_fund_chat_context_contract() -> None:
     assert first["context"] == "fund_portfolio"
     assert first["fund_code"] is None
 
+    market = client.post(
+        "/api/research-agent/chat",
+        json={"question": "哪些基金值得买入", "context": "fund_market"},
+    )
+    market_first = json.loads(market.text.splitlines()[0])
+    assert market_first["context"] == "fund_market"
+
     invalid = client.post(
         "/api/research-agent/chat",
         json={"question": "研究基金", "context": "fund", "fund_code": "123"},

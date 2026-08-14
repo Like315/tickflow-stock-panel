@@ -3,7 +3,7 @@ import { api, type ResearchTerm } from './api'
 
 export type ResearchAgentTab = 'chat' | 'picks' | 'reviews'
 export type ResearchAgentPhase = 'idle' | 'loading' | 'streaming' | 'done' | 'error'
-export type ResearchAgentContext = 'general' | 'fund_portfolio' | 'fund'
+export type ResearchAgentContext = 'general' | 'fund_portfolio' | 'fund' | 'fund_market'
 
 export interface ResearchAgentRequestOptions {
   context?: ResearchAgentContext

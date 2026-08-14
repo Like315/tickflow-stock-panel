@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>超短线交易体系 · 实证对照评估</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --card: #ffffff; --ink: #1a2332; --sub: #64748b;
+    --line: #e5e9f0; --red: #d43d3d; --green: #0d9d6e; --blue: #2563eb;
+    --amber: #b45309; --chip: #eef2f7;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--ink); font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; padding:32px 20px 60px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  h1 { font-size:25px; font-weight:800; letter-spacing:.5px; }
+  .sub { color:var(--sub); font-size:14px; margin:8px 0 4px; }
+  .period { display:inline-block; background:var(--chip); border-radius:20px; padding:4px 14px; font-size:12px; color:var(--sub); margin-top:10px; }
+  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:24px 0; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .kpi .v { font-size:24px; font-weight:800; }
+  .kpi .l { font-size:12px; color:var(--sub); margin-top:4px; }
+  .up { color:var(--red); } .dn { color:var(--green); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px 24px; margin:18px 0; }
+  .card h2 { font-size:17px; margin-bottom:14px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th { text-align:left; padding:9px 10px; color:var(--sub); font-weight:600; border-bottom:2px solid var(--line); white-space:nowrap; }
+  td { padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  td.num { font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+  .ok { color:var(--green); font-weight:600; }
+  .no { color:var(--red); font-weight:600; }
+  .half { color:var(--amber); font-weight:600; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; margin-left:6px; font-weight:600; }
+  .tag.yes { background:#e8f7f1; color:var(--green); }
+  .tag.part { background:#fff7e6; color:var(--amber); }
+  .tag.no { background:#fdeeee; color:var(--red); }
+  .warn { background:#fff8ec; border:1px solid #f5d9a8; border-radius:12px; padding:16px 20px; margin:18px 0; font-size:13px; color:#7a5b1e; line-height:1.8; }
+  .foot { color:var(--sub); font-size:12px; margin-top:26px; line-height:1.8; border-top:1px solid var(--line); padding-top:14px; }
+  .hl { background:linear-gradient(transparent 55%, #ffe08a 85%); }
+  .quote { border-left:3px solid var(--blue); background:var(--chip); padding:10px 16px; font-size:13px; color:var(--sub); margin:10px 0; }
+  ul.tight { margin:6px 0 0 18px; font-size:13.5px; line-height:1.9; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>「超短线完整交易体系」实证对照评估</h1>
+  <div class="sub">用 2025-08~2026-08 全市场历史数据 + 8 轮打板策略回测 + 3 组新实验，逐条检验这篇体系长文</div>
+  <span class="period">数据：D:\MyTickFlowStockPanel 全市场日线 · 涨停样本 15,188 个 · 回测区间 2025-11/12 ~ 2026-08 · 全成本防作弊口径</span>
+
+  <div class="kpis">
+    <div class="kpi"><div class="v up">63.3%</div><div class="l">涨停股次日高开概率（隔日溢价真实存在）</div></div>
+    <div class="kpi"><div class="v up">89.2%</div><div class="l">涨停股次日盘中冲高为正概率</div></div>
+    <div class="kpi"><div class="v dn">+3.87%</div><div class="l">"看情绪定仓位"照文章执行的结果（证伪）</div></div>
+    <div class="kpi"><div class="v">1.42</div><div class="l">对照最优（趋势择时）夏普，情绪法仅 0.36</div></div>
+  </div>
+
+  <div class="card">
+    <h2>一、逐条对照表：文章主张 vs 实证结论</h2>
+    <table>
+      <thead><tr><th style="width:190px">文章主张</th><th>实证结论（数据/回测）</th><th style="width:90px">判定</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>核心逻辑</b>：跟随主流资金、吃情绪溢价、高频小赚+控亏</td>
+          <td>隔日溢价统计支持：涨停股次日高开概率 <span class="hl">63.3%</span>（均值 +1.86%、中位 +1.13%），冲高为正概率 <span class="hl">89.2%</span>（中位 +5.1%）——"隔日有溢价"是真实统计特征，非玄学</td>
+          <td><span class="tag yes">✅ 验证</span></td>
+        </tr>
+        <tr>
+          <td><b>三种模式</b>：龙头低吸（最稳）/ 半路追涨 / 确定性打板</td>
+          <td>分类框架合理。打板端已实测（v1~v8：情绪过滤+空间龙+行业合力+科技池，-70%→+0.85%）；"半路"需分钟数据（本项目 kline_minute 为空，无法直接验证，逻辑上依赖"板块共振"较难量化）；"龙头低吸"与我们的"科技低吸"实验同构（+5.64%、回撤仅 -5.0%——防御性确实最稳，但收益也最低）</td>
+          <td><span class="tag part">⚠️ 部分验证</span></td>
+        </tr>
+        <tr>
+          <td><b>只打首板/接力板</b>，不打烂板</td>
+          <td>v4 逐笔复盘实证："回避 4 板以上高位股"单调改善（连板≤5→-15.5%、≤4→-9.9%、≤3→-5.9%）——"接力只做低位"被数据验证；"烂板/尾盘偷袭板"需分钟数据，未直接验证</td>
+          <td><span class="tag yes">✅ 验证（高度上限）</span></td>
+        </tr>
+        <tr>
+          <td><b>隔日溢价止盈</b>：不贪最高，冲高即卖</td>
+          <td>双重验证：① 统计：次日高开 63.3%，且 V5 实验"次日开盘卖（-5.95%）优于收盘卖（-6.49%）"——隔夜溢价是正贡献；② 但注意 7.0% 概率次日低开超 -3%（跳空风险，见止损条）</td>
+          <td><span class="tag yes">✅ 验证</span></td>
+        </tr>
+        <tr>
+          <td><b>止损铁律</b>：跌破 10 日线/炸板不回封/单日 -3% 强制</td>
+          <td>方向正确但执行有盲区：v4 逐笔复盘发现 9/16 笔止损单平均 <span class="no">-15.5%</span>（远超 -6% 线）——根因是<span class="hl">次日跳空低开直接穿透止损</span>（低开超 -3% 概率 7.0%、超 -5% 概率 2.6%）。文章没提"防跳空"（价位过滤 + 仓位前置），这是它最大的执行漏洞</td>
+          <td><span class="tag part">⚠️ 方向对/有盲区</span></td>
+        </tr>
+        <tr>
+          <td><b>仓控</b>：冰点轻仓 / 回暖正常 / <span class="no">高潮重仓</span> / 退潮空仓</td>
+          <td><b>"高潮重仓"被数据证伪</b>（本轮新实验）：照文章档位执行（退潮10%/冰点20%/回暖50%/高潮80%），总收益仅 <span class="no">+3.87%</span>、回撤 -23.9%、夏普 0.36、切换 97 次——远差于满仓持有（+28.5%）。原因：涨停家数是滞后/同步指标，高潮日 = 情绪顶，"高潮重仓" = 顶部接盘。正确用法是"情绪只做禁入/减仓"（退潮空仓 ✅ 已被打板系列单调验证 -85.7%→-6%；高潮降仓 +18.9%）</td>
+          <td><span class="tag no">❌ 高潮重仓被证伪</span></td>
+        </tr>
+        <tr>
+          <td><b>情绪周期</b>：冰点/回暖/高潮/退潮四阶段</td>
+          <td>定性框架正确（打板系列：涨停家数+连板高度双过滤单调减亏）。但注意：文章第六节"情绪一致止盈"与第七节"高潮重仓"<b>自相矛盾</b>——数据站在"一致止盈"这边（高潮=风险），"重仓"是错的</td>
+          <td><span class="tag half">⚠️ 框架对/用法错</span></td>
+        </tr>
+        <tr>
+          <td><b>空仓节奏</b>：退潮期空仓/轻仓，烂行情不做</td>
+          <td><b>整套体系最有价值的一条</b>。打板系列反复实证：逆风期"交易越多亏得越多"（情绪过滤阈值单调减亏），本区间最优策略本质是"近乎空仓+极挑剔出手"；v6 科技版 200 天只出手 3 次</td>
+          <td><span class="tag yes">✅ 核心验证</span></td>
+        </tr>
+        <tr>
+          <td><b>十条铁律</b>：不做下跌趋势/不接飞刀/分歧低吸/错了就砍/只做前排/连续亏损停手</td>
+          <td>与我们的实证完全同向：①"不做下跌趋势"= 科创50+MA20 择时最优解（+32%，回撤减半）；②"分歧低吸一致不追"= 低吸回撤最小（-5.0%）；③"连续亏损停手"= 退潮空仓纪律</td>
+          <td><span class="tag yes">✅ 验证</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>二、本轮新增三组实验（检验文章核心可量化主张）</h2>
+    <h3 style="font-size:14.5px;margin-bottom:8px">① 隔日溢价统计（15,188 个涨停样本，2025-11~2026-08）</h3>
+    <table>
+      <thead><tr><th>指标</th><th class="num">均值</th><th class="num">中位数</th><th class="num">10%分位</th><th class="num">90%分位</th></tr></thead>
+      <tbody>
+        <tr><td>次日开盘溢价</td><td class="num">+1.86%</td><td class="num">+1.13%</td><td class="num">-2.2%</td><td class="num">+7.7%</td></tr>
+        <tr><td>次日盘中冲高</td><td class="num">+5.66%</td><td class="num">+5.09%</td><td class="num">0.0%</td><td class="num">+10.0%</td></tr>
+      </tbody>
+    </table>
+    <ul class="tight">
+      <li>高开概率 63.3%、冲高为正 89.2% → <span class="ok">"隔日有溢价就落袋"有统计基础</span></li>
+      <li>低开超 -3% 概率 7.0% → <span class="no">止损穿透风险真实存在，仓位/价位过滤必须前置</span></li>
+    </ul>
+
+    <h3 style="font-size:14.5px;margin:18px 0 8px">② 情绪分档仓位 vs 趋势择时（科创50 载体，2025-12-01~2026-08-13）</h3>
+    <table>
+      <thead><tr><th>模式</th><th class="num">总收益</th><th class="num">最大回撤</th><th class="num">夏普</th><th>判定</th></tr></thead>
+      <tbody>
+        <tr><td>满仓持有（对照）</td><td class="num">+28.50%</td><td class="num">-29.67%</td><td class="num">1.04</td><td>基准</td></tr>
+        <tr style="background:#f0f7ff"><td><b>MA20 趋势择时（最优解）</b></td><td class="num"><b>+31.98%</b></td><td class="num"><b>-14.81%</b></td><td class="num"><b>1.42</b></td><td><span class="tag yes">✅ 最优</span></td></tr>
+        <tr><td>情绪分档仓位（文章主张）</td><td class="num">+3.87%</td><td class="num">-23.88%</td><td class="num">0.36</td><td><span class="tag no">❌ 证伪</span></td></tr>
+        <tr><td>情绪分档 + MA20</td><td class="num">+10.24%</td><td class="num">-12.78%</td><td class="num">0.87</td><td>组合仍不如纯择时</td></tr>
+        <tr><td>高潮禁入（≥110 降 2 成）</td><td class="num">+18.91%</td><td class="num">-24.01%</td><td class="num">0.84</td><td><span class="tag yes">✅ 减法有效</span></td></tr>
+        <tr><td>高潮禁入 + MA20</td><td class="num">+22.38%</td><td class="num">-13.95%</td><td class="num">1.28</td><td>略低于纯择时</td></tr>
+        <tr><td>完全逆向情绪仓位</td><td class="num">+14.87%</td><td class="num"><b>-10.70%</b></td><td class="num">1.07</td><td>回撤最小（高潮减仓有效）</td></tr>
+      </tbody>
+    </table>
+    <div class="quote">结论：<b>情绪只配做"减法"（退潮禁入、高潮减仓），不配做"驱动"（冰点加仓、高潮重仓）</b>。仓位开关应由价格趋势（MA20）决定——这是本文最大的修正点。</div>
+
+    <h3 style="font-size:14.5px;margin:18px 0 8px">③ 与前两轮工作的闭环对照</h3>
+    <ul class="tight">
+      <li>打板系列（v1~v8）：情绪过滤单调减亏 -85.7%→-6% → 验证"退潮空仓"；连板≤3 回避高位 → 验证"接力只做低位"</li>
+      <li>科技趋势系列：科创50+MA20 择时 +32% → 验证"不做下跌趋势"是最高优先级</li>
+      <li>本轮：隔日溢价 63.3% → 验证"隔日溢价止盈"；情绪分档 +3.87% → 证伪"高潮重仓"</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>三、总体评价：这是一套"正确的框架"，但有一处致命错误</h2>
+    <ul class="tight">
+      <li><b>框架价值很高</b>：隔日溢价、情绪周期、空仓纪律、止损铁律、只做前排——全部被 15,188 个涨停样本和 8 轮回测验证。作为职业短线思维框架，它基本正确，远超大多数"荐股文"</li>
+      <li><b>致命错误一处</b>：「情绪高潮重仓核心」（第七节）——数据证明高潮日 = 情绪顶，照做 = 顶部接盘（+3.87% vs 满仓 +28.5%）。这恰是文章自己第六节"情绪一致止盈"的反面，逻辑自相矛盾</li>
+      <li><b>盲区一处</b>：止损体系没提<span class="hl">跳空穿透</span>——7% 概率次日低开超 -3%，单日 -3% 强制止损在跳空面前形同虚设（v4 实测止损单平均 -15.5%）。防跳空靠的是"价位过滤（回避高位板）+ 仓位前置 + 首仓试错"，不是更严的止损线</li>
+      <li><b>无法验证部分</b>："半路追涨"需要分钟数据（当前 kline_minute 为空）；"板块共振强度"依赖人工盘感。这两部分文章给的是规则，但规则的可执行性未获数据支撑</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>四、修正版（数据修正后的体系）</h2>
+    <table>
+      <thead><tr><th style="width:170px">维度</th><th>修正规则</th></tr></thead>
+      <tbody>
+        <tr><td>择时（最高优先级）</td><td>持仓标的自身站上 MA20 才持有，跌破离场（科创50 载体实证：夏普 1.04→1.42，回撤减半）</td></tr>
+        <tr><td>情绪（只做减法）</td><td>退潮期（涨停 &lt;40）空仓；高潮期（≥110）降仓至 ≤2 成；<b>禁止</b>"高潮重仓"</td></tr>
+        <tr><td>选股</td><td>只做主流板块前排（与文章一致）；回避 4 板以上高位接力（v4 实证单调改善）</td></tr>
+        <tr><td>买点</td><td>低吸（回踩不破位，回撤最小）&gt; 确定性首板/低位接力 &gt; 半路（待分钟数据验证）</td></tr>
+        <tr><td>止盈</td><td>隔日有溢价即落袋（63.3% 高开，次日开盘卖优于收盘卖）；趋势票破 MA5 离场</td></tr>
+        <tr><td>止损</td><td>保留硬止损，但<span class="hl">防跳空前置</span>：回避高位板 + 单票 ≤2 成 + 首仓 ≤1 成试错</td></tr>
+        <tr><td>仓位</td><td>由趋势定开关（0 或 1），由情绪定上限（高潮 ≤2 成），不是由情绪定仓位</td></tr>
+      </tbody>
+    </table>
+    <div class="warn">⚠️ 数据边界：样本为 2025-08~2026-08 单一年度（打板逆风期+科技趋势期），结论不可外推至完整情绪周期；情绪分档阈值（40/70/110）与 MA20 参数均存在同区间过拟合风险；"半路""板块共振强度"待分钟数据验证。本评估为量化研究演示，不构成投资建议。市场有风险，投资需谨慎。</div>
+  </div>
+
+  <div class="foot">
+    数据来源：D:\MyTickFlowStockPanel（tickflow 全市场日线 2025-08~2026-08 + 同花顺概念/行业映射 + 上证/科创50 指数）。方法：15,188 个涨停样本溢价统计 + 8 轮打板策略回测（v1~v8）+ 3 组新实验（情绪分档仓位/高潮禁入/逆向情绪），全部 T-1 信号、T 日开盘成交、全成本防作弊口径。
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>龙头打板策略 v4 — 情绪温度计与逐笔复盘回测报告</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --line:#e5e8ee; --text:#1f2733; --sub:#6b7684; --red:#e0312f; --green:#12a150; --blue:#2563eb; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.7; padding:24px 16px 60px; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  h1 { font-size:25px; margin-bottom:6px; }
+  .sub { color:var(--sub); font-size:13.5px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px 24px; margin-bottom:20px; }
+  .card h2 { font-size:19px; margin-bottom:14px; padding-left:10px; border-left:4px solid var(--blue); }
+  .card h3 { font-size:15px; margin:16px 0 8px; }
+  .tl { background:#eef5ff; border:1px solid #cfe0ff; border-radius:12px; padding:18px 20px; margin-bottom:20px; }
+  .tl h2 { font-size:18px; color:var(--blue); margin-bottom:10px; }
+  .tl ul { padding-left:20px; font-size:14px; }
+  .tl li { margin-bottom:6px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { background:#f1f4f9; padding:8px 8px; border:1px solid var(--line); white-space:nowrap; text-align:left; }
+  td { padding:7px 8px; border:1px solid var(--line); }
+  .chart { width:100%; height:360px; margin:10px 0; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:760px) { .grid2 { grid-template-columns:1fr; } }
+  .src { font-size:12px; color:var(--sub); margin-top:6px; }
+  .rule { background:#f8f9fb; border:1px solid #e3e7ef; border-radius:10px; padding:14px 16px; margin:8px 0; font-size:13.5px; }
+  .rule b { color:var(--blue); }
+  .warn { background:#fff7e8; border:1px solid #f3d9a4; border-radius:12px; padding:16px 18px; margin-bottom:20px; }
+  .warn h3 { color:#b45309; margin-bottom:8px; }
+  .warn ul { padding-left:20px; font-size:14px; }
+  .disc { margin-top:24px; padding:16px 18px; border:1px dashed #c9cfda; border-radius:10px; font-size:12.5px; color:var(--sub); background:#fbfcfd; }
+  .foot { text-align:center; color:var(--sub); font-size:12px; margin-top:28px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>龙头打板策略 v4 — 情绪温度计 + 逐笔复盘迭代回测报告</h1>
+<div class="sub">回测区间：2025-11-03 ~ 2026-08-13（约 200 交易日）｜成交：T+1 开盘价｜全成本模型</div>
+
+<div class="tl">
+<h2>核心结论</h2>
+<ul>
+<li><b>v4 全开（行业强度1% + 溢价温度计 + 空间龙）</b>：-19.7%（16 笔，回撤 -19.7%）——比 v3 最优（-25.9%）再改善 6.2pct；<b>行业涨跌强度过滤有效</b>。</li>
+<li><b>溢价温度计被证伪（本样本内冗余）</b>：开启/关闭/阈值 -2%/-1%/0% 结果完全一致 —— 空间龙+行业过滤留下的 16 笔交易，其所在日期的昨日涨停溢价都较高，温度计未提供额外区分度（阈值需在更长数据上重新评估，逻辑本身成立）。</li>
+<li><b>逐笔复盘是本轮最大产出</b>：16 笔中 9 笔止损单平均亏 <b class="red">-15.5%</b>（远超 -6% 止损线）——亏损共性 = <b>高位空间龙次日跳空低开，止损被直接穿透</b>（-32%/-22%/-21% 等均为跳空）。盈利单仅 +5.4%，盈亏比 0.39。</li>
+<li><b>复盘驱动的优化 = 连板高度上限</b>：回避 4 板以上高位股，<b class="green">-19.7% → -9.9%（连板≤4）</b>；只做 2-3 板 <b class="green">-5.9%</b>（7 笔，回撤 -6.6%，胜率 42.9%）—— 单调改善，证实"高位接盘"是主要亏损源。</li>
+<li><b>诚实边界</b>：最优配置仅 7 笔交易，样本过小；盈利单过薄（+1.4%）暴露卖出端"不板即走"过早兑现的问题，是 v5 的主攻点。</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>一、v4 策略规则（第六步迭代）</h2>
+<div class="rule"><b>⑥ 溢价温度计</b>：昨日涨停池今日平均涨幅 ≥ -2% 才出手（本样本冗余，保留为可选风控维度）。</div>
+<div class="rule"><b>⑦ 行业涨跌强度</b>：所属一级行业当日全部成分股平均涨幅 ≥ 1%（动态强度，替代静态家数的主导地位）。</div>
+<div class="rule"><b>⑧ 连板高度上限（复盘驱动）</b>：max_boards ≤ 3（只做 2-3 板），规避 4 板以上高位股次日跳空穿透止损。</div>
+<div class="src">实现：backend/app/strategy/builtin/limit_up_leader_v4.py；回测：backend/scripts/bt_limit_up_leader_v4.py。</div>
+</div>
+
+<div class="card">
+<h2>二、v4 全量对比</h2>
+<table>
+<tr><th>参数组合</th><th>总收益</th><th>最大回撤</th><th>胜率</th><th>交易数</th><th>平均单笔</th><th>平均持有(天)</th><th>盈亏比</th><th>拦截 买一字/卖跌停/挂起</th><th>备注</th></tr>
+<tr><td>v3最优(行业5+空间龙)(对照)</td><td>-25.9%</td><td>-28.1%</td>
+<td>42.9%</td><td>28</td><td>-5.21%</td>
+<td>1.5</td><td>0.35</td>
+<td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">上轮最优基线</span></td></tr>
+<tr><td>v4全开(行业5+强度1%+溢价-2%)</td><td>-19.7%</td><td>-19.7%</td>
+<td>37.5%</td><td>16</td><td>-6.69%</td>
+<td>1.4</td><td>0.39</td>
+<td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">v4 完整版</span></td></tr>
+<tr><td>v4关溢价(只开行业强度)</td><td>-19.7%</td><td>-19.7%</td>
+<td>37.5%</td><td>16</td><td>-6.69%</td>
+<td>1.4</td><td>0.39</td>
+<td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">验证溢价贡献</span></td></tr>
+<tr><td>v4关强度(只开溢价)</td><td>-25.9%</td><td>-28.1%</td>
+<td>42.9%</td><td>28</td><td>-5.21%</td>
+<td>1.5</td><td>0.35</td>
+<td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">验证行业强度贡献</span></td></tr>
+<tr><td>v4溢价更严(-1%)</td><td>-19.7%</td><td>-19.7%</td>
+<td>37.5%</td><td>16</td><td>-6.69%</td>
+<td>1.4</td><td>0.39</td>
+<td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">溢价门槛提高</span></td></tr>
+<tr><td>v4溢价更严(0%)</td><td>-19.7%</td><td>-19.7%</td>
+<td>37.5%</td><td>16</td><td>-6.69%</td>
+<td>1.4</td><td>0.39</td>
+<td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">昨日涨停池今日不亏才做</span></td></tr>
+<tr><td>v4 不限高度</td>
+<td>-19.7%</td><td>-19.7%</td><td>37.5%</td><td>16</td>
+<td>-6.69%</td><td>1.4</td><td>—</td><td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">基准</span></td></tr>
+<tr><td>v4 连板≤5</td>
+<td>-15.5%</td><td>-15.5%</td><td>30.0%</td><td>10</td>
+<td>-8.32%</td><td>1.4</td><td>—</td><td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">避开5板+高位</span></td></tr>
+<tr><td>v4 连板≤4</td>
+<td>-9.9%</td><td>-10.5%</td><td>37.5%</td><td>8</td>
+<td>-6.42%</td><td>1.4</td><td>—</td><td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">避开4板+高位</span></td></tr>
+<tr style="background:#f4f9f4"><td><b>v4 连板≤3</b></td>
+<td style="color:#12a150;font-weight:600">-5.9%</td><td>-6.6%</td><td>42.9%</td><td>7</td>
+<td>-4.32%</td><td>1.4</td><td>—</td><td>1 / 6 / 2</td>
+<td><span style="color:#6b7684">最优：只做2-3板</span></td></tr>
+</table>
+<div class="src">统一配置：max_positions=4、单票≤20%、总仓≤80%、佣金万2+印花税0.05%+滑点5bp、T+1 开盘成交。</div>
+</div>
+
+<div class="card">
+<h2>三、关键图表</h2>
+<div id="chEvolve" class="chart"></div>
+<div class="src">五轮迭代单调减亏路径（最优配置）。绿柱=亏损（样本区间全为负值）。</div>
+<div id="chMaxb" class="chart"></div>
+<div class="src">连板高度上限扫描（逐笔复盘驱动）：上限越低、亏损越小 —— 高位空间龙次日跳空是主要亏损源。</div>
+</div>
+
+<div class="card">
+<h2>四、逐笔复盘：亏损共性（16 笔全开版）</h2>
+<table>
+<tr><th>维度</th><th>发现</th></tr>
+<tr><td>退出方式分布</td><td>止损 9 笔（均 -15.5%）、不板即走 7 笔（均 +4.6%）—— 盈利全靠"不板即走"兑现，亏损全部来自止损穿透。</td></tr>
+<tr><td>亏损共性</td><td>前 5 大亏损（-32%/-22%/-21%/-20%/-12%）均为<b>次日跳空低开</b>，止损价形同虚设 —— T+1 开盘即低于止损线，按开盘价成交。高位空间龙（4 板以上）在逆风期接盘成本极高。</td></tr>
+<tr><td>盈利共性</td><td>盈利单平均仅 +5.4%（不板即走 7 笔均 +4.6%），无大肉单 —— 卖出端过早兑现，未吃到连板后续利润。</td></tr>
+<tr><td>结构结论</td><td>盈亏比 0.39 需要胜率 &gt;72% 才能打平，当前胜率 37.5% —— <b>必须降低单笔亏损（回避高位）或提高单笔盈利（卖出优化）</b>，二者至少成一。</td></tr>
+</table>
+<div class="src">数据来源：v4 全开版 16 笔交易明细（output/limit_up_leader_v4_trades.json）。</div>
+</div>
+
+<div class="warn">
+<h3>⚠️ 结论与 v5 方向</h3>
+<ul>
+<li><b>迭代成果</b>：-70%（v1）→ -35%（v2空间龙）→ -26%（v3行业）→ -19.7%（v4全开）→ <span class="red">-5.9%（v4+连板≤3）</span>；并完成一次完整的数据驱动优化闭环（回测→逐笔复盘→归因→参数修正）。</li>
+<li><b>当前最优参数</b>：行业≥5家 + 行业涨幅≥1% + 空间龙 + 连板≤3 + 情绪(80/3) + 不板即走 + 止损-6% → 全区间 -5.9% / 回撤 -6.6% / 胜率 42.9%，7 笔。</li>
+<li><b>v5 建议（优先级排序）</b>：① <b>卖出端优化</b>——盈利单 +1.4%~5.4% 太薄，测试"涨停持有+炸板即走"（T+1 盘中炸板信号，需分钟数据）或提高不板即走的时间粒度；② 数据延长至 2-3 年做完整周期验证 + walk-forward 样本外；③ 溢价温度计在更长样本上重新评估；④ 对亏损单按行业聚类（白银有色/金钼股份同属有色金属，高位行业联动退潮是共性）。</li>
+<li><b>当前建议</b>：样本区间为打板逆风周期，策略应空仓；连板≤3 + 行业合力的配置可作"顺风期出手框架"。</li>
+</ul>
+</div>
+
+<div class="disc">
+<b>免责声明</b>：以上内容基于公开数据和量化分析，仅供参考，不构成投资建议。市场有风险，投资需谨慎。任何投资决策应结合个人风险承受能力、资金状况和投资目标独立判断，必要时咨询持牌专业机构。过往表现不预示未来收益。
+</div>
+<div class="foot">报告生成：2026-08-13 ｜ 数据：TickFlow 本地 parquet + 同花顺行业快照 ｜ 回测引擎：backend/app/backtest（矩阵原生 + 组合撮合）</div>
+</div>
+
+<script>
+(function () {
+  var green = '#12a150', blue = '#2563eb', gray = '#8a94a6';
+
+  var evolve = [
+    { n: 'v1', v: -70.0 },
+    { n: 'v2 空间龙', v: -35.3 },
+    { n: 'v3 行业+空间龙', v: -25.9 },
+    { n: 'v4 全开', v: -19.7 },
+    { n: 'v4+连板≤3', v: -5.9 }
+  ];
+  echarts.init(document.getElementById('chEvolve')).setOption({
+    tooltip: { trigger: 'axis' },
+    grid: { left: 55, right: 20, top: 20, bottom: 40 },
+    xAxis: { type: 'category', data: evolve.map(function (d) { return d.n; }) },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%' } },
+    series: [{
+      type: 'bar', barWidth: '45%',
+      data: evolve.map(function (d) { return { value: d.v, itemStyle: { color: green } }; }),
+      label: { show: true, position: 'top', formatter: function (p) { return p.value + '%'; } }
+    }]
+  });
+
+  var mb = [
+    { n: '不限', v: -19.7 },
+    { n: '≤5板', v: -15.5 },
+    { n: '≤4板', v: -9.9 },
+    { n: '≤3板', v: -5.9 }
+  ];
+  echarts.init(document.getElementById('chMaxb')).setOption({
+    tooltip: { trigger: 'axis' },
+    grid: { left: 55, right: 20, top: 20, bottom: 40 },
+    xAxis: { type: 'category', data: mb.map(function (d) { return d.n; }) },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%' } },
+    series: [{
+      type: 'bar', barWidth: '45%',
+      data: mb.map(function (d) { return { value: d.v, itemStyle: { color: blue } }; }),
+      label: { show: true, position: 'top', formatter: function (p) { return p.value + '%'; } }
+    }]
+  });
+})();
+</script>
+</body>
+</html>

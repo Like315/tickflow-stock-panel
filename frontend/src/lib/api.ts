@@ -1275,6 +1275,75 @@ export interface FundRefreshResult {
   portfolio: FundPortfolio
 }
 
+// ===== 基金市场研究（基于历史净值 + 大盘趋势，不依赖持仓） =====
+export type FundMarketTier = '长期持有' | '减仓' | '可买入' | '观望'
+
+export interface FundMarketRegime {
+  regime: '上行' | '下行' | '震荡' | '未知'
+  label: string
+  as_of?: string | null
+  return_20d_pct?: number | null
+  return_60d_pct?: number | null
+  basis: string
+}
+
+export interface FundMarketIndex {
+  symbol: string
+  name: string
+  as_of?: string | null
+  close?: number | null
+  trend: string
+  return_20d_pct?: number | null
+  return_60d_pct?: number | null
+  max_drawdown_60d_pct?: number | null
+}
+
+export interface FundMarketRecommendation {
+  tier: FundMarketTier
+  score?: number | null
+  reasons: string[]
+  triggers: string[]
+  invalidation: string[]
+}
+
+export interface FundMarketFund {
+  code: string
+  name: string
+  category: string
+  fund_type?: string | null
+  company?: string | null
+  managers: string[]
+  nav_as_of?: string | null
+  held?: boolean
+  performance_pct: { '1m'?: number | null; '3m'?: number | null; '6m'?: number | null; '1y'?: number | null }
+  annualized_volatility_pct?: number | null
+  max_drawdown_1y_pct?: number | null
+  positive_day_ratio_pct?: number | null
+  sample_days?: number | null
+  alpha_6m_pct?: number | null
+  alpha_1y_pct?: number | null
+  correlation_6m?: number | null
+  beta_6m?: number | null
+  benchmark_note?: string | null
+  score?: number | null
+  recommendation: FundMarketRecommendation
+}
+
+export interface FundMarketResearchResult {
+  scope: 'fund_market'
+  as_of?: string | null
+  currency: 'CNY'
+  market_regime: FundMarketRegime
+  market_context: FundMarketIndex[]
+  benchmark: { symbol: string; name: string }
+  universe_count: number
+  held_count?: number
+  summary: Record<FundMarketTier, number>
+  funds: FundMarketFund[]
+  data_gaps: string[]
+  privacy: string
+}
+
 // ===== API surface =====
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
@@ -1312,6 +1381,11 @@ export const api = {
       method: 'DELETE',
     }),
   fundRefresh: () => request<FundRefreshResult>('/api/funds/refresh', { method: 'POST' }),
+  fundMarketResearchRun: (codes?: string[]) =>
+    request<FundMarketResearchResult>('/api/funds/research/run', {
+      method: 'POST',
+      body: JSON.stringify(codes?.length ? { codes } : {}),
+    }),
 
   researchAgentTerms: (q?: string) =>
     request<{ terms?: ResearchTerm[]; term?: ResearchTerm | null }>(
@@ -1342,7 +1416,7 @@ export const api = {
     request<ResearchAgentStatus>('/api/research-agent/status'),
   async *researchAgentChatStream(question: string, options: {
     symbol?: string
-    context?: 'general' | 'fund_portfolio' | 'fund'
+    context?: 'general' | 'fund_portfolio' | 'fund' | 'fund_market'
     fundCode?: string
   } = {}): AsyncGenerator<{
     type: 'meta' | 'delta' | 'error' | 'done'

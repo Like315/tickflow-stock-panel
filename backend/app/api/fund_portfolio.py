@@ -42,6 +42,10 @@ class ImportConfirmIn(BaseModel):
     positions: list[FundPositionWithCodeIn] = Field(min_length=1, max_length=200)
 
 
+class FundMarketResearchIn(BaseModel):
+    codes: list[str] | None = Field(default=None, max_length=50)
+
+
 def _service(request: Request) -> FundPortfolioService:
     service = getattr(request.app.state, "fund_portfolio_service", None)
     if service is None:
@@ -142,3 +146,23 @@ def delete_position(code: str, request: Request):
 @router.post("/refresh")
 async def refresh_quotes(request: Request):
     return await anyio.to_thread.run_sync(_service(request).refresh_quotes)
+
+
+@router.post("/research/run")
+async def run_fund_market_research(request: Request, body: FundMarketResearchIn | None = None):
+    """基于历史净值 + 大盘趋势的基金市场研究，不依赖本地持仓账本。
+
+    若本地账本存在持仓，服务会自动将其纳入研究范围并标记 held，
+    用于前端区分「我持有的」与「外部市场」。
+    """
+    service = getattr(request.app.state, "fund_market_research_service", None)
+    if service is None:
+        raise HTTPException(503, "基金市场研究服务尚未初始化")
+    codes = body.codes if body else None
+    try:
+        return await anyio.to_thread.run_sync(lambda: service.run_research(codes=codes))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("fund market research failed")
+        raise HTTPException(500, f"基金市场研究失败：{exc}") from exc

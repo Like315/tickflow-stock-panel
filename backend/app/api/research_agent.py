@@ -17,7 +17,7 @@ def _service(request: Request):
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     symbol: str | None = Field(default=None, max_length=32)
-    context: str = Field(default="general", pattern=r"^(general|fund_portfolio|fund)$")
+    context: str = Field(default="general", pattern=r"^(general|fund_portfolio|fund|fund_market)$")
     fund_code: str | None = Field(default=None, pattern=r"^\d{6}$")
 
     @model_validator(mode="after")

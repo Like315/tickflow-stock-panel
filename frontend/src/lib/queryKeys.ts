@@ -20,6 +20,7 @@ export const QK = {
   overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
   usMarketOverview: ['us-market-overview'] as const,
   fundPortfolio: ['fund-portfolio'] as const,
+  fundMarketResearch: ['fund-market-research'] as const,
   researchAgentStatus: ['research-agent', 'status'] as const,
   researchAgentLatest: ['research-agent', 'recommendations', 'latest'] as const,
   researchAgentRecommendations: ['research-agent', 'recommendations'] as const,

@@ -54,6 +54,40 @@ def _client(tmp_path: Path) -> TestClient:
     return TestClient(app)
 
 
+class FakeMarketResearchService:
+    def run_research(self, codes=None):
+        return {
+            "scope": "fund_market",
+            "as_of": "2026-08-12",
+            "funds": [{"code": codes[0] if codes else "110020", "recommendation": {"tier": "观望"}}],
+            "data_gaps": [],
+        }
+
+
+def _market_client() -> TestClient:
+    app = FastAPI()
+    app.state.fund_market_research_service = FakeMarketResearchService()
+    app.include_router(router)
+    return TestClient(app)
+
+
+def test_fund_market_research_run_works_without_positions() -> None:
+    client = _market_client()
+    response = client.post("/api/funds/research/run")
+    assert response.status_code == 200
+    assert response.json()["scope"] == "fund_market"
+
+    with_codes = client.post("/api/funds/research/run", json={"codes": ["000171"]})
+    assert with_codes.status_code == 200
+    assert with_codes.json()["funds"][0]["code"] == "000171"
+
+
+def test_fund_market_research_run_rejects_invalid_code(tmp_path: Path) -> None:
+    client = _client(tmp_path)  # 未装配 market service
+    response = client.post("/api/funds/research/run")
+    assert response.status_code == 503
+
+
 def test_csv_preview_does_not_write_until_confirmed(tmp_path: Path) -> None:
     client = _client(tmp_path)
     payload = "基金代码,基金名称,持有金额\n005827,易方达蓝筹精选混合,12345.67\n".encode()

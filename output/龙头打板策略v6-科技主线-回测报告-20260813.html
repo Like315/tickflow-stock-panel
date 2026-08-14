@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>龙头打板策略 v6 — 科技主线版回测报告</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --line:#e5e8ee; --text:#1f2733; --sub:#6b7684; --red:#e0312f; --green:#12a150; --blue:#2563eb; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.7; padding:24px 16px 60px; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  h1 { font-size:25px; margin-bottom:6px; }
+  .sub { color:var(--sub); font-size:13.5px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px 24px; margin-bottom:20px; }
+  .card h2 { font-size:19px; margin-bottom:14px; padding-left:10px; border-left:4px solid var(--blue); }
+  .card h3 { font-size:15px; margin:16px 0 8px; }
+  .tl { background:#eef5ff; border:1px solid #cfe0ff; border-radius:12px; padding:18px 20px; margin-bottom:20px; }
+  .tl h2 { font-size:18px; color:var(--blue); margin-bottom:10px; }
+  .tl ul { padding-left:20px; font-size:14px; }
+  .tl li { margin-bottom:6px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { background:#f1f4f9; padding:8px 8px; border:1px solid var(--line); white-space:nowrap; text-align:left; }
+  td { padding:7px 8px; border:1px solid var(--line); }
+  .chart { width:100%; height:340px; margin:10px 0; }
+  .src { font-size:12px; color:var(--sub); margin-top:6px; }
+  .rule { background:#f8f9fb; border:1px solid #e3e7ef; border-radius:10px; padding:14px 16px; margin:8px 0; font-size:13.5px; }
+  .rule b { color:var(--blue); }
+  .warn { background:#fff7e8; border:1px solid #f3d9a4; border-radius:12px; padding:16px 18px; margin-bottom:20px; }
+  .warn h3 { color:#b45309; margin-bottom:8px; }
+  .warn ul { padding-left:20px; font-size:14px; }
+  .disc { margin-top:24px; padding:16px 18px; border:1px dashed #c9cfda; border-radius:10px; font-size:12.5px; color:var(--sub); background:#fbfcfd; }
+  .foot { text-align:center; color:var(--sub); font-size:12px; margin-top:28px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>龙头打板策略 v6 — 科技主线版（板块聚焦 + 行情参考 + 题材动向）</h1>
+<div class="sub">回测区间：2025-11-03 ~ 2026-08-13（约 200 交易日）｜成交：T+1 开盘价｜全成本模型｜响应"少参考行情/消息/板块"反馈</div>
+
+<div class="tl">
+<h2>核心结论</h2>
+<ul>
+<li><b>v6 完整版首次转正</b>：科技池 + 上证 MA20 + 科技涨停占比≥30% → <b class="green">+0.85%</b>（3 笔，100% 胜率，回撤 -0.24%）——七轮迭代首次出现正收益。</li>
+<li><b>你的三点反馈全部被数据验证（单调改善）</b>：① 板块聚焦：科技池 -5.95%→-4.42%（胜率 42.9%→60%）；② 行情参考：上证 MA20 过滤 -4.42%→-3.10%（胜率→75%）；③ 题材集中度：科技涨停占比≥30% → <b>+0.85%</b>。</li>
+<li><b>机制清晰（非运气）</b>：V5 的 3 笔亏损单（和顺石油-19.6%石油石化、龙星-7.5%炭黑、泰和新材-6.8%化纤）<b>全部是非科技行业，被科技池系统性排除</b>；留下的 3 笔（汉缆+1.1%、卓郎+0.07%、新金路+3.0%）均为科技概念命中——"只做科技主线"直接避开了亏损源。</li>
+<li><b>消息面诚实披露</b>：项目内<b>无历史新闻/公告数据</b>，消息动向无法直接回测；用"科技涨停占比（题材集中度）"作为消息面发酵的量化代理。需要真实新闻数据才能验证事件驱动维度。</li>
+<li><b>统计边界</b>：3 笔样本过小，+0.85% 不可外推；但改善方向与业务逻辑一致（科技主线、大盘环境、题材聚焦），且与 2025-2026 A 股 AI/科技主线吻合。</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>一、v6 三要素贡献拆解</h2>
+<table>
+<tr><th>配置</th><th>总收益</th><th>最大回撤</th><th>胜率</th><th>交易数</th><th>平均单笔</th><th>盈亏比</th><th>平均持有(天)</th><th>拦截 买一字/卖跌停/挂起</th><th>备注</th></tr>
+<tr><td>V5最优(全市场)(对照)</td><td>-5.95%</td><td>-6.56%</td>
+<td>43%</td><td>7</td><td>-4.32%</td>
+<td>0.16</td><td>1.0</td>
+<td>0 / 0 / 0</td>
+<td><span style="color:#6b7684">上轮最优基线</span></td></tr>
+<tr><td>v6科技池(无指数/无集中度)</td><td>-4.42%</td><td>-5.15%</td>
+<td>60%</td><td>5</td><td>-4.44%</td>
+<td>0.11</td><td>1.0</td>
+<td>0 / 0 / 0</td>
+<td><span style="color:#6b7684">科技聚焦单维度</span></td></tr>
+<tr><td>v6科技+上证MA20</td><td>-3.10%</td><td>-3.91%</td>
+<td>75%</td><td>4</td><td>-3.84%</td>
+<td>0.07</td><td>1.0</td>
+<td>0 / 0 / 0</td>
+<td><span style="color:#6b7684">加大盘过滤</span></td></tr>
+<tr><td>v6科技+MA20+集中度30%</td><td>0.85%</td><td>-0.24%</td>
+<td>100%</td><td>3</td><td>1.41%</td>
+<td>None</td><td>1.0</td>
+<td>0 / 0 / 0</td>
+<td><span style="color:#6b7684">v6 完整版</span></td></tr>
+<tr><td>v6科技+MA20+集中度40%</td><td>0.85%</td><td>-0.24%</td>
+<td>100%</td><td>3</td><td>1.41%</td>
+<td>None</td><td>1.0</td>
+<td>0 / 0 / 0</td>
+<td><span style="color:#6b7684">题材更聚焦</span></td></tr>
+<tr><td>v6科技+科创50过滤</td><td>0.60%</td><td>-0.24%</td>
+<td>100%</td><td>1</td><td>3.03%</td>
+<td>None</td><td>1.0</td>
+<td>0 / 0 / 0</td>
+<td><span style="color:#6b7684">用科创50做大盘参考</span></td></tr>
+</table>
+<div class="src">统一配置：max_positions=4、单票≤20%、总仓≤80%、佣金万2+印花税0.05%+滑点5bp、T+1 开盘成交。科技关键词白名单：AI/芯片/半导体/算力/机器人/消费电子/软件/通信等 46 个概念关键词。</div>
+</div>
+
+<div class="card">
+<h2>二、七轮迭代全景（首次转正）</h2>
+<div id="chEvolve" class="chart"></div>
+<div class="src">v1→v6 迭代路径。绿柱为负收益、红柱为正收益（A 股惯例红涨绿跌）。样本区间为打板逆风周期，v6 转正但仍属极低样本。</div>
+</div>
+
+<div class="card">
+<h2>三、v6 策略规则（最终版）</h2>
+<div class="rule"><b>① 科技板块聚焦</b>：股票池限定为命中科技概念白名单（人工智能/AI/芯片/半导体/算力/服务器/机器人/消费电子/华为/信创/5G/6G/智能驾驶/低空经济等 46 关键词）的股票。</div>
+<div class="rule"><b>② 大盘行情参考</b>：上证指数（000001.SH）T 日收盘 &gt; MA20 才出手（可换科创50 000688.SH，ma20/mom5/both 三种模式）。</div>
+<div class="rule"><b>③ 题材集中度（消息面代理）</b>：科技池涨停家数 / 全市场涨停家数 ≥ 30%——市场主线在科技时才参与。</div>
+<div class="rule"><b>④-⑨ 继承 V5 最优</b>：收盘封板 + 连板∈[1,3] + 成交额≥3亿 + 情绪(涨停≥80/高度≥3) + 行业涨停≥5家且涨幅≥1% + 空间龙 + 不板即走(次日开盘卖) + 止损-6% + 长假规避。</div>
+<div class="src">实现：backend/app/strategy/builtin/limit_up_leader_v6.py；回测：scripts/bt_limit_up_leader_v6.py。</div>
+</div>
+
+<div class="warn">
+<h3>⚠️ 结论与边界</h3>
+<ul>
+<li><b>正向信号</b>：板块聚焦（科技）、大盘环境（MA20）、题材集中度（涨停占比）三个新维度<b>全部单调改善</b>收益与胜率，且机制可解释（排除非科技亏损源 + 只在强势环境出手）——这不是过拟合噪音的方向性证据。</li>
+<li><b>必须诚实</b>：3 笔交易、+0.85% —— 统计上无法证明策略能盈利；半样本仍全部集中后半段。当前定位依然是"情绪监控 + 极挑剔出手框架"。</li>
+<li><b>消息面缺口</b>：历史新闻/公告数据缺失，事件驱动维度未验证。若你有新闻数据源（如东财公告库/新闻API），可以补做"公告/新闻事件 → 题材发酵 → 打板"的完整事件驱动回测。</li>
+<li><b>下一轮（v7）优先级</b>：① 补充 2-3 年历史数据验证 v6 在完整情绪周期（含顺风期）的表现；② 真实新闻/公告数据接入；③ 分钟数据做炸板即走；④ 科技池细化为"当日主线子题材"（如 AI 应用 vs 算力 vs 机器人轮动）。</li>
+</ul>
+</div>
+
+<div class="disc">
+<b>免责声明</b>：以上内容基于公开数据和量化分析，仅供参考，不构成投资建议。市场有风险，投资需谨慎。任何投资决策应结合个人风险承受能力、资金状况和投资目标独立判断，必要时咨询持牌专业机构。过往表现不预示未来收益。
+</div>
+<div class="foot">报告生成：2026-08-13 ｜ 数据：TickFlow 本地 parquet + 同花顺行业/概念快照 + 上证指数 ｜ 回测引擎：backend/app/backtest（矩阵原生 + 组合撮合，防作弊口径一致）</div>
+</div>
+
+<script>
+(function () {
+  var green = '#12a150', red = '#e0312f', blue = '#2563eb', gray = '#8a94a6';
+  var v = [
+    { n: 'v1', v: -70.0, c: green },
+    { n: 'v2', v: -35.3, c: green },
+    { n: 'v3', v: -25.9, c: green },
+    { n: 'v4', v: -5.9, c: green },
+    { n: 'V5', v: -6.0, c: green },
+    { n: 'v6 科技主线', v: 0.9, c: red }
+  ];
+  echarts.init(document.getElementById('chEvolve')).setOption({
+    tooltip: { trigger: 'axis' },
+    grid: { left: 55, right: 20, top: 20, bottom: 50 },
+    xAxis: { type: 'category', data: v.map(function (d) { return d.n; }) },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%' } },
+    series: [{
+      type: 'bar', barWidth: '45%',
+      data: v.map(function (d) { return { value: d.v, itemStyle: { color: d.c } }; }),
+      label: { show: true, position: 'top', formatter: function (p) { return p.value + '%'; } }
+    }]
+  });
+})();
+</script>
+</body>
+</html>

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { FundImportDialog } from '@/components/funds/FundImportDialog'
 import { FundPositionDialog } from '@/components/funds/FundPositionDialog'
+import { FundMarketResearchPanel } from '@/components/funds/FundMarketResearchPanel'
 import { toast } from '@/components/Toast'
 import { api, type FundPosition } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
@@ -217,8 +218,48 @@ export function FundPortfolio() {
       </section>
 
       {summary.position_count > 0 && (
+        <section className="mt-3 overflow-hidden rounded-card border border-border bg-surface">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2.5">
+            <h2 className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-accent/10 text-accent"><ArrowUpRight className="h-3 w-3" /></span>
+              今日收益更新
+            </h2>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${hasIntradayEstimate ? 'bg-warning/10 text-warning' : 'bg-elevated text-muted'}`}>
+              {hasIntradayEstimate ? '盘中估算' : '官方净值日'}
+            </span>
+            <span className="inline-flex items-center gap-1 text-[10px] text-muted"><Clock3 className="h-3 w-3" />估值更新 {formatTime(data.quotes_refreshed_at)}</span>
+            <button type="button" disabled={refresh.isPending} onClick={() => refresh.mutate()} className="inline-flex items-center gap-1 rounded-btn border border-border bg-surface px-2 py-1 text-[10px] text-secondary hover:border-accent/40 hover:text-foreground disabled:opacity-50">
+              <RefreshCw className={`h-3 w-3 ${refresh.isPending ? 'animate-spin' : ''}`} />刷新今日收益
+            </button>
+            <span className="ml-auto text-right">
+              <span className="block text-[9px] text-muted">今日收益合计</span>
+              <span className={`block font-mono text-sm font-semibold ${changeClass(summary.total_day_profit)}`}>{money(summary.total_day_profit, true)}</span>
+            </span>
+          </div>
+          <ul className="divide-y divide-border/60">
+            {[...sortedPositions].sort((a, b) => Math.abs(b.day_profit ?? 0) - Math.abs(a.day_profit ?? 0)).map(position => (
+              <li key={position.code} className="flex items-center gap-3 px-4 py-2 text-xs hover:bg-elevated/35">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium text-foreground">{position.name || `基金 ${position.code}`}</div>
+                  <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] text-muted">
+                    <span>{position.code}</span>
+                    <span>{position.quote_status === 'estimate' ? '盘中估算' : position.quote_status === 'official' ? '净值日' : '未刷新'}</span>
+                    <span>{position.quote_time || position.official_nav_date || '--'}</span>
+                  </div>
+                </div>
+                <div className={`shrink-0 text-right font-mono font-semibold ${changeClass(position.day_profit)}`}>
+                  <div>{money(position.day_profit, true)}</div>
+                  <div className="mt-0.5 text-[10px]">{percent(position.estimated_change_pct)}</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {summary.position_count > 0 && (
         <section className="mt-3 flex flex-wrap items-center gap-2 border-y border-border bg-surface/45 px-3 py-2.5">
-          <span className="mr-1 inline-flex items-center gap-1.5 text-[10px] font-medium text-secondary"><ScanSearch className="h-3.5 w-3.5 text-purple-400" />基金 AI 研究</span>
+          <span className="mr-1 inline-flex items-center gap-1.5 text-[10px] font-medium text-secondary"><ScanSearch className="h-3.5 w-3.5 text-purple-400" />持仓体检（基于本地账本）</span>
           <button type="button" onClick={() => researchPortfolio('请对我的当前基金组合做一次完整体检，重点分析集中度、盈亏贡献、风险来源、数据缺口，并给出后续验证清单。')} className="rounded-btn border border-border bg-surface px-2.5 py-1.5 text-[10px] text-secondary hover:border-purple-500/35 hover:text-foreground">组合体检</button>
           <button type="button" onClick={() => researchPortfolio('请分析当前基金组合的收益来源：哪些持仓贡献最大，是否依赖少数基金，并说明支持证据和反向证据。')} className="rounded-btn border border-border bg-surface px-2.5 py-1.5 text-[10px] text-secondary hover:border-purple-500/35 hover:text-foreground">收益归因</button>
           <button type="button" onClick={() => researchPortfolio('请扫描当前基金组合风险，重点关注集中度、回撤、波动、净值时效和证据不足，不要给出确定性收益承诺。')} className="rounded-btn border border-border bg-surface px-2.5 py-1.5 text-[10px] text-secondary hover:border-purple-500/35 hover:text-foreground">风险扫描</button>
@@ -226,6 +267,8 @@ export function FundPortfolio() {
           <span className="ml-auto text-[9px] text-muted">使用本地持仓快照与公开净值，不上传支付宝登录信息</span>
         </section>
       )}
+
+      <FundMarketResearchPanel />
 
       {summary.position_count === 0 ? (
         <section className="mt-4 flex min-h-[420px] items-center justify-center border-y border-border bg-surface/50 px-6 text-center">

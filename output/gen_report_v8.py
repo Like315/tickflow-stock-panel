@@ -1,0 +1,127 @@
+# -*- coding: utf-8 -*-
+"""生成 v8 报告 HTML（科技轮动 + 小资金）。"""
+import json, io, sys
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+OUT = r"D:\MyTickFlowStockPanel\output"
+data = json.load(open(OUT + r"\limit_up_leader_v8_backtest.json", encoding="utf-8"))
+
+def sample_curve(rows, max_pts=60):
+    if not rows:
+        return []
+    n = len(rows)
+    step = max(1, n // max_pts)
+    out = [{"d": str(p["date"])[:10], "v": round(float(p["value"]) / 1_000_000.0, 4)} for p in rows[::step]]
+    if rows[-1] not in rows[::step]:
+        out.append({"d": str(rows[-1]["date"])[:10], "v": round(float(rows[-1]["value"]) / 1_000_000.0, 4)})
+    return out
+
+names = ["v6对照(全科技池,100万)", "v8轮动top1(100万)", "v8轮动any(100万)", "v8轮动top1+小资金10万+股价≤50", "v8轮动top1+小资金10万+股价≤100", "v8轮动top1+小资金20万+股价≤50"]
+def rows_html():
+    out_rows = []
+    for name in names:
+        r = data.get(name)
+        if not r or "error" in r:
+            continue
+        trades = r.get("trades") or []
+        wins = [t for t in trades if t.get("pnl_pct", 0) > 0]
+        ex = r.get("execution") or {}
+        hl = name.startswith("v6")
+        style = ' style="background:#f4f9f4"' if hl else ""
+        out_rows.append(f"""<tr{style}><td>{name}</td><td>{r['total_return']*100:.2f}%</td><td>{r['max_drawdown']*100:.2f}%</td>
+<td>{r['win_rate']*100:.0f}%</td><td>{r['n_trades']}</td><td>{r['avg_pnl']*100:.2f}%</td>
+<td>{r['final_equity']:,.0f}</td><td>{ex.get('buy_lot_size', 0)}</td></tr>""")
+    return "\n".join(out_rows)
+
+html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>龙头打板策略 v8 — 科技子题材轮动 + 小资金支持</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root {{ --bg:#f6f7f9; --card:#fff; --line:#e5e8ee; --text:#1f2733; --sub:#6b7684; --red:#e0312f; --green:#12a150; --blue:#2563eb; }}
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ background:var(--bg); color:var(--text); font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.7; padding:24px 16px 60px; }}
+  .wrap {{ max-width:1100px; margin:0 auto; }}
+  h1 {{ font-size:25px; margin-bottom:6px; }}
+  .sub {{ color:var(--sub); font-size:13.5px; margin-bottom:20px; }}
+  .card {{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px 24px; margin-bottom:20px; }}
+  .card h2 {{ font-size:19px; margin-bottom:14px; padding-left:10px; border-left:4px solid var(--blue); }}
+  .card h3 {{ font-size:15px; margin:16px 0 8px; }}
+  .tl {{ background:#eef5ff; border:1px solid #cfe0ff; border-radius:12px; padding:18px 20px; margin-bottom:20px; }}
+  .tl h2 {{ font-size:18px; color:var(--blue); margin-bottom:10px; }}
+  .tl ul {{ padding-left:20px; font-size:14px; }}
+  .tl li {{ margin-bottom:6px; }}
+  table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+  th {{ background:#f1f4f9; padding:8px 8px; border:1px solid var(--line); white-space:nowrap; text-align:left; }}
+  td {{ padding:7px 8px; border:1px solid var(--line); }}
+  .chart {{ width:100%; height:340px; margin:10px 0; }}
+  .src {{ font-size:12px; color:var(--sub); margin-top:6px; }}
+  .warn {{ background:#fff7e8; border:1px solid #f3d9a4; border-radius:12px; padding:16px 18px; margin-bottom:20px; }}
+  .warn h3 {{ color:#b45309; margin-bottom:8px; }}
+  .warn ul {{ padding-left:20px; font-size:14px; }}
+  .disc {{ margin-top:24px; padding:16px 18px; border:1px dashed #c9cfda; border-radius:10px; font-size:12.5px; color:var(--sub); background:#fbfcfd; }}
+  .foot {{ text-align:center; color:var(--sub); font-size:12px; margin-top:28px; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>龙头打板策略 v8 — 科技子题材轮动 + 小资金支持</h1>
+<div class="sub">回测区间：2025-11-03 ~ 2026-08-13｜成交：T+1 开盘价｜全成本模型</div>
+
+<div class="tl">
+<h2>核心结论</h2>
+<ul>
+<li><b>科技子题材轮动（top1）在逆风期被证伪</b>：只做当日最强子题材（AI算力/AI应用/半导体/机器人/消费电子/软件信创/低空经济）把交易从 3 笔扩到 20 笔，-7.96%（vs v6 +0.85%）——新增的 17 笔全在逆风期亏损，再次验证"<b>逆风期交易越多亏得越多</b>"。轮动跟随主线是打板的经典打法，但逆风期扩交易=扩亏损。</li>
+<li><b>any 模式无增量</b>：任一所属子题材达标即可 = 与 v6 完全一致（3 笔），因为 v6 的候选本来就属于达标子题材。</li>
+<li><b>小资金支持成立</b>：10 万 / 20 万资金 + 股价上限（50/100 元）均可正常回测，<b>无"买不起一手"事件</b>（buy_lot_size=0）——候选以低价股为主，2 万一仓可买 4-5 手；小资金结果与 100 万同比例（盈亏一致），资金量不改变策略本质。</li>
+<li><b>本轮结论</b>：v6（全科技池 + 极致挑剔，+0.85%）仍为最优；子题材轮动逻辑保留为<b>顺风期候选</b>（顺风期跟随当日最强题材可能更优，需顺风数据验证）。</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>一、v8 实验对比（6 组）</h2>
+<table>
+<tr><th>配置</th><th>总收益</th><th>最大回撤</th><th>胜率</th><th>交易数</th><th>平均单笔</th><th>期末资金</th><th>买不起一手</th></tr>
+{rows_html()}
+</table>
+<div class="src">统一：max_positions=4、单票≤20%、总仓≤80%、佣金万2+印花税0.05%+滑点5bp、T+1 开盘成交。子题材定义：AI算力/AI应用/半导体/机器人/消费电子/软件信创/低空经济（概念关键词映射，快照数据）。</div>
+</div>
+
+<div class="card">
+<h2>二、小资金支持机制</h2>
+<table>
+<tr><th style="width:220px">机制</th><th>说明</th></tr>
+<tr><td>股价上限 max_price</td><td>T 日收盘价 ≤ 上限才纳入候选（默认 50 元）：一手 100 股成本 ≤ 5000 元，10 万资金分 4 仓（每仓约 2 万）可买 4 手以上。</td></tr>
+<tr><td>整手约束</td><td>引擎按 100 股整数手撮合（shares=floor(alloc/price/100)*100），买不起一手自动跳过（buy_lot_size 计数）；本回测 0 次触发。</td></tr>
+<tr><td>资金量独立性</td><td>仓位按比例（max_exposure×权益），10 万与 100 万结果同比例——策略在小资金下行为一致。</td></tr>
+<tr><td>实盘注意</td><td>小资金单笔金额小，滑点/佣金占比相对更高（本回测已含 5bp 滑点 + 万2佣金 + 0.05%印花税）。</td></tr>
+</table>
+</div>
+
+<div class="warn">
+<h3>⚠️ 结论与边界</h3>
+<ul>
+<li><b>轮动证伪的意义</b>：v7 漏斗已证明"空间龙+连板≤3"收敛到极少数窗口是逆风期存活的关键；v8 子题材轮动试图在更多窗口出手，逆风期立刻被惩罚 —— 两者结论一致：<b>逆风期最优策略是空仓等待</b>。</li>
+<li><b>顺风期不可推断</b>：子题材轮动在顺风期（赚钱效应好、题材持续性强）可能显著优于全科技池——这是 v8 逻辑最可能的用武之地，但当前样本区间为逆风期，无法验证。需要 2-3 年数据或顺风期样本。</li>
+<li><b>小资金结论</b>：策略支持 10 万级资金运行；小资金更适合作为"策略验证/试错"资金量级（亏损绝对额小），不改变策略本质。</li>
+<li><b>分钟数据状态</b>：侦查完成——kline_minute 目录为空，但 tickflow API 具备分钟能力（kline.minute.by_symbol/batch，.env 有 API key），后端已有完整分钟成交支持（minute_fill/signal_next_minute）。下一步可下载回测区间关键股票的分钟数据，实现"炸板即走/盘中卖点"分钟级回测。</li>
+</ul>
+</div>
+
+<div class="disc">
+<b>免责声明</b>：以上内容基于公开数据和量化分析，仅供参考，不构成投资建议。市场有风险，投资需谨慎。任何投资决策应结合个人风险承受能力、资金状况和投资目标独立判断，必要时咨询持牌专业机构。过往表现不预示未来收益。
+</div>
+<div class="foot">报告生成：2026-08-14 ｜ 数据：TickFlow 本地 parquet + 同花顺行业/概念快照 + 上证指数 ｜ 回测引擎：backend/app/backtest</div>
+</div>
+</body>
+</html>
+"""
+
+out_path = OUT + r"\龙头打板策略v8-科技轮动-小资金-回测报告-20260814.html"
+with open(out_path, "w", encoding="utf-8") as f:
+    f.write(html)
+print("written:", out_path, "| bytes:", len(html.encode("utf-8")))

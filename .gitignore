@@ -32,6 +32,8 @@ frontend/dist/
 frontend/.vite/
 backend/static/
 backend/app/static/
+frontend/vite.config.js.timestamp-*.mjs
+frontend/_tmp_*
 
 # ===== IDE =====
 .idea/
@@ -72,6 +74,9 @@ frontend/tsconfig*.tsbuildinfo
 
 # ===== Data files =====
 *.xlsx
+
+# ===== WorkBuddy workspace data =====
+.workbuddy/
 
 # ===== Private deploy / 服务器私有信息(不开源) =====
 DEPLOY.md

@@ -18,6 +18,7 @@ from app.config import settings
 from app.jobs import daily_pipeline
 from app.services.fund_portfolio import FundPortfolioService
 from app.services.fund_research import FundResearchService
+from app.services.fund_market_research import FundMarketResearchService
 from app.services.quote_service import QuoteService
 from app.services.research_agent import ResearchAgentService
 from app.services.us_market_overview import UsMarketOverviewService
@@ -59,10 +60,15 @@ async def lifespan(app: FastAPI):
         repo=repo,
         global_market_service=app.state.us_market_overview_service,
     )
+    app.state.fund_market_research_service = FundMarketResearchService(
+        repo=repo,
+        portfolio_service=app.state.fund_portfolio_service,
+    )
     app.state.research_agent_service = ResearchAgentService(
         repo,
         store.data_dir,
         fund_research_service=app.state.fund_research_service,
+        fund_market_research_service=app.state.fund_market_research_service,
     )
     # 在接受回测请求前固定 managed generation，避免首批并发 worker 各自创建版本。
     if settings.backtest_matrix_disk_cache_enabled:
@@ -287,6 +293,9 @@ async def lifespan(app: FastAPI):
     fund_research_service = getattr(app.state, "fund_research_service", None)
     if fund_research_service:
         fund_research_service.close()
+    fund_market_research_service = getattr(app.state, "fund_market_research_service", None)
+    if fund_market_research_service:
+        fund_market_research_service.close()
     fund_portfolio_service = getattr(app.state, "fund_portfolio_service", None)
     if fund_portfolio_service:
         fund_portfolio_service.close()
