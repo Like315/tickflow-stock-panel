@@ -6,7 +6,7 @@
 
 与 financial_analyzer.py 的区别(刻意区分,非复用):
   - 角色:客观技术分析师(非 CFA 财务分析师)
-  - 数据源:K 线 + 技术指标为主,财务表为辅(财务分析以财务表为主)
+  - 数据源:K 线 + 技术指标为主,四张核心财务表为辅(财务分析以财务表为主)
   - 输出框架:技术面→基本面→财务面→消息面(四维),落点是客观技术状态与风险提示
     (财务分析的落点是财务质量评级)。注意:本服务不输出买卖建议、操作指令。
 
@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator
 
 import polars as pl
 
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 _KLINE_WINDOW = 90
 # 注入财务表的最近期数
 _MAX_PERIODS = 4
+_STOCK_FINANCIAL_TABLES = ("metrics", "income", "balance_sheet", "cash_flow")
 
 
 # ================================================================
@@ -77,13 +78,13 @@ def _clean_rows(df: pl.DataFrame, keep_cols: list[str]) -> list[dict]:
 
 
 def _load_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
-    """读取该标的核心财务指标 + 利润表(只取最有信息量的两张表)。
+    """读取该标的核心指标、利润表、资产负债表和现金流量表。
 
-    财务面只需要关键指标(ROE / 增速 / 毛利率 等),不需要把 4 张表全塞进上下文
-    (那是 financial_analyzer 的职责)。这里取轻量,留给技术面更多 token。
+    每张表只取最近四期,用于判断盈利与成长、负债结构及现金流质量。
+    历史股本不属于本节的必要输入,仍由独立财务分析页展示。
     """
     out: dict[str, list[dict]] = {}
-    for table in ("metrics", "income"):
+    for table in _STOCK_FINANCIAL_TABLES:
         df = get_financial_df(data_dir, table)
         if df.is_empty():
             out[table] = []
@@ -93,21 +94,17 @@ def _load_financials(data_dir: Path, symbol: str) -> dict[str, list[dict]]:
             out[table] = []
             continue
         if "period_end" in df.columns:
-            df = df.sort("period_end", descending=True).head(2)  # 只取最近 2 期
-        import math
-        rows = []
-        for rec in df.to_dicts():
-            clean = {}
-            for k, v in rec.items():
-                if k == "symbol":
-                    continue
-                if isinstance(v, float):
-                    clean[k] = None if not math.isfinite(v) else v
-                else:
-                    clean[k] = v
-            rows.append(clean)
-        out[table] = rows
+            df = df.sort("period_end", descending=True).head(_MAX_PERIODS)
+        out[table] = _clean_rows(df, [c for c in df.columns if c != "symbol"])
     return out
+
+
+def _summarize_financials(fins: dict[str, list[dict]]) -> str:
+    """概括各财务表的可用期数,让缺表状态在 prompt 中显式可见。"""
+    return " · ".join(
+        f"{table}: {len(fins.get(table, []))}期" if fins.get(table) else f"{table}: 无数据"
+        for table in _STOCK_FINANCIAL_TABLES
+    )
 
 
 # ================================================================
@@ -148,14 +145,18 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术�
 - **注意:只客观列出价位及其技术含义(如"此处为前期成交密集区"),不输出"建议买入区间""止损位""止盈位"等操作指令**
 
 ### 4. 🏭 基本面与财务面(辅助验证)
-简要点评(2-4 句,不展开长篇):
-- 盈利质量(ROE / 毛利率水平)、成长性(营收/利润增速)的客观水平
-- 与技术面的**客观对照**:好公司 + 技术面走坏 → 客观陈述两者背离;差公司 + 技术面强势 → 客观提示炒作可能性
-- 不下"逢低吸纳""规避"等结论
+用 4-7 句紧凑分析,每项只在有对应数据时下结论:
+- **盈利与成长**:ROE / ROA / 毛利率 / 净利率,营收与净利润同比,并利用最近多期数据说明改善或承压趋势
+- **资产与偿债**:资产负债率、货币资金与有息负债、流动资产与流动负债的匹配关系
+- **现金流质量**:经营现金流净额与净利润的匹配度,以及投资/筹资现金流的客观变化
+- **技术面对照**:陈述财务趋势与当前价量状态是相互印证还是背离,不把短期价格强弱归因于未提供的财务因素
+- 跨期对比必须保持报表口径一致;利润表与现金流量表的季度累计值优先做同期比较,不直接把不同长度报告期当作环比
+- 不做未提供行业数据的同业排名;不将缺失字段视为 0;不下"逢低吸纳""规避"等结论
 
 **当用户消息中标注了"该标的暂无财务数据"时**,本节请输出:
-> 📌 财务面分析能力正在接入中。当前未同步该标的的财务报表,基本面维度暂无法评估。
-> 技术面分析不依赖财务数据,以下结论依然有效;待财务数据同步后可补充本维度。
+> 📌 当前未读取到该标的的财务报表,盈利、偿债和现金流维度暂无法评估。请先在「财务分析」页同步相关财务表。
+
+**当用户消息标注该标的为指数或 ETF 时**,说明公司财务报表不适用于该类资产;由于本次未提供成分权重、基金净值或指数估值数据,本节不作评估。
 
 **绝对不要**在无数据时编造 ROE / 增速等数字。
 
@@ -219,23 +220,28 @@ def _build_user_prompt(
     if has_fin:
         parts.extend([
             "",
-            "以下是该标的最新财务数据(JSON,核心指标 + 利润表,金额单位为元):",
+            f"财务数据概览: {_summarize_financials(fins)}",
+            "以下是该标的最新财务数据(JSON,包含核心指标、利润表、资产负债表与现金流量表;"
+            "金额单位为元,比率类指标为百分点):",
+            "只能基于实际存在的表和字段分析;概览中标注无数据的维度应明确说明无法判断。",
             "```json",
             json.dumps(fins, ensure_ascii=False),
             "```",
         ])
-    elif asset_type == "index":
+    elif asset_type in {"index", "etf"}:
+        asset_label = "指数" if asset_type == "index" else "ETF"
         parts.extend([
             "",
-            "(该标的为指数: 无财务、股本与涨跌停数据。请按系统提示词第 4 节的说明,"
-            "在基本面/财务面维度给出\"接入中\"的友好提示,不要编造数据;"
+            f"(该标的为{asset_label}:公司财务报表不适用,且本次未提供成分权重、基金净值或指数估值数据。"
+            "请按系统提示词第 4 节说明不适用且无法评估,不要编造数据;"
             "消息面维度基于价量异动推断即可。)",
         ])
     else:
         parts.extend([
             "",
-            "(该标的暂无财务数据:当前为 Free 模式或尚未同步财务报表。"
-            "请按系统提示词第 4 节的说明,在基本面/财务面维度给出\"接入中\"的友好提示,不要编造数据。)",
+            "(该标的暂无财务数据:本地尚未同步该股票的财务报表。"
+            "请按系统提示词第 4 节说明盈利、偿债和现金流维度暂无法评估,"
+            "并提示可先在「财务分析」页同步相关财务表;不要编造数据。)",
         ])
 
     from app.services.ai_provider import sanitize_focus
@@ -325,7 +331,7 @@ async def analyze_stock_stream(
         ):
             yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
 
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.exception("AI stock analysis failed for %s: %s", symbol, e)
         yield json.dumps({"type": "error", "message": f"AI 分析失败: {e}"}, ensure_ascii=False)
         return
