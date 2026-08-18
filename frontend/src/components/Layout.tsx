@@ -10,7 +10,6 @@ import { AiReportBubble } from '@/components/financials/AiReportBubble'
 import { StockAnalysisHost } from '@/components/stock-analysis/StockAnalysisHost'
 import { StockAnalysisBubble } from '@/components/stock-analysis/StockAnalysisBubble'
 import { ResearchAgentHost } from '@/components/research-agent/ResearchAgentHost'
-import { ResearchAgentTopBar } from '@/components/research-agent/ResearchAgentTopBar'
 import {
   useCapabilities,
   useSettings,
@@ -41,6 +40,7 @@ import {
   Sparkles,
   Layers3,
   Landmark,
+  Crown,
   RadioTower,
   CheckCircle2,
   BookOpenCheck,
@@ -51,6 +51,7 @@ import {
   WifiOff,
   Globe2,
   WalletCards,
+  Bot,
 } from 'lucide-react'
 import { Logo } from './Logo'
 import { api, type IndexQuote } from '@/lib/api'
@@ -78,10 +79,12 @@ const nav = [
   { to: '/watchlist',  label: '自选',   icon: Star },
   { to: '/screener',   label: '策略',   icon: ScanSearch },
   { to: '/backtest',   label: '回测',   icon: History },
+  { to: '/investment-expert', label: 'AI 投资专家', icon: Bot, badge: 'paper' },
   { to: '/stock-analysis',    label: '个股分析', icon: TrendingUp },
   { to: '/limit-ladder', label: '连板梯队', icon: Flame },
   { to: '/concept-analysis', label: '概念分析', icon: Layers3 },
   { to: '/industry-analysis', label: '行业分析', icon: Landmark },
+  { to: '/leading-sector', label: '龙头板块', icon: Crown },
   { to: '/financials', label: '财务分析', icon: FileText },
   { to: '/monitor', label: '监控中心', icon: RadioTower },
   { to: '/regime', label: '市场环境', icon: Gauge, badge: 'beta' },
@@ -673,7 +676,6 @@ export function Layout() {
         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
         className="flex h-full min-w-0 flex-col overflow-hidden"
       >
-        <ResearchAgentTopBar />
         {streamStatus === 'reconnecting' && (
           <div
             role="status"

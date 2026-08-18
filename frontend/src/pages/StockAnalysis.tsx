@@ -1,6 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Sparkles, LineChart, History as HistoryIcon, Loader2, ExternalLink, Bell, AlertTriangle } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import {
+  Sparkles, LineChart, History as HistoryIcon, Loader2, ExternalLink, Bell,
+  AlertTriangle, ChevronDown, Search, Star,
+} from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { StockFinancialSearch } from '@/components/financials/StockFinancialSearch'
@@ -8,7 +12,7 @@ import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { LastStockChip } from '@/components/LastStockChip'
 import { AnalysisKChart, type PriceLevel, type LevelType } from '@/components/stock-analysis/AnalysisKChart'
 import { PriceAlertDialog } from '@/components/stock-analysis/PriceAlertDialog'
-import { api } from '@/lib/api'
+import { api, type WatchlistEntry } from '@/lib/api'
 import { useLastStock } from '@/lib/useLastStock'
 import { QK } from '@/lib/queryKeys'
 import { toast } from '@/components/Toast'
@@ -91,7 +95,8 @@ export function StockAnalysis() {
 
       <div className="w-full px-8 py-6 space-y-6">
         {/* 搜索栏 */}
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <WatchlistStockPicker selectedSymbol={symbol} onSelect={onSelect} />
           <div className="w-72">
             <StockFinancialSearch onSelect={onSelect} assetTypes="stock,index" />
           </div>
@@ -170,6 +175,182 @@ export function StockAnalysis() {
         />
       )}
     </>
+  )
+}
+
+function WatchlistStockPicker({
+  selectedSymbol,
+  onSelect,
+}: {
+  selectedSymbol: string
+  onSelect: (symbol: string, name: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [activeIndex, setActiveIndex] = useState(-1)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const watchlist = useQuery({
+    queryKey: QK.watchlist,
+    queryFn: api.watchlistList,
+    staleTime: 30_000,
+  })
+  const entries = watchlist.data?.symbols ?? []
+  const filteredEntries = useMemo(() => {
+    const keyword = query.trim().toLocaleLowerCase()
+    if (!keyword) return entries
+    return entries.filter(entry => (
+      entry.symbol.toLocaleLowerCase().includes(keyword)
+      || (entry.name ?? '').toLocaleLowerCase().includes(keyword)
+    ))
+  }, [entries, query])
+
+  useEffect(() => {
+    if (!open) return
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', closeOnOutsideClick)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  const selectEntry = (entry: WatchlistEntry) => {
+    onSelect(entry.symbol, entry.name?.trim() || entry.symbol)
+    setOpen(false)
+    setQuery('')
+    setActiveIndex(-1)
+  }
+
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setActiveIndex(index => Math.min(index + 1, filteredEntries.length - 1))
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setActiveIndex(index => Math.max(index - 1, 0))
+    } else if (event.key === 'Enter' && filteredEntries.length > 0) {
+      event.preventDefault()
+      selectEntry(filteredEntries[activeIndex >= 0 ? activeIndex : 0])
+    }
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(value => !value)
+          setActiveIndex(-1)
+        }}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls="stock-analysis-watchlist"
+        className="flex h-11 min-w-40 items-center gap-2 rounded-card border border-border bg-surface px-3 text-sm text-foreground transition-colors hover:border-sky-400/35 hover:bg-elevated"
+      >
+        <Star className="h-4 w-4 shrink-0 text-amber-400" />
+        <span className="font-medium">从自选股选择</span>
+        {!watchlist.isLoading && (
+          <span className="rounded-md bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-muted">
+            {entries.length}
+          </span>
+        )}
+        <ChevronDown className={`ml-auto h-3.5 w-3.5 text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div
+          id="stock-analysis-watchlist"
+          role="listbox"
+          aria-label="自选股列表"
+          className="absolute left-0 top-full z-50 mt-1.5 w-80 max-w-[calc(100vw-3rem)] overflow-hidden rounded-card border border-border bg-base shadow-xl"
+        >
+          {entries.length > 0 && (
+            <div className="border-b border-border/60 p-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+                <input
+                  autoFocus
+                  value={query}
+                  onChange={event => {
+                    setQuery(event.target.value)
+                    setActiveIndex(-1)
+                  }}
+                  onKeyDown={handleSearchKeyDown}
+                  placeholder="搜索自选股名称或代码"
+                  className="h-9 w-full rounded-lg border border-border/60 bg-surface pl-8 pr-3 text-xs text-foreground outline-none placeholder:text-muted focus:border-sky-400/45"
+                />
+              </div>
+            </div>
+          )}
+
+          {watchlist.isLoading ? (
+            <div className="flex items-center justify-center gap-2 px-4 py-10 text-xs text-muted">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />正在加载自选股…
+            </div>
+          ) : watchlist.isError ? (
+            <div className="px-4 py-8 text-center">
+              <p className="text-xs text-muted">自选股加载失败</p>
+              <button
+                type="button"
+                onClick={() => watchlist.refetch()}
+                className="mt-2 text-xs text-sky-400 hover:text-sky-300"
+              >
+                重新加载
+              </button>
+            </div>
+          ) : entries.length === 0 ? (
+            <div className="px-4 py-8 text-center">
+              <p className="text-xs text-muted">自选股列表为空</p>
+              <Link to="/watchlist" className="mt-2 inline-block text-xs text-sky-400 hover:text-sky-300">
+                前往自选页添加
+              </Link>
+            </div>
+          ) : filteredEntries.length === 0 ? (
+            <div className="px-4 py-8 text-center text-xs text-muted">没有匹配的自选股</div>
+          ) : (
+            <div className="max-h-72 overflow-y-auto p-1.5">
+              {filteredEntries.map((entry, index) => {
+                const selected = entry.symbol === selectedSymbol
+                return (
+                  <button
+                    key={entry.symbol}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    onClick={() => selectEntry(entry)}
+                    className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${
+                      selected
+                        ? 'bg-sky-500/12 text-sky-300'
+                        : index === activeIndex
+                          ? 'bg-elevated text-foreground'
+                          : 'text-secondary hover:bg-elevated hover:text-foreground'
+                    }`}
+                  >
+                    <Star className={`h-3.5 w-3.5 shrink-0 text-amber-400 ${selected ? 'fill-current' : ''}`} />
+                    <span className="min-w-0 flex-1 truncate text-sm">{entry.name || entry.symbol}</span>
+                    <span className="shrink-0 font-mono text-[10px] text-muted">{entry.symbol}</span>
+                    {selected && <span className="shrink-0 text-[10px] text-sky-400">当前</span>}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {entries.length > 0 && (
+            <div className="border-t border-border/60 px-3 py-2 text-[10px] text-muted">
+              {query.trim() ? `找到 ${filteredEntries.length} 只` : `共 ${entries.length} 只自选股`}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -95,13 +95,15 @@ def _load_concept_map_df(repo, kind: str = "concept") -> tuple[pl.DataFrame, int
         ).unique()
     else:
         map_df = pl.DataFrame(schema={"_sym_up": pl.Utf8, kind: pl.Utf8})
-    _map_cache[kind] = map_df
+    # 缓存完整元组 (map_df, member_count): 缓存命中时直接返回元组,
+    # 否则调用方 `map_df, member_count = ...` 会把 DataFrame 按列拆成两个 Series。
+    _map_cache[kind] = (map_df, len(members_seen))
     _map_ts[kind] = now
     return map_df, len(members_seen)
 
 
-# 维度映射缓存: {kind: (map_df, count)}。按 kind 隔离(概念/行业分别缓存)。
-_map_cache: dict[str, pl.DataFrame] = {}
+# 维度映射缓存: {kind: (map_df, member_count)}。按 kind 隔离(概念/行业分别缓存)。
+_map_cache: dict[str, tuple[pl.DataFrame, int]] = {}
 _map_ts: dict[str, float] = {}
 
 

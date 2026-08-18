@@ -909,6 +909,8 @@ export function StrategyBacktest() {
   const [selectedStrategy, setSelectedStrategy] = useState<string | null>(saved?.selectedStrategy ?? null)
   const [strategyGroup, setStrategyGroup] = useState<StrategyGroup>('all')
   const [symbols, setSymbols] = useState(saved?.symbols ?? '')
+  const [sectorKind, setSectorKind] = useState<'concept' | 'industry'>('concept')
+  const [sectorName, setSectorName] = useState('')
   const [assetType, setAssetType] = useState<'stock' | 'etf'>(saved?.assetType ?? 'stock')
   const [start, setStart] = useState(saved?.start ?? THREE_MONTHS_AGO)
   const [end, setEnd] = useState(saved?.end ?? TODAY)
@@ -963,6 +965,13 @@ export function StrategyBacktest() {
   const strategies = useQuery({
     queryKey: QK.screenerStrategies(assetType),
     queryFn: () => api.screenerStrategies(assetType),
+  })
+
+  const sectorOptions = useQuery({
+    queryKey: QK.leadingSectors(12, sectorKind, sectorKind === 'industry' ? 2 : undefined),
+    queryFn: () => api.leadingSectors(12, sectorKind, sectorKind === 'industry' ? 2 : undefined, 100),
+    enabled: assetType === 'stock',
+    staleTime: 60_000,
   })
 
   const strategyList = useMemo(() => strategies.data?.presets ?? [], [strategies.data])
@@ -1121,6 +1130,9 @@ export function StrategyBacktest() {
             ...(regimeMinScore !== '' ? { min_score: Number(regimeMinScore) } : {}),
           }
         : null,
+      sector_kind: assetType === 'stock' && sectorName ? sectorKind : null,
+      sector_name: assetType === 'stock' && sectorName ? sectorName : null,
+      sector_level: assetType === 'stock' && sectorName && sectorKind === 'industry' ? 2 : null,
     })
   }
 
@@ -2424,6 +2436,31 @@ export function StrategyBacktest() {
                     <span className="text-[11px] text-muted/70">ETF 仅技术类策略,读 ETF enriched</span>
                   </div>
                   <StockPoolPicker value={symbols} onChange={setSymbols} assetType={assetType} />
+                  {assetType === 'stock' && (
+                    <div className="grid gap-2 rounded-lg border border-border bg-base/40 p-3 sm:grid-cols-[8rem_1fr]">
+                      <select
+                        value={sectorKind}
+                        onChange={e => { setSectorKind(e.target.value as 'concept' | 'industry'); setSectorName('') }}
+                        className="h-9 rounded-btn border border-border bg-base px-2 text-xs text-foreground"
+                      >
+                        <option value="concept">概念板块</option>
+                        <option value="industry">二级行业</option>
+                      </select>
+                      <select
+                        value={sectorName}
+                        onChange={e => setSectorName(e.target.value)}
+                        className="h-9 rounded-btn border border-border bg-base px-2 text-xs text-foreground"
+                      >
+                        <option value="">不限定板块</option>
+                        {(sectorOptions.data?.sectors ?? []).map(sector => (
+                          <option key={sector.name} value={sector.name}>{sector.name}（{sector.count}只）</option>
+                        ))}
+                      </select>
+                      <div className="text-[11px] text-muted sm:col-span-2">
+                        选择后仅回测该板块成分；若同时设置股票池，则取两者交集。
+                      </div>
+                    </div>
+                  )}
                   <div className="text-[11px] leading-5 text-muted">默认全市场回测，由基础过滤、策略条件和买卖触发器筛选；需要单票调试或自选池回测时再限定股票池。</div>
                 </ConfigSection>
               )}

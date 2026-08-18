@@ -206,47 +206,53 @@ def _find_free_port(start: int, count: int = _PORT_PROBE_RANGE) -> int:
     return start
 
 
-def _run_uvmicorn(port: int, ready_event: threading.Event) -> None:
+def _run_uvmicorn(
+    port: int,
+    ready_event: threading.Event,
+    startup_error: list[str] | None = None,
+) -> None:
     """后台线程: 启动 uvicorn 服务。ready_event 在线程退出时置位 (通知主线程)。"""
-    import uvicorn
-
     try:
+        import uvicorn
+
         # 延迟 import app, 确保配置层已就绪 (frozen 检测在 config.py 导入时完成)
         # 放进 try: app.main 模块导入 (含 app.api.* 一长串 import) 若失败,
-        # 异常必须落到 except 记录, 否则主线程只看到「后端超时」而查无 traceback。
+        # 异常必须落到 except 记录, 否则主线程只能看到启动失败而查无 traceback。
         from app.main import app
     except Exception:
+        if startup_error is not None:
+            startup_error.append(traceback.format_exc())
         logger.exception("后端模块导入失败 (app.main 或其依赖)")
         ready_event.set()
         return
 
-    config = uvicorn.Config(
-        app,
-        host="127.0.0.1",  # 仅本机, 不暴露外网 (桌面版无需远程访问)
-        port=port,
-        log_level="info",
-        access_log=False,    # 桌面版不需要访问日志
-        loop="auto",
-    )
-    server = uvicorn.Server(config)
-
-    # 线程结束时通知主线程 (无论正常退出还是异常)
-    def _signal_done(*exc):
-        ready_event.set()
-    server.config.callback_notify = None  # 不用 notify 机制
-
     try:
+        config = uvicorn.Config(
+            app,
+            host="127.0.0.1",  # 仅本机, 不暴露外网 (桌面版无需远程访问)
+            port=port,
+            log_level="info",
+            access_log=False,    # 桌面版不需要访问日志
+            loop="auto",
+        )
+        server = uvicorn.Server(config)
+        server.config.callback_notify = None  # 不用 notify 机制
         server.run()
     except Exception:
+        if startup_error is not None:
+            startup_error.append(traceback.format_exc())
         # server.run() 内部跑 lifespan 启动链, 任一步抛异常都会冒到这里。
-        # 不捕获则线程静默死亡, 主线程 _wait_for_server 傻等满 60s 后报「超时」,
-        # 真正的崩溃原因 (如某个原生库加载失败 / 缺 hidden import) 永远看不到。
+        # 不捕获则线程静默死亡, 主线程只能看到启动失败而查不到真正原因。
         logger.exception("uvicorn 后端启动/运行失败")
     finally:
         ready_event.set()
 
 
-def _wait_for_server(port: int, timeout: float = 60.0) -> bool:
+def _wait_for_server(
+    port: int,
+    timeout: float = 60.0,
+    ready_event: threading.Event | None = None,
+) -> bool:
     """轮询 health 接口直到后端就绪或超时。
 
     比 monkey-patch uvicorn 内部方法更健壮, 不依赖版本内部实现。
@@ -257,6 +263,8 @@ def _wait_for_server(port: int, timeout: float = 60.0) -> bool:
     url = f"http://127.0.0.1:{port}/health"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if ready_event is not None and ready_event.is_set():
+            return False
         try:
             with urllib.request.urlopen(url, timeout=2) as r:
                 if r.status == 200:
@@ -313,17 +321,19 @@ def main() -> int:
 
         # 后台线程起 uvicorn
         ready = threading.Event()
+        startup_error: list[str] = []
         server_thread = threading.Thread(
-            target=_run_uvmicorn, args=(port, ready), daemon=True,
+            target=_run_uvmicorn, args=(port, ready, startup_error), daemon=True,
             name="uvicorn",
         )
         server_thread.start()
 
         # 轮询 health 接口等后端就绪 (含 lifespan 初始化, 最多 60s)
-        if not _wait_for_server(port, timeout=60.0):
-            logger.error("后端启动超时, 桌面版退出")
-            _release_single_instance()
-            return 1
+        if not _wait_for_server(port, timeout=60.0, ready_event=ready):
+            logger.error("后端启动失败或超时, 桌面版退出")
+            if startup_error:
+                raise RuntimeError("后端服务启动失败:\n" + startup_error[0])
+            raise TimeoutError("后端服务未能在 60 秒内就绪")
 
         url = f"http://127.0.0.1:{port}"
         logger.info("打开桌面窗口: %s", url)

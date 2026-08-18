@@ -1,6 +1,8 @@
 """Normalize provider responses into internal Polars schemas."""
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import polars as pl
 
 from app.indicators.pipeline import filter_halt_days
@@ -8,6 +10,12 @@ from app.indicators.pipeline import filter_halt_days
 DAILY_COLS = ["symbol", "date", "open", "high", "low", "close", "volume", "amount", "quote_ts"]
 ADJ_FACTOR_COLS = ["symbol", "trade_date", "ex_factor"]
 INSTRUMENT_COLS = ["symbol", "name", "code", "exchange", "asset_type", "source"]
+MINUTE_COLS = [
+    "symbol", "asset_type", "source", "datetime", "received_at", "freq",
+    "open", "high", "low", "close",
+    "raw_open", "raw_high", "raw_low", "raw_close",
+    "volume", "amount",
+]
 
 
 def to_polars(data) -> pl.DataFrame:
@@ -80,6 +88,101 @@ def normalize_adj_factors(data, source: str = "tickflow") -> pl.DataFrame:  # no
         df = df.with_columns(pl.col("ex_factor").cast(pl.Float64, strict=False))
     keep = [c for c in ADJ_FACTOR_COLS if c in df.columns]
     return df.select(keep).drop_nulls() if len(keep) == len(ADJ_FACTOR_COLS) else pl.DataFrame()
+
+
+def normalize_minute(
+    data,
+    *,
+    default_symbol: str | None = None,
+    asset_type: str = "stock",
+    source: str = "tickflow",
+    freq: str = "1m",
+    received_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Normalize minute bars and preserve raw execution prices.
+
+    Provider minute data is requested unadjusted.  The generic OHLC aliases are
+    intentionally kept equal to the raw values here; callers may derive adjusted
+    feature prices separately, while execution and price-limit checks always use
+    the ``raw_*`` columns.
+    """
+    df = to_polars(data)
+    if df.is_empty():
+        return df
+    rename_map = {
+        "ts_code": "symbol",
+        "trade_time": "datetime",
+        "trade_date": "datetime",
+        "vol": "volume",
+        "amt": "amount",
+    }
+    df = df.rename({key: value for key, value in rename_map.items() if key in df.columns})
+    if "symbol" not in df.columns and default_symbol:
+        df = df.with_columns(pl.lit(default_symbol).alias("symbol"))
+    if "datetime" not in df.columns and "timestamp" in df.columns:
+        df = df.with_columns(
+            pl.from_epoch(pl.col("timestamp").cast(pl.Int64), time_unit="ms")
+            .dt.replace_time_zone("UTC")
+            .dt.convert_time_zone("Asia/Shanghai")
+            .dt.replace_time_zone(None)
+            .alias("datetime")
+        )
+    elif "datetime" in df.columns:
+        dtype = df.schema["datetime"]
+        if dtype in {pl.Int64, pl.Int32, pl.UInt64, pl.UInt32, pl.Float64, pl.Float32}:
+            df = df.with_columns(
+                pl.from_epoch(pl.col("datetime").cast(pl.Int64), time_unit="ms")
+                .dt.replace_time_zone("UTC")
+                .dt.convert_time_zone("Asia/Shanghai")
+                .dt.replace_time_zone(None)
+                .alias("datetime")
+            )
+        elif isinstance(dtype, pl.Datetime) and dtype.time_zone is not None:
+            df = df.with_columns(
+                pl.col("datetime")
+                .dt.convert_time_zone("Asia/Shanghai")
+                .dt.replace_time_zone(None)
+                .cast(pl.Datetime("us"))
+            )
+        else:
+            df = df.with_columns(pl.col("datetime").cast(pl.Datetime("us"), strict=False))
+    if "symbol" not in df.columns or "datetime" not in df.columns:
+        return pl.DataFrame()
+
+    for column in ("open", "high", "low", "close", "volume", "amount"):
+        if column not in df.columns:
+            return pl.DataFrame()
+        df = df.with_columns(pl.col(column).cast(pl.Float64, strict=False))
+    for column in ("open", "high", "low", "close"):
+        raw_column = f"raw_{column}"
+        if raw_column in df.columns:
+            df = df.with_columns(pl.col(raw_column).cast(pl.Float64, strict=False))
+        else:
+            df = df.with_columns(pl.col(column).alias(raw_column))
+
+    received = received_at or datetime.now(UTC)
+    df = df.with_columns(
+        pl.lit(asset_type).alias("asset_type"),
+        pl.lit(source).alias("source"),
+        pl.lit(freq).alias("freq"),
+        pl.lit(received).cast(pl.Datetime("us", "UTC")).alias("received_at"),
+    ).filter(
+        pl.col("symbol").is_not_null()
+        & pl.col("datetime").is_not_null()
+        & (pl.col("raw_open") > 0)
+        & (pl.col("raw_high") > 0)
+        & (pl.col("raw_low") > 0)
+        & (pl.col("raw_close") > 0)
+        & (pl.col("volume") >= 0)
+        & (pl.col("amount") >= 0)
+    )
+    if df.is_empty():
+        return df
+    return (
+        df.select(MINUTE_COLS)
+        .unique(subset=["symbol", "datetime"], keep="last")
+        .sort(["datetime", "symbol"])
+    )
 
 
 def normalize_instruments(rows: list[dict], asset_type: str, source: str = "tickflow") -> pl.DataFrame:

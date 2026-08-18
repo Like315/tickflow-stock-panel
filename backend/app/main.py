@@ -12,13 +12,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.api import analysis, auth as auth_api, backtest, data, ext_data, financials, fund_portfolio, indices, intraday, kline, market_recap, monitor_rules, alerts, overview, pipeline, regime, research_agent, rps, screener, settings as settings_api, signals, stock_analysis, strategy, us_market, watchlist
+from app.api import analysis, auth as auth_api, backtest, data, ext_data, financials, fund_portfolio, indices, intraday, investment_expert, kline, leading_sectors, market_recap, monitor_rules, alerts, overview, pipeline, regime, research_agent, rps, screener, settings as settings_api, signals, stock_analysis, strategy, us_market, watchlist
 from app.api.routes import router as core_router
 from app.config import settings
 from app.jobs import daily_pipeline
 from app.services.fund_portfolio import FundPortfolioService
 from app.services.fund_research import FundResearchService
 from app.services.fund_market_research import FundMarketResearchService
+from app.services.investment_expert import InvestmentExpertService
 from app.services.quote_service import QuoteService
 from app.services.research_agent import ResearchAgentService
 from app.services.us_market_overview import UsMarketOverviewService
@@ -182,6 +183,18 @@ async def lifespan(app: FastAPI):
     app.state.strategy_engine = strategy_engine
     logger.info("strategy engine loaded: %d strategies", len(strategy_engine.list_strategies()))
 
+    # AI 投资专家仅运行模拟盘。服务启动时恢复已持久化的策略、组合与任务状态,
+    # 是否自动盯盘由用户设置持久化控制, 默认关闭。
+    investment_expert_service = InvestmentExpertService(
+        repo,
+        store.data_dir,
+        capset=capset,
+        strategy_engine=strategy_engine,
+        screener_service=_screener_svc,
+    )
+    app.state.investment_expert_service = investment_expert_service
+    investment_expert_service.boot_check()
+
     matrix_prewarm_lock = threading.Lock()
     matrix_prewarm_running = False
 
@@ -299,6 +312,9 @@ async def lifespan(app: FastAPI):
     fund_portfolio_service = getattr(app.state, "fund_portfolio_service", None)
     if fund_portfolio_service:
         fund_portfolio_service.close()
+    investment_expert_service = getattr(app.state, "investment_expert_service", None)
+    if investment_expert_service:
+        investment_expert_service.close()
     logger.info("shutdown")
 
 
@@ -393,6 +409,8 @@ app.include_router(signals.router)
 app.include_router(monitor_rules.router)
 app.include_router(alerts.router)
 app.include_router(rps.router)
+app.include_router(leading_sectors.router)
+app.include_router(investment_expert.router)
 
 
 # 能力门控异常 → 403(而非默认 500)

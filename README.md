@@ -58,6 +58,7 @@
 | 📡 **监控中心**   | 四类监控(策略/个股信号/价格/异动),多条件 AND/OR + 语音播报 + 飞书推送  | [features.md](./docs/features.md) |
 | 📈 **个股分析**   | 9 类关键价位 + AI 四维分析(技术/基本面/财务/消息面)                    | [features.md](./docs/features.md) |
 | 🤖 **研究 Agent** | 术语解惑 + 全 A 股多维研究候选 + 最多 5 只每日关注 + 5/10/20 日复盘   | [features.md](./docs/features.md) |
+| 🧠 **AI 投资专家** | TickFlow 分钟级模拟盘 + 三年样本训练 + 防作弊撮合 + 每日门控进化     | [investment-expert-agent.md](./docs/investment-expert-agent.md) |
 | 🏆 **连板梯队**   | 连板层级统计 + 概念涨幅轮动 + 盘后 AI 复盘 + 炸板/翘板预警             | [features.md](./docs/features.md) |
 | 🧰 **数据扩展**   | TickFlow 多源 + 第三方接入(接口/推送/CSV/JSON)同台分析                   | [features.md](./docs/features.md) |
 
@@ -179,7 +180,8 @@ CODEX_CLI_VERSION=0.144.3 docker compose up --build
 
 镜像已内置 **stock-sdk** 数据源插件(Node 运行时 + 依赖),开箱即用。
 
-> 📖 Docker 进阶、GitHub Actions 自构建、老 CPU 兼容、访问密码设置等见 [docs/deployment.md](./docs/deployment.md)。
+> 📖 Docker 进阶、老 CPU 兼容、访问密码设置等见 [docs/deployment.md](./docs/deployment.md)；
+> 家庭网络免费公网访问见 [docs/public-access.md](./docs/public-access.md)。
 
 ### 跑起来后的第一次使用
 
@@ -236,10 +238,13 @@ PORT=3018                      # 服务端口
 | 文档                                                                                               | 内容                                                                 |
 | :------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------- |
 | [docs/deployment.md](./docs/deployment.md)                                                         | 部署方式(Dev / Docker / GH Actions)、老 CPU 兼容、更新代码、访问密码 |
+| [docs/public-access.md](./docs/public-access.md)                                                   | Tailscale Funnel 免费公网访问与单密码保护                            |
+| [docs/public-access-cloudflare.md](./docs/public-access-cloudflare.md)                             | Cloudflare 命名 Tunnel、自定义域名与 Docker 侧车部署                  |
 | [docs/configuration.md](./docs/configuration.md)                                                   | 所有 `.env` 配置项详解(数据源、AI、服务、密码、数据目录)             |
 | [docs/features.md](./docs/features.md)                                                             | 各功能模块详细说明(选股/指标/回测/监控/个股分析/数据扩展)            |
 | [docs/custom-data-source.md](./docs/custom-data-source.md)                                         | 自定义数据源接入、YAML 配置与 mock 联调示例                         |
 | [docs/strategy.md](./docs/strategy.md)                                                             | 策略体系(18 内置策略 + 三种扩展方式 + 文件结构)                      |
+| [docs/investment-expert-agent.md](./docs/investment-expert-agent.md)                               | AI 投资专家的数据、训练、模拟撮合、风控、进化与运维说明             |
 | [backend/app/strategy/prompts/strategy-guide.md](./backend/app/strategy/prompts/strategy-guide.md) | 策略开发完整规范(AI 生成与手写)                                      |
 
 fork同时请点个star哦,欢迎 Issue 和 PR。

@@ -1,0 +1,22 @@
+# Cloudflare named Tunnel overlay.
+# The connector reaches the app through Docker's private network; no extra host
+# port is opened for the tunnel itself. Keep the token in the ignored
+# .env.cloudflare.local file, never in the application .env.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: TickFlow_Cloudflare_Tunnel
+    command: tunnel --no-autoupdate --loglevel info --metrics 0.0.0.0:2000 run
+    env_file:
+      - .env.cloudflare.local
+    depends_on:
+      app:
+        condition: service_started
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

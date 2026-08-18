@@ -25,6 +25,9 @@ export const QK = {
   researchAgentLatest: ['research-agent', 'recommendations', 'latest'] as const,
   researchAgentRecommendations: ['research-agent', 'recommendations'] as const,
   researchAgentReviews: (batchId?: string) => ['research-agent', 'reviews', batchId ?? 'all'] as const,
+  investmentExpertStatus: ['investment-expert', 'status'] as const,
+  investmentExpertSessions: ['investment-expert', 'sessions'] as const,
+  investmentExpertExperiments: ['investment-expert', 'experiments'] as const,
   indexQuotes:    ['index-quotes'] as const,
   indexList:      ['index-list'] as const,
 
@@ -91,6 +94,9 @@ export const QK = {
 
   // 概念涨幅轮动矩阵
   rpsRotation:          (days: number) => ['rps-rotation', days] as const,
+
+  // 龙头板块分析
+  leadingSectors:       (days: number, kind: string, level?: number) => ['leading-sectors', days, kind, level ?? 0] as const,
 
   // 市场环境(Regime) — 日级离线计算, 不进 SSE 刷新
   regimeHistory:        (limit?: number) => ['regime-history', limit ?? 0] as const,

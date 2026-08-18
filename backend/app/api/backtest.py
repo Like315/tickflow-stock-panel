@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import date, timedelta
 from typing import Literal
 
+import polars as pl
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -208,6 +209,42 @@ class StrategyBacktestRequest(BaseModel):
     asset_type: str = "stock"
     minute_fill: bool = False
     regime_filter: dict | None = None
+    sector_kind: Literal["concept", "industry"] | None = None
+    sector_name: str | None = None
+    sector_level: int | None = None
+
+
+def _resolve_sector_symbols(
+    repo,
+    symbols: list[str] | None,
+    sector_kind: str | None,
+    sector_name: str | None,
+    sector_level: int | None = None,
+) -> list[str] | None:
+    """Resolve a dimension label to symbols and intersect it with an explicit pool."""
+    name = (sector_name or "").strip()
+    if not name:
+        return symbols
+    kind = "industry" if sector_kind == "industry" else "concept"
+    from app.services.rps_rotation import _load_concept_map_df
+
+    mapping, _ = _load_concept_map_df(repo, kind)
+    if mapping.is_empty():
+        raise HTTPException(status_code=400, detail=f"没有可用的{name}板块成分数据")
+    if kind == "industry" and sector_level in (1, 2, 3):
+        parts = pl.col(kind).str.split("-")
+        idx = pl.min_horizontal(pl.lit(sector_level - 1), pl.col(kind).str.count_matches("-"))
+        mapping = mapping.with_columns(parts.list.get(idx).alias(kind))
+    members = set(
+        mapping.filter(pl.col(kind) == name).get_column("_sym_up").to_list()
+    )
+    if not members:
+        raise HTTPException(status_code=400, detail=f"板块“{name}”没有匹配到成分股")
+    if symbols:
+        members &= {symbol.strip().upper() for symbol in symbols if symbol.strip()}
+        if not members:
+            raise HTTPException(status_code=400, detail="板块成分与手工股票池没有交集")
+    return sorted(members)
 
 
 @router.post("/strategy/run")
@@ -220,9 +257,16 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
     start = _resolve_start(req, end, FACTOR_DEFAULT_DAYS)
     _guard_server_backtest_range(start, end)
 
+    resolved_symbols = _resolve_sector_symbols(
+        request.app.state.repo,
+        req.symbols,
+        req.sector_kind,
+        req.sector_name,
+        req.sector_level,
+    )
     cfg = StrategyBacktestConfig(
         strategy_id=req.strategy_id,
-        symbols=req.symbols if req.symbols else None,
+        symbols=resolved_symbols,
         start=start,
         end=end,
         params=req.params,
@@ -348,6 +392,9 @@ async def strategy_stream(
     asset_type: str = "stock",
     minute_fill: bool = False,
     regime_filter: str | None = None,
+    sector_kind: str | None = None,
+    sector_name: str | None = None,
+    sector_level: int | None = None,
 ):
     """SSE 流式策略回测: 实时推送进度, 完成后推送结果, 支持重连 (刷新/切页后恢复)。
 
@@ -378,8 +425,17 @@ async def strategy_stream(
         if days > BACKTEST_MAX_SERVER_DAYS:
             guard_violated = True
 
+    explicit_symbols = [s.strip() for s in symbols.split(",") if s.strip()] if symbols else None
+    resolved_symbols = _resolve_sector_symbols(
+        request.app.state.repo,
+        explicit_symbols,
+        sector_kind,
+        sector_name,
+        sector_level,
+    )
+    resolved_symbols_key = ",".join(resolved_symbols) if resolved_symbols else None
     job_key = _make_job_key(
-        strategy_id, symbols, start, end,
+        strategy_id, resolved_symbols_key, start, end,
         matching, entry_fill, exit_fill,
         fees_pct, slippage_bps, max_positions, max_exposure_pct, initial_capital, position_sizing,
         params, overrides,
@@ -428,7 +484,7 @@ async def strategy_stream(
         if is_new and not job.done:
             cfg = StrategyBacktestConfig(
                 strategy_id=strategy_id,
-                symbols=[s.strip() for s in symbols.split(",") if s.strip()] if symbols else None,
+                symbols=resolved_symbols,
                 start=start_date,
                 end=end_date,
                 params=json.loads(params) if params else None,

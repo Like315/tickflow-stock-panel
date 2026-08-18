@@ -182,6 +182,9 @@ export function startBacktest(params: {
   asset_type?: 'stock' | 'etf'
   minute_fill?: boolean
   regime_filter?: { states?: string[]; min_score?: number } | null
+  sector_kind?: 'concept' | 'industry' | null
+  sector_name?: string | null
+  sector_level?: number | null
 }): void {
   // 取消之前的任务状态
   if (eventSource) {
@@ -216,6 +219,9 @@ export function startBacktest(params: {
     asset_type: params.asset_type,
     minute_fill: params.minute_fill,
     regime_filter: params.regime_filter ? JSON.stringify(params.regime_filter) : undefined,
+    sector_kind: params.sector_kind ?? undefined,
+    sector_name: params.sector_name ?? undefined,
+    sector_level: params.sector_level ?? undefined,
   })
 
   // 存 reconnect 信息 (刷新后用)

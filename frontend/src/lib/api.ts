@@ -402,6 +402,68 @@ export interface RpsRotationData {
   concept_count: number
 }
 
+// ===== 龙头板块分析 =====
+export interface LeadingSectorChampion {
+  symbol: string
+  name: string
+  lead_days: number
+  cum_pct: number
+  max_boards: number
+  avg_pct: number
+  trade_plan: {
+    as_of: string
+    close: number
+    ma5: number
+    weekly_close: number
+    weekly_ma4: number
+    weekly_ma10: number
+    weekly_trend: boolean
+    monthly_close: number
+    monthly_ma3: number
+    monthly_ma6: number
+    monthly_trend: boolean
+    above_ma5: boolean
+    drawdown_stop_price: number
+    drawdown_pct: number
+    exit_ma5: boolean
+    eligible: boolean
+  } | null
+}
+
+export interface LeadingSectorDailyLeader {
+  date: string
+  symbol: string
+  name: string
+  change_pct: number | null
+  rank_in_sector: number
+  is_limit_up: boolean
+}
+
+export interface LeadingSectorItem {
+  name: string
+  count: number
+  score: number
+  parts: {
+    persistence: number
+    capital: number
+    leader: number
+  }
+  avg_pct: number
+  total_amount: number
+  avg_rank: number
+  top10_days: number
+  champion: LeadingSectorChampion | null
+  daily_leaders: LeadingSectorDailyLeader[]
+}
+
+export interface LeadingSectorsData {
+  as_of: string | null
+  kind: 'concept' | 'industry'
+  days: number
+  sector_count: number
+  sectors: LeadingSectorItem[]
+}
+
 // ===== 市场环境(Regime) =====
 export type RegimeState = 'strong' | 'lean_strong' | 'range' | 'lean_weak' | 'weak'
 
@@ -1345,6 +1407,89 @@ export interface FundMarketResearchResult {
 }
 
 // ===== API surface =====
+export interface InvestmentExpertPolicy {
+  id: string
+  version: number
+  parent_id?: string | null
+  status: string
+  candidate_limit: number
+  min_vwap_bias: number
+  min_breakout_pct: number
+  entry_probability_threshold: number
+  stop_loss_pct: number
+}
+
+export interface InvestmentExpertModel {
+  id: string
+  version: number
+  trained_start: string
+  trained_end: string
+  sample_count: number
+  dataset_manifest_hash: string
+  metrics: {
+    validation?: Record<string, number | string | null>
+    protected_test?: Record<string, number | string | null>
+  }
+}
+
+export interface InvestmentExpertSession {
+  id: string
+  trade_date: string
+  policy_id: string
+  mode: string
+  status: string
+  candidates: string[]
+  started_at: string
+  finished_at?: string | null
+  summary: Record<string, number | string | null>
+}
+
+export interface InvestmentExpertStatus {
+  enabled: boolean
+  running: boolean
+  active_task?: string | null
+  last_error?: string | null
+  session_id?: string | null
+  candidate_count: number
+  market_symbol_count: number
+  cash?: number | null
+  equity?: number | null
+  positions: Array<{
+    lot_id: string
+    symbol: string
+    acquired_date: string
+    shares: number
+    remaining_shares: number
+    entry_price: number
+  }>
+  pending_order_count: number
+  entries_enabled?: boolean
+  risk_trip_reason?: string | null
+  minute_capable: boolean
+  champion?: InvestmentExpertPolicy | null
+  active_model?: InvestmentExpertModel | null
+  latest_model?: InvestmentExpertModel | null
+  latest_session?: InvestmentExpertSession | null
+  dataset?: {
+    id: string
+    status: string
+    start_date: string
+    end_date: string
+    error?: string | null
+    manifest?: Record<string, unknown>
+  } | null
+}
+
+export interface InvestmentExpertExperiment {
+  id: string
+  candidate_policy_id: string
+  mutation_field: string
+  status: string
+  reason: string
+  created_at: string
+  candidate_metrics: Record<string, number | string | null>
+}
+
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
 
@@ -1980,6 +2125,12 @@ export const api = {
   rpsRotation: (days: number, kind?: 'concept' | 'industry', level?: number) =>
     request<RpsRotationData>(`/api/rps/rotation?days=${days}${kind ? `&kind=${kind}` : ''}${level ? `&level=${level}` : ''}`),
 
+  // 龙头板块分析: 龙头板块排行 + 历史龙头股拆解 (评分/每日龙头/区间冠军)
+  leadingSectors: (days: number, kind?: 'concept' | 'industry', level?: number, top = 30) =>
+    request<LeadingSectorsData>(
+      `/api/leading-sectors?days=${days}${kind ? `&kind=${kind}` : ''}${level ? `&level=${level}` : ''}&top=${top}`,
+    ),
+
   // 市场环境(Regime)
   regimeHistory: (start?: string, end?: string, limit?: number) => {
     const params = new URLSearchParams()
@@ -2065,6 +2216,9 @@ export const api = {
     slippage_bps?: number
     max_positions?: number
     initial_capital?: number
+    sector_kind?: 'concept' | 'industry' | null
+    sector_name?: string | null
+    sector_level?: number | null
     position_sizing?: 'equal' | 'score_weight'
     asset_type?: 'stock' | 'etf' | 'index'
     minute_fill?: boolean
@@ -2745,6 +2899,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ strategy_id: strategyId, code, name: meta?.name ?? '', description: meta?.description ?? '' }),
     }),
+
+  // ===== AI Investment Expert (paper only) =====
+  investmentExpertStatus: () =>
+    request<InvestmentExpertStatus>('/api/investment-expert/status'),
+  investmentExpertStart: () =>
+    request<{ status: string; running: boolean }>('/api/investment-expert/runtime/start', { method: 'POST' }),
+  investmentExpertStop: () =>
+    request<{ status: string; running: boolean }>('/api/investment-expert/runtime/stop', { method: 'POST' }),
+  investmentExpertBootstrap: (years = 3, candidateLimit = 50) =>
+    request<{ status: string; task: string }>('/api/investment-expert/dataset/bootstrap', {
+      method: 'POST',
+      body: JSON.stringify({ years, candidate_limit: candidateLimit, download_minutes: true }),
+    }),
+  investmentExpertTrain: () =>
+    request<{ status: string; task: string }>('/api/investment-expert/training/run', { method: 'POST' }),
+  investmentExpertEvolve: () =>
+    request<{ status: string; task: string }>('/api/investment-expert/evolution/run', { method: 'POST' }),
+  investmentExpertSessions: (limit = 20) =>
+    request<{ sessions: InvestmentExpertSession[] }>(`/api/investment-expert/sessions?limit=${limit}`),
+  investmentExpertExperiments: (limit = 20) =>
+    request<{ experiments: InvestmentExpertExperiment[] }>(`/api/investment-expert/experiments?limit=${limit}`),
 
   // ===== US Market (美股) =====
 }

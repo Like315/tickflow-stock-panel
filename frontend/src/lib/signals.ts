@@ -174,6 +174,14 @@ export const SIGNAL_LABELS: Record<string, string> = BUILTIN_SIGNAL_DEFINITIONS.
   return acc
 }, { ...MONITOR_INTRADAY_SIGNAL_LABELS })
 
+Object.assign(SIGNAL_LABELS, {
+  momentum_breakout: '20日动量突破',
+  ma5_reclaim: '回踩后收复5日线',
+  ma5_breakdown: '跌破5日线',
+  weekly_fast_breakdown: '跌破4周线',
+  monthly_fast_breakdown: '跌破3月线',
+})
+
 /** 内置信号 ID 列表 */
 export const SIGNAL_OPTIONS = BUILTIN_SIGNAL_DEFINITIONS.map(sig => sig.id)
 

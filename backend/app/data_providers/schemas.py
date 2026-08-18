@@ -13,6 +13,7 @@ INSTRUMENT_COLUMNS = [
 ]
 
 MINUTE_COLUMNS = [
-    "symbol", "asset_type", "source", "datetime", "open", "high", "low", "close",
-    "volume", "amount", "freq",
+    "symbol", "asset_type", "source", "datetime", "received_at", "freq",
+    "open", "high", "low", "close", "raw_open", "raw_high", "raw_low", "raw_close",
+    "volume", "amount",
 ]
