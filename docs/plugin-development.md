@@ -92,6 +92,16 @@ class MyProvider:
         """标的维表(可选): 返回 tickflow Instrument 形状的行, 供 instrument_sync 复用 flatten"""
 ```
 
+### 新闻 Provider 边界
+
+新闻不属于行情数据集，不能把 RSS、新闻网页或第三方新闻字段塞进 `daily` / `realtime`。当前独立契约位于 `app.data_providers.news.NewsProvider`：
+
+```python
+async def fetch_market(*, as_of: date, limit: int = 8) -> list[NewsItem]: ...
+```
+
+`NewsItem` 的标准字段为 `title / published_at / source / source_url / snippet / provider`。Provider 必须过滤晚于 `as_of` 的内容，失败时返回空结果或由上层明确降级，不能阻塞行情同步、复盘或应用启动。内置 `EastmoneyNewsProvider` 默认提供市场快讯，`RssNewsProvider` 通过 `NEWS_RSS_URLS` 添加订阅源；两者都不会改变现有行情 Provider 的能力声明和路由。
+
 ### config.datasets 的作用
 
 `provider_has_dataset(name, dataset)` 通过 `dataset in provider.config.datasets` 判断。

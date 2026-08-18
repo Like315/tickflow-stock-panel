@@ -90,6 +90,11 @@ class Settings(BaseSettings):
         "Chrome/131.0.0.0 Safari/537.36"
     )
 
+    # Market news — semicolon/newline separated RSS or Atom feed URLs.
+    # Eastmoney fast news is enabled by default; RSS feeds are optional additions.
+    news_eastmoney_enabled: bool = True
+    news_rss_urls: str = ""
+
     # Server
     host: str = "0.0.0.0"
     port: int = 3018
