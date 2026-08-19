@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.services.fund_portfolio import (
+    EastmoneyFundQuoteProvider,
     FundPortfolioService,
     parse_csv_snapshot,
     parse_localized_number,
@@ -30,6 +31,15 @@ class FakeQuoteProvider:
 
     def close(self) -> None:
         return None
+
+
+def test_default_quote_provider_supports_socks_proxy(monkeypatch) -> None:
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:9")
+
+    provider = EastmoneyFundQuoteProvider()
+    provider.close()
 
 
 def test_parse_localized_number_supports_currency_percent_and_wan() -> None:

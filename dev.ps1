@@ -131,14 +131,26 @@ if (-not [string]::IsNullOrWhiteSpace($BackendExtras)) {
     }
 }
 
-if (-not (Test-Path (Join-Path $BackendDir '.venv')) -or $BackendExtraArgs.Count) {
-    if ($BackendExtraArgs.Count) {
+$BackendVenv = Join-Path $BackendDir '.venv'
+$BackendNeedsSync = -not (Test-Path $BackendVenv)
+if (-not $BackendNeedsSync) {
+    Push-Location $BackendDir
+    try {
+        & uv sync --check --inexact @BackendExtraArgs *> $null
+        $BackendNeedsSync = $LASTEXITCODE -ne 0
+    } finally { Pop-Location }
+}
+
+if ($BackendNeedsSync) {
+    if (-not (Test-Path $BackendVenv)) {
+        Log-Info 'first run - installing Python deps (1-2 min)...'
+    } elseif ($BackendExtraArgs.Count) {
         Log-Info "syncing Python deps with extras: $BackendExtras"
     } else {
-        Log-Info 'first run - installing Python deps (1-2 min)...'
+        Log-Info 'Python deps are missing or outdated - syncing...'
     }
     Push-Location $BackendDir
-    try { & uv sync @BackendExtraArgs } finally { Pop-Location }
+    try { & uv sync --inexact @BackendExtraArgs } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { Log-Err 'uv sync failed'; exit 1 }
     Log-Ok 'backend deps installed'
 }
