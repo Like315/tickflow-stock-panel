@@ -135,10 +135,18 @@ $BackendVenv = Join-Path $BackendDir '.venv'
 $BackendNeedsSync = -not (Test-Path $BackendVenv)
 if (-not $BackendNeedsSync) {
     Push-Location $BackendDir
+    $PreviousErrorActionPreference = $ErrorActionPreference
     try {
+        # Windows PowerShell 5 wraps native stderr as NativeCommandError. uv writes
+        # informational check output there even on success, so do not let the
+        # script-wide Stop preference turn a successful check into a fatal error.
+        $ErrorActionPreference = 'SilentlyContinue'
         & uv sync --check --inexact @BackendExtraArgs *> $null
         $BackendNeedsSync = $LASTEXITCODE -ne 0
-    } finally { Pop-Location }
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+        Pop-Location
+    }
 }
 
 if ($BackendNeedsSync) {
@@ -195,14 +203,15 @@ $backendJob = Start-Job -Name 'backend' -ScriptBlock {
 } -ArgumentList $backendPidFile, $BackendDir, $BackendPort
 
 $frontendJob = Start-Job -Name 'frontend' -ScriptBlock {
-    param($pidFile, $dir, $port)
+    param($pidFile, $dir, $port, $backendPort)
     # 同上: job 子进程默认 GBK, pnpm/前端工具链也是 UTF-8 输出, 需对齐。
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
     $OutputEncoding           = New-Object System.Text.UTF8Encoding $false
     $PID | Out-File -FilePath $pidFile -Encoding ascii -Force
+    $env:BACKEND_PORT = [string]$backendPort
     Set-Location $dir
     & pnpm dev --host 0.0.0.0 --port $port 2>&1
-} -ArgumentList $frontendPidFile, $FrontendDir, $FrontendPort
+} -ArgumentList $frontendPidFile, $FrontendDir, $FrontendPort, $BackendPort
 
 # Wait up to 5 seconds for the PID files to materialise
 function Read-JobPid($file) {

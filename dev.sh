@@ -154,7 +154,7 @@ PIDS+=("$!")
 
 (
   cd "$FRONTEND_DIR"
-  pnpm dev --host 0.0.0.0 --port "$FRONTEND_PORT" 2>&1 \
+  BACKEND_PORT="$BACKEND_PORT" pnpm dev --host 0.0.0.0 --port "$FRONTEND_PORT" 2>&1 \
     | prefix_awk "$(printf "${GREEN}[frontend]${NC} ")"
 ) &
 PIDS+=("$!")
