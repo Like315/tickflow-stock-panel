@@ -1,10 +1,15 @@
 """OCR 引擎抽象层 — 当前实现为 Tesseract。"""
+
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from io import BytesIO
+from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageEnhance, ImageOps
 
@@ -16,6 +21,15 @@ _MAX_PIXELS = 12_000_000
 _MAX_EDGE = 2000
 # 过窄时适度放大，提升小字识别率
 _MIN_WIDTH = 1400
+
+# 允许部署环境显式指定 Tesseract 可执行文件或命令名。
+_TESSERACT_CMD_ENV = "TESSERACT_CMD"
+# Windows 安装器的常见落点；用于安装后旧进程尚未刷新 PATH 的场景。
+_WINDOWS_TESSERACT_PATHS = (
+    r"%ProgramFiles%\Tesseract-OCR\tesseract.exe",
+    r"%ProgramFiles(x86)%\Tesseract-OCR\tesseract.exe",
+    r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe",
+)
 
 
 class OcrProvider(ABC):
@@ -30,6 +44,27 @@ class OcrProvider(ABC):
     @abstractmethod
     def available(self) -> bool:
         """运行时依赖是否就绪（二进制/模型等）。"""
+
+
+def _resolve_tesseract_command() -> str:
+    """按显式配置、当前 PATH 和 Windows 常见目录解析 Tesseract。"""
+    configured = os.environ.get(_TESSERACT_CMD_ENV, "").strip()
+    if configured:
+        return shutil.which(configured) or str(Path(configured).expanduser())
+
+    command = shutil.which("tesseract")
+    if command:
+        return command
+    for raw_path in _WINDOWS_TESSERACT_PATHS:
+        candidate = Path(os.path.expandvars(raw_path))
+        if candidate.is_file():
+            return str(candidate)
+    return "tesseract"
+
+
+def _configure_pytesseract(pytesseract: Any) -> None:
+    """把解析后的本机命令配置给外部 pytesseract 模块。"""
+    pytesseract.pytesseract.tesseract_cmd = _resolve_tesseract_command()
 
 
 def preprocess_for_ocr(image_bytes: bytes) -> Image.Image:
@@ -62,28 +97,32 @@ def preprocess_for_ocr(image_bytes: bytes) -> Image.Image:
     w, h = contrasted.size
     if w < _MIN_WIDTH:
         scale = _MIN_WIDTH / w
-        contrasted = contrasted.resize(
-            (int(w * scale), int(h * scale)), Image.Resampling.LANCZOS
-        )
+        contrasted = contrasted.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
     return contrasted
 
 
 class TesseractOcrProvider(OcrProvider):
+    """使用本机 Tesseract 执行图片文字识别。"""
+
     name = "tesseract"
 
     def available(self) -> bool:
+        """检查可执行文件是否能正常返回版本信息。"""
         try:
             import pytesseract
 
+            _configure_pytesseract(pytesseract)
             pytesseract.get_tesseract_version()
             return True
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("tesseract unavailable: %s", e)
             return False
 
     def extract_text(self, image_bytes: bytes) -> str:
+        """预处理图片并按中文优先、英文兜底的顺序提取文字。"""
         import pytesseract
 
+        _configure_pytesseract(pytesseract)
         img = preprocess_for_ocr(image_bytes)
         # 优先数字+字母（股票代码）；中文语言包可选，缺失时回退 eng
         configs = [
@@ -97,7 +136,7 @@ class TesseractOcrProvider(OcrProvider):
                 text = pytesseract.image_to_string(img, lang=lang, config=cfg)
                 if text and text.strip():
                     return text
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 last_err = e
                 logger.debug("tesseract lang=%s failed: %s", lang, e)
         if last_err:
