@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 
+from app.api.investment_expert import status as investment_expert_status
 from app.market_time import CN_TZ
 from app.services.investment_expert import InvestmentExpertService
-from app.tickflow.capabilities import CapabilitySet
+from app.tickflow.capabilities import Cap, CapabilityLimits, CapabilitySet
 
 
 class _Repo:
@@ -117,3 +119,22 @@ def test_runtime_fails_closed_without_minute_capability(tmp_path: Path) -> None:
     assert result["status"] == "blocked"
     assert result["running"] is False
     assert service.store.get_runtime_setting("enabled") is False
+
+
+def test_status_uses_live_app_capabilities_after_key_refresh(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 18)
+    service = InvestmentExpertService(_Repo(trade_date), tmp_path, capset=CapabilitySet())
+    live_capset = CapabilitySet({
+        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(batch=100, rpm=30),
+    })
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+        investment_expert_service=service,
+        capabilities=live_capset,
+    )))
+    try:
+        result = investment_expert_status(request)
+    finally:
+        service.close()
+
+    assert result["minute_capable"] is True
+    assert service.capset is live_capset

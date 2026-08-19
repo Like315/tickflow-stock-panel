@@ -22,7 +22,7 @@ from app.paper_agent.store import PaperAgentStore
 from app.paper_agent.training import ExpertModelTrainer
 from app.price_limits import is_risk_warning_name, price_limit_pct
 from app.services.kline_sync import sync_and_persist_daily_batch
-from app.tickflow.capabilities import Cap
+from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.rate_limits import resolve_limit
 
 logger = logging.getLogger(__name__)
@@ -40,23 +40,14 @@ class InvestmentExpertService:
     ) -> None:
         self.repo = repo
         self.data_dir = data_dir
-        self.capset = capset
+        self.capset: CapabilitySet | None = None
         self.strategy_engine = strategy_engine
         self.screener_service = screener_service
         self.store = PaperAgentStore(data_dir)
         self.store.ensure_baseline_policy()
         self.constitution = RiskConstitution()
         self.minute_provider = get_provider("tickflow")
-        if self.capset is not None:
-            minute_limit = resolve_limit(
-                self.capset,
-                Cap.KLINE_MINUTE_BATCH,
-                default_batch=50,
-                default_rpm=30,
-            )
-            configure_limits = getattr(self.minute_provider, "configure_minute_limits", None)
-            if configure_limits is not None:
-                configure_limits(batch_size=minute_limit.batch, rpm=minute_limit.rpm)
+        self.update_capabilities(capset)
         self.dataset_builder = TrainingDatasetBuilder(repo, data_dir, self.minute_provider)
         self.dataset_root = data_dir / "user_data" / "investment_expert" / "training"
         self._executor_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="investment-expert")
@@ -80,6 +71,30 @@ class InvestmentExpertService:
         self._session_start_equity = self.constitution.initial_capital
         self._equity_peak = self.constitution.initial_capital
         self._risk_trip_reason: str | None = None
+
+    def update_capabilities(self, capset: CapabilitySet | None) -> None:
+        """Refresh the live TickFlow capability snapshot without restarting the service."""
+        if capset is self.capset:
+            return
+        had_minute = bool(self.capset and self.capset.has(Cap.KLINE_MINUTE_BATCH))
+        self.capset = capset
+        has_minute = bool(capset and capset.has(Cap.KLINE_MINUTE_BATCH))
+        if capset is not None:
+            minute_limit = resolve_limit(
+                capset,
+                Cap.KLINE_MINUTE_BATCH,
+                default_batch=50,
+                default_rpm=30,
+            )
+            configure_limits = getattr(self.minute_provider, "configure_minute_limits", None)
+            if configure_limits is not None:
+                configure_limits(batch_size=minute_limit.batch, rpm=minute_limit.rpm)
+        if had_minute != has_minute:
+            logger.info(
+                "InvestmentExpertService capabilities updated: KLINE_MINUTE_BATCH %s -> %s",
+                had_minute,
+                has_minute,
+            )
 
     def boot_check(self) -> None:
         if self.store.get_runtime_setting("enabled", False):

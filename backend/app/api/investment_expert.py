@@ -8,7 +8,11 @@ router = APIRouter(prefix="/api/investment-expert", tags=["investment-expert"])
 
 
 def _service(request: Request):
-    return request.app.state.investment_expert_service
+    service = request.app.state.investment_expert_service
+    capset = getattr(request.app.state, "capabilities", None)
+    if capset is not None:
+        service.update_capabilities(capset)
+    return service
 
 
 class DatasetBootstrapRequest(BaseModel):
