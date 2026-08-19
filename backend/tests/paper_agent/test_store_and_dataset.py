@@ -101,3 +101,18 @@ def test_historical_minute_partition_marks_one_price_limit_up() -> None:
     assert result["previous_close"][0] == 10.0
     assert result["is_limit_up"][0] is True
     assert result["is_limit_down"][0] is False
+
+
+def test_partial_enriched_history_is_filled_from_raw_daily() -> None:
+    raw = pl.DataFrame({
+        "symbol": ["600000.SH"] * 3,
+        "date": [date(2023, 8, 18), date(2025, 8, 18), date(2026, 8, 18)],
+        "close": [8.0, 9.0, 10.0],
+        "amount": [80.0, 90.0, 100.0],
+    })
+    enriched = raw.tail(2).with_columns(pl.lit(1.0).alias("rps_20"))
+
+    result = TrainingDatasetBuilder._merge_daily_history(enriched, raw).sort("date")
+
+    assert result["date"].to_list() == raw["date"].to_list()
+    assert result["rps_20"].to_list() == [None, 1.0, 1.0]

@@ -83,15 +83,16 @@ class TrainingDatasetBuilder:
         latest_available = self.repo.latest_daily_date()
         query_end = min(end_date, latest_available) if latest_available is not None else end_date
         instruments = self.repo.get_instruments()
-        daily = self.repo.get_enriched_range(start_date - timedelta(days=40), query_end)
-        if daily is None or daily.is_empty():
-            symbols = instruments["symbol"].to_list() if "symbol" in instruments.columns else []
-            daily = self.repo.get_daily_batch(
-                symbols,
-                start_date - timedelta(days=40),
-                query_end,
-                columns=["symbol", "date", "open", "high", "low", "close", "volume", "amount"],
-            )
+        query_start = start_date - timedelta(days=40)
+        enriched = self.repo.get_enriched_range(query_start, query_end)
+        symbols = instruments["symbol"].to_list() if "symbol" in instruments.columns else []
+        raw = self.repo.get_daily_batch(
+            symbols,
+            query_start,
+            query_end,
+            columns=["symbol", "date", "open", "high", "low", "close", "volume", "amount"],
+        )
+        daily = self._merge_daily_history(enriched, raw)
         if "name" not in daily.columns and "name" in instruments.columns and not daily.is_empty():
             daily = daily.join(
                 instruments.select("symbol", "name").unique("symbol"),
@@ -185,6 +186,20 @@ class TrainingDatasetBuilder:
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return manifest
+
+    @staticmethod
+    def _merge_daily_history(
+        enriched: pl.DataFrame | None,
+        raw: pl.DataFrame | None,
+    ) -> pl.DataFrame:
+        """Prefer enriched rows while filling uncovered dates from raw daily history."""
+        if enriched is None or enriched.is_empty():
+            return raw if raw is not None else pl.DataFrame()
+        if raw is None or raw.is_empty():
+            return enriched
+        keys = enriched.select("symbol", "date").unique()
+        missing_raw = raw.join(keys, on=["symbol", "date"], how="anti")
+        return pl.concat([enriched, missing_raw], how="diagonal_relaxed")
 
     @staticmethod
     def _minute_partition_valid(path: Path, required_symbols: list[str]) -> bool:

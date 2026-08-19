@@ -79,3 +79,44 @@ def test_normalize_minute_converts_aware_datetime_to_beijing_wall_time() -> None
     }))
 
     assert result["datetime"][0] == datetime(2026, 8, 18, 9, 31)
+
+
+def test_normalize_minute_prefers_canonical_columns_over_aliases() -> None:
+    canonical_time = datetime(2026, 8, 18, 9, 31)
+    result = normalize_minute(pl.DataFrame({
+        "symbol": ["000001.SZ"],
+        "ts_code": ["600000.SH"],
+        "datetime": [canonical_time],
+        "trade_time": [datetime(2026, 8, 18, 9, 32)],
+        "trade_date": [datetime(2026, 8, 18)],
+        "open": [10.0],
+        "high": [10.1],
+        "low": [9.9],
+        "close": [10.0],
+        "volume": [100.0],
+        "vol": [999.0],
+        "amount": [100_000.0],
+        "amt": [999_000.0],
+    }))
+
+    assert result["symbol"].to_list() == ["000001.SZ"]
+    assert result["datetime"].to_list() == [canonical_time]
+    assert result["volume"].to_list() == [100.0]
+    assert result["amount"].to_list() == [100_000.0]
+
+
+def test_normalize_minute_uses_one_datetime_alias() -> None:
+    trade_time = datetime(2026, 8, 18, 9, 31)
+    result = normalize_minute(pl.DataFrame({
+        "ts_code": ["000001.SZ"],
+        "trade_time": [trade_time],
+        "trade_date": [datetime(2026, 8, 18)],
+        "open": [10.0],
+        "high": [10.1],
+        "low": [9.9],
+        "close": [10.0],
+        "vol": [100.0],
+        "amt": [100_000.0],
+    }))
+
+    assert result["datetime"].to_list() == [trade_time]

@@ -26,7 +26,7 @@ import duckdb
 import polars as pl
 
 from app.config import settings
-from app.parquet import scan_enriched_parquet
+from app.parquet import atomic_write_parquet, scan_enriched_parquet
 
 logger = logging.getLogger(__name__)
 
@@ -1997,17 +1997,10 @@ class KlineRepository:
         with self._lock:
             self.store._register_unified_views()
 
-    @staticmethod
-    def _atomic_write_parquet(df: pl.DataFrame, out: Path) -> None:
-        """先写临时文件再原子替换, 避免进程中断留下损坏的 parquet。
-
-        直接 write_parquet(out) 在进程被 kill (dev.sh 清端口用 kill -9)
-        或断电时会留下半截文件, 之后 scan_parquet glob 整条链路报错。
-        临时文件后缀 .tmp 不匹配 *.parquet glob, 不会被扫描误读。
-        """
-        tmp = out.with_name(out.name + ".tmp")
-        df.write_parquet(tmp)
-        tmp.replace(out)  # 同目录 rename, POSIX/NTFS 均为原子操作
+    def _atomic_write_parquet(self, df: pl.DataFrame, out: Path) -> None:
+        """在阻止本进程 DuckDB 并发读取时原子写入 Parquet。"""
+        with self._lock:
+            atomic_write_parquet(df, out)
 
     def _write_daily_partition(self, df: pl.DataFrame, table: str) -> None:
         """按 date 分区写入 parquet，每个日期一个文件，支持 merge-upsert。"""

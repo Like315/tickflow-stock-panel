@@ -1,8 +1,10 @@
 from datetime import date
+from pathlib import Path
 
 import polars as pl
+import pytest
 
-from app.parquet import scan_daily_parquet, scan_enriched_parquet
+from app.parquet import atomic_write_parquet, scan_daily_parquet, scan_enriched_parquet
 
 
 def test_partitioned_daily_scan_tolerates_added_quote_ts(tmp_path):
@@ -79,3 +81,53 @@ def test_partitioned_enriched_scan_tolerates_added_quote_ts(tmp_path):
     assert df.schema["volume"] == pl.Float64
     assert df.schema["quote_ts"] == pl.Int64
     assert df["quote_ts"].to_list() == [None, 1783560600000]
+
+
+def test_atomic_write_parquet_retries_transient_windows_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "part.parquet"
+    pl.DataFrame({"value": [1]}).write_parquet(target)
+    replacement = pl.DataFrame({"value": [2]})
+    original_replace = Path.replace
+    attempts = 0
+
+    def flaky_replace(source: Path, destination: Path) -> Path:
+        """模拟 Windows 目标文件短暂被读取句柄占用。"""
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(13, "file is in use", str(destination))
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    monkeypatch.setattr("app.parquet.time.sleep", lambda _seconds: None)
+
+    atomic_write_parquet(replacement, target)
+
+    assert attempts == 3
+    assert pl.read_parquet(target)["value"].to_list() == [2]
+    assert not target.with_name("part.parquet.tmp").exists()
+
+
+def test_atomic_write_parquet_preserves_files_when_lock_persists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "part.parquet"
+    temporary = target.with_name("part.parquet.tmp")
+    pl.DataFrame({"value": [1]}).write_parquet(target)
+
+    def locked_replace(_source: Path, destination: Path) -> Path:
+        """模拟 Windows 目标文件持续被占用。"""
+        raise PermissionError(13, "file is in use", str(destination))
+
+    monkeypatch.setattr(Path, "replace", locked_replace)
+    monkeypatch.setattr("app.parquet.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(PermissionError):
+        atomic_write_parquet(pl.DataFrame({"value": [2]}), target)
+
+    assert pl.read_parquet(target)["value"].to_list() == [1]
+    assert pl.read_parquet(temporary)["value"].to_list() == [2]

@@ -109,14 +109,23 @@ def normalize_minute(
     df = to_polars(data)
     if df.is_empty():
         return df
-    rename_map = {
-        "ts_code": "symbol",
-        "trade_time": "datetime",
-        "trade_date": "datetime",
-        "vol": "volume",
-        "amt": "amount",
+    aliases = {
+        "symbol": ("ts_code",),
+        "datetime": ("trade_time", "trade_date"),
+        "volume": ("vol",),
+        "amount": ("amt",),
     }
-    df = df.rename({key: value for key, value in rename_map.items() if key in df.columns})
+    rename_map: dict[str, str] = {}
+    columns = set(df.columns)
+    for target, sources in aliases.items():
+        if target in columns:
+            continue
+        source = next((name for name in sources if name in columns), None)
+        if source is not None:
+            rename_map[source] = target
+            columns.add(target)
+    if rename_map:
+        df = df.rename(rename_map)
     if "symbol" not in df.columns and default_symbol:
         df = df.with_columns(pl.lit(default_symbol).alias("symbol"))
     if "datetime" not in df.columns and "timestamp" in df.columns:
