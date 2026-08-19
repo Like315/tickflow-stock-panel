@@ -39,7 +39,21 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
     if (res.status !== 401 && !quiet) toast(msg, 'error')
     throw new Error(msg)
   }
-  return res.json() as Promise<T>
+  const contentType = (res.headers.get('content-type') ?? '').toLowerCase()
+  if (!contentType.includes('application/json')) {
+    const msg = path.startsWith('/api/') && contentType.includes('text/html')
+      ? '服务端尚未加载该接口，请重启后端服务后重试'
+      : '服务端返回了无法识别的数据格式'
+    if (!quiet) toast(msg, 'error')
+    throw new Error(msg)
+  }
+  try {
+    return await res.json() as T
+  } catch {
+    const msg = '服务端返回的数据不是有效 JSON'
+    if (!quiet) toast(msg, 'error')
+    throw new Error(msg)
+  }
 }
 
 // ===== Capabilities =====
@@ -1337,6 +1351,58 @@ export interface FundRefreshResult {
   portfolio: FundPortfolio
 }
 
+// ===== Stock Portfolio =====
+export interface StockPositionInput {
+  name: string
+  buy_price: number
+  quantity: number
+}
+
+export interface StockPosition extends StockPositionInput {
+  symbol: string
+  cost_amount: number
+  current_price: number | null
+  market_value: number | null
+  profit_amount: number | null
+  /** 小数制：0.1 表示 10%。 */
+  profit_pct: number | null
+  /** 小数制：0.01 表示 1%。 */
+  change_pct: number | null
+  price_date: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface StockPortfolio {
+  updated_at: string | null
+  price_date: string | null
+  summary: {
+    currency: 'CNY'
+    position_count: number
+    total_cost_amount: number
+    total_market_value: number | null
+    total_profit_amount: number | null
+    /** 小数制：0.1 表示 10%。 */
+    profit_pct: number | null
+  }
+  positions: StockPosition[]
+}
+
+export interface StockPortfolioImportCandidate {
+  code: string
+  symbol: string
+  name: string
+  quantity: number | null
+  cost_amount: number | null
+  buy_price: number | null
+}
+
+export interface StockPortfolioImportPreview {
+  provider: string
+  candidates: StockPortfolioImportCandidate[]
+  warnings: string[]
+}
+
 // ===== 基金市场研究（基于历史净值 + 大盘趋势，不依赖持仓） =====
 export type FundMarketTier = '长期持有' | '减仓' | '可买入' | '观望'
 
@@ -1495,6 +1561,28 @@ export const api = {
 
   usMarketOverview: () => request<UsMarketOverview>('/api/us-market/overview'),
   usMarketRefresh: () => request<UsMarketOverview>('/api/us-market/refresh', { method: 'POST' }),
+
+  stockPortfolio: () => request<StockPortfolio>('/api/stock-portfolio'),
+  stockPortfolioUpsert: (symbol: string, position: StockPositionInput) =>
+    request<StockPortfolio>(`/api/stock-portfolio/positions/${encodeURIComponent(symbol)}`, {
+      method: 'PUT',
+      body: JSON.stringify(position),
+    }),
+  stockPortfolioDelete: (symbol: string) =>
+    request<StockPortfolio>(`/api/stock-portfolio/positions/${encodeURIComponent(symbol)}`, {
+      method: 'DELETE',
+    }),
+  stockPortfolioOcrStatus: () =>
+    request<{ provider: string; available: boolean }>('/api/stock-portfolio/ocr-status'),
+  stockPortfolioImportPreview: (file: File, signal?: AbortSignal) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<StockPortfolioImportPreview>('/api/stock-portfolio/import-preview', {
+      method: 'POST',
+      body: form,
+      signal,
+    })
+  },
 
   fundPortfolio: () => request<FundPortfolio>('/api/funds/portfolio'),
   fundLookup: (code: string) =>

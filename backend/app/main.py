@@ -6,13 +6,13 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import __version__
-from app.api import analysis, auth as auth_api, backtest, data, ext_data, financials, fund_portfolio, indices, intraday, investment_expert, kline, leading_sectors, market_recap, monitor_rules, alerts, overview, pipeline, regime, research_agent, rps, screener, settings as settings_api, signals, stock_analysis, strategy, us_market, watchlist
+from app.api import analysis, auth as auth_api, backtest, data, ext_data, financials, fund_portfolio, indices, intraday, investment_expert, kline, leading_sectors, market_recap, monitor_rules, alerts, overview, pipeline, regime, research_agent, rps, screener, settings as settings_api, signals, stock_analysis, stock_portfolio, strategy, us_market, watchlist
 from app.api.routes import router as core_router
 from app.config import settings
 from app.jobs import daily_pipeline
@@ -22,6 +22,7 @@ from app.services.fund_market_research import FundMarketResearchService
 from app.services.investment_expert import InvestmentExpertService
 from app.services.quote_service import QuoteService
 from app.services.research_agent import ResearchAgentService
+from app.services.stock_portfolio import StockPortfolioService
 from app.services.us_market_overview import UsMarketOverviewService
 from app.tickflow import client as tf_client
 from app.tickflow.policy import detect_capabilities
@@ -55,6 +56,7 @@ async def lifespan(app: FastAPI):
     app.state.datastore = store
     app.state.repo = repo
     app.state.fund_portfolio_service = FundPortfolioService(store.data_dir)
+    app.state.stock_portfolio_service = StockPortfolioService(store.data_dir, repo)
     app.state.us_market_overview_service = UsMarketOverviewService(store.data_dir)
     app.state.fund_research_service = FundResearchService(
         app.state.fund_portfolio_service,
@@ -387,6 +389,7 @@ app.include_router(core_router)
 app.include_router(auth_api.router)
 app.include_router(kline.router)
 app.include_router(watchlist.router)
+app.include_router(stock_portfolio.router)
 app.include_router(fund_portfolio.router)
 app.include_router(screener.router)
 app.include_router(backtest.router)
@@ -430,6 +433,18 @@ async def capability_denied_handler(request: Request, exc: CapabilityDenied) -> 
 
 # 生产期静态文件(前端 dist)
 _static = Path(settings.static_dir)
+
+
+def _reject_api_fallback(full_path: str) -> None:
+    """未知 API 必须返回 JSON 404,不能被前端单页应用回退吞掉。"""
+    normalized = full_path.lstrip("/")
+    if normalized == "api" or normalized.startswith("api/"):
+        raise HTTPException(
+            status_code=404,
+            detail="API 接口不存在,请确认后端已更新并重启",
+        )
+
+
 if _static.exists():
     if (_static / "assets").exists():
         app.mount("/assets", StaticFiles(directory=_static / "assets"), name="assets")
@@ -441,6 +456,7 @@ if _static.exists():
         index.html 禁止缓存 (Cache-Control: no-store), 确保浏览器每次拿到
         最新版本引用的 JS/CSS 文件名 (assets 带 hash, 可长缓存)。
         """
+        _reject_api_fallback(full_path)
         index = _static / "index.html"
         if index.exists():
             return FileResponse(

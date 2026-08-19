@@ -19,6 +19,7 @@ export const QK = {
   quoteInterval:  ['quote-interval'] as const,
   overviewMarket: (asOf?: string) => ['overview-market', asOf ?? 'latest'] as const,
   usMarketOverview: ['us-market-overview'] as const,
+  stockPortfolio: ['stock-portfolio'] as const,
   fundPortfolio: ['fund-portfolio'] as const,
   fundMarketResearch: ['fund-market-research'] as const,
   researchAgentStatus: ['research-agent', 'status'] as const,
@@ -115,6 +116,7 @@ export const QK = {
 
 export const SSE_INVALIDATE_PREFIXES = [
   'watchlist',
+  'stock-portfolio',
   'quote-status',
   'index-quotes',
   'overview-market',
