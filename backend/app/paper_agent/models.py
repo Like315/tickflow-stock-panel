@@ -129,9 +129,15 @@ class MinuteBar(BaseModel):
 
     @model_validator(mode="after")
     def validate_ohlc(self) -> MinuteBar:
-        if self.raw_high < max(self.raw_open, self.raw_close, self.raw_low):
+        highest = max(self.raw_open, self.raw_close, self.raw_low)
+        lowest = min(self.raw_open, self.raw_close, self.raw_high)
+        if self.raw_high < highest and not math.isclose(
+            self.raw_high, highest, rel_tol=1e-12, abs_tol=1e-9
+        ):
             raise ValueError("raw_high is inconsistent with OHLC")
-        if self.raw_low > min(self.raw_open, self.raw_close, self.raw_high):
+        if self.raw_low > lowest and not math.isclose(
+            self.raw_low, lowest, rel_tol=1e-12, abs_tol=1e-9
+        ):
             raise ValueError("raw_low is inconsistent with OHLC")
         return self
 

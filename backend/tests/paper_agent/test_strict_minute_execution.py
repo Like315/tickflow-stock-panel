@@ -96,6 +96,32 @@ def test_stale_or_out_of_order_bars_never_fill() -> None:
         executor.process_bar(_bar(32))
 
 
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {
+            "raw_open": 6.95,
+            "raw_high": 6.9999999999999645,
+            "raw_low": 6.950000000000037,
+            "raw_close": 6.970000000000004,
+        },
+        {
+            "raw_open": 6.96,
+            "raw_high": 6.959999999999966,
+            "raw_low": 6.930000000000036,
+            "raw_close": 6.950000000000004,
+        },
+    ],
+)
+def test_sub_tick_float_noise_keeps_ohlc_valid(updates: dict[str, float]) -> None:
+    assert _bar(32, **updates).raw_close == updates["raw_close"]
+
+
+def test_materially_inconsistent_ohlc_is_rejected() -> None:
+    with pytest.raises(ValueError, match="raw_low is inconsistent"):
+        _bar(32, raw_low=10.01)
+
+
 def test_volume_participation_forces_partial_fill() -> None:
     executor = StrictMinuteExecutor(RiskConstitution(
         slippage_bps=0,
