@@ -176,7 +176,13 @@ class TickFlowProvider:
                     frames.append(normalized)
             if on_chunk_done is not None:
                 on_chunk_done(index, len(chunks))
-        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+        if not frames:
+            return pl.DataFrame()
+        return (
+            pl.concat(frames, how="diagonal_relaxed")
+            .unique(subset=["symbol", "datetime"], keep="last")
+            .sort(["datetime", "symbol"])
+        )
 
     def get_realtime(
         self,

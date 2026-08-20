@@ -634,7 +634,7 @@ def get_minute_batch(request: Request, body: dict):
         elif not sub.is_empty():
             result[sym] = sub.to_dicts()
 
-    # Step 2: 缺失的 symbol 批量实时拉取 (不落库)
+    # Step 2: 缺失的 symbol 批量实时拉取并按资产类型落库
     if incomplete:
         start_time = datetime(trade_date.year, trade_date.month, trade_date.day, 9, 25, 0)
         end_time = datetime(trade_date.year, trade_date.month, trade_date.day, 15, 5, 0)
@@ -657,6 +657,7 @@ def get_minute_batch(request: Request, body: dict):
                 asset_type="stock",
             )
             if not df_s.is_empty():
+                kline_sync.persist_minute_frame(df_s, repo, asset_type="stock")
                 live_parts.append(df_s)
         if etf_incomplete:
             df_e = kline_sync.sync_minute_batch(
@@ -668,6 +669,7 @@ def get_minute_batch(request: Request, body: dict):
                 asset_type="etf",
             )
             if not df_e.is_empty():
+                kline_sync.persist_minute_frame(df_e, repo, asset_type="etf")
                 live_parts.append(df_e)
         if live_parts:
             live_df = pl.concat(live_parts, how="diagonal_relaxed")
@@ -688,7 +690,7 @@ def get_minute(
     """读取某只股票某天的分钟 K 线。
 
     - 本地有完整数据(240条) → 直接返回
-    - 本地无数据或不完整 → 从 TickFlow 实时拉取返回（不写入）
+    - 本地无数据或不完整 → 从 TickFlow 实时拉取、落盘后返回
     """
     repo = request.app.state.repo
     asset_type = repo.resolve_asset_type(symbol)
@@ -718,6 +720,8 @@ def get_minute(
         # 本地无任何分钟K，尝试从 TickFlow 拉取当天
         trade_date = cn_today()
         df = kline_sync.fetch_minute_single(symbol, trade_date, asset_type=asset_type)
+        if asset_type in {"stock", "index", "etf"} and not df.is_empty():
+            kline_sync.persist_minute_frame(df, repo, asset_type=asset_type)
         price_limit = _get_price_limit_info(
             repo, symbol, trade_date, asset_type, stock_name,
         )
@@ -762,6 +766,8 @@ def get_minute(
 
     # 本地不完整或无数据 → 从 TickFlow 实时拉取
     live_df = kline_sync.fetch_minute_single(symbol, trade_date, asset_type=asset_type)
+    if asset_type in {"stock", "index", "etf"} and not live_df.is_empty():
+        kline_sync.persist_minute_frame(live_df, repo, asset_type=asset_type)
     return {
         "symbol": symbol, "name": stock_name, "stock_info": stock_info,
         "date": str(trade_date), "rows": live_df.to_dicts(),
@@ -809,14 +815,13 @@ def refresh_views(request: Request):
 async def sync_minute(request: Request):
     """手动触发分钟 K 同步(全市场)。返回 pipeline job_id 可轮询进度。
 
-    body 可选: { "days": int } — 指定拉取天数 (不传则用偏好设置)。
+    body 可选: { "days": int, "asset_type": "stock"|"index"|"etf" }。
     """
     import asyncio
 
     from app.services.pipeline_jobs import job_store, release_run_slot, try_acquire_run_slot, LONG_JOB_TIMEOUT_S
     from app.api.data import invalidate_storage_cache
     from app.services.preferences import get_minute_sync_days
-    from app.tickflow.capabilities import Cap
     from app.tickflow.pools import get_pool
 
     repo = request.app.state.repo
@@ -834,6 +839,9 @@ async def sync_minute(request: Request):
         pass
     override_days = body.get("days")
     extend_flag = body.get("extend")
+    asset_type = body.get("asset_type", "stock")
+    if asset_type not in {"stock", "index", "etf"}:
+        raise HTTPException(status_code=400, detail="asset_type 仅支持 stock、index 或 etf")
 
     # 分钟K全市场同步是长任务(数据量是日K的 ~240 倍),用更宽松的卡死阈值
     job_id, is_new = job_store.create(timeout_s=LONG_JOB_TIMEOUT_S)
@@ -852,19 +860,27 @@ async def sync_minute(request: Request):
         try:
             job_store.start(job_id)
             progress("sync_minute", 5, "解析标的池…")
-            universe = sorted(set(get_pool("watchlist")) | set(get_pool("CN_Equity_A")))
-            # 补充 instruments 全量标的，覆盖北交所、新股等
-            inst_path = repo.store.data_dir / "instruments" / "instruments.parquet"
-            if inst_path.exists():
-                try:
-                    import polars as pl
-                    inst = pl.read_parquet(inst_path, columns=["symbol"])
-                    universe = sorted(set(universe) | set(inst["symbol"].to_list()))
-                except Exception:  # noqa: BLE001
-                    pass
-            # 剔除指数 symbol: 指数分钟K无本地存储, 落库会污染 kline_minute
-            index_set = repo.get_index_symbol_set()
-            universe = [s for s in universe if s not in index_set]
+            if asset_type == "stock":
+                universe = sorted(set(get_pool("watchlist")) | set(get_pool("CN_Equity_A")))
+                # 补充 instruments 全量标的，覆盖北交所、新股等
+                inst_path = repo.store.data_dir / "instruments" / "instruments.parquet"
+                if inst_path.exists():
+                    try:
+                        import polars as pl
+                        inst = pl.read_parquet(inst_path, columns=["symbol"])
+                        universe = sorted(set(universe) | set(inst["symbol"].to_list()))
+                    except Exception:  # noqa: BLE001
+                        pass
+                # 剔除指数 symbol, 避免污染股票分钟表
+                index_set = repo.get_index_symbol_set()
+                universe = [s for s in universe if s not in index_set]
+            else:
+                inst = repo.get_instruments_asset(asset_type)
+                universe = (
+                    sorted(set(inst["symbol"].to_list()))
+                    if not inst.is_empty() and "symbol" in inst.columns
+                    else []
+                )
             progress("sync_minute", 10, f"标的池 {len(universe)} 只")
 
             days = override_days if override_days else get_minute_sync_days()
@@ -881,16 +897,25 @@ async def sync_minute(request: Request):
                     universe, repo, capset, days=days,
                     extend_backward=extend_backward,
                     on_chunk_done=_on_chunk,
+                    asset_type=asset_type,
                 )
 
             written = await loop.run_in_executor(_long_task_executor, _run)
 
             # 刷新视图
             from app.jobs.daily_pipeline import _refresh_single_view
-            _refresh_single_view(repo, "kline_minute")
+            minute_view = {
+                "index": "kline_index_minute",
+                "etf": "kline_etf_minute",
+            }.get(asset_type, "kline_minute")
+            _refresh_single_view(repo, minute_view)
 
             progress("done", 100, f"分钟 K 同步完成,{written} 行")
-            job_store.succeed(job_id, {"minute_rows": written, "universe_size": len(universe)})
+            job_store.succeed(job_id, {
+                "minute_rows": written,
+                "universe_size": len(universe),
+                "asset_type": asset_type,
+            })
             invalidate_storage_cache()
         except Exception as e:  # noqa: BLE001
             job_store.fail(job_id, str(e))
@@ -909,8 +934,9 @@ async def sync_minute_single(request: Request, body: dict):
     body: { "symbol": "000001.SZ" }
     用于个股分时图"获取数据"按钮: 本地无数据时单独拉取并持久化。
     """
+    import asyncio
+
     from app.services.preferences import get_minute_sync_days
-    from app.tickflow.capabilities import Cap
 
     symbol = body.get("symbol", "").strip()
     if not symbol:
@@ -919,10 +945,7 @@ async def sync_minute_single(request: Request, body: dict):
     repo = request.app.state.repo
     capset = request.app.state.capabilities
 
-    # 指数分钟K无本地存储, 落库会污染股票分钟表 kline_minute;
-    # 指数分钟数据走 /api/index/minute 实时读取, 此端点显式拒绝。
-    if repo.resolve_asset_type(symbol) == "index":
-        raise HTTPException(status_code=400, detail="指数分钟K不支持落库同步 (指数分钟数据走 /api/index/minute 实时读取)")
+    asset_type = repo.resolve_asset_type(symbol)
 
     if not _minute_allowed(capset):
         raise HTTPException(status_code=403, detail="需要 Pro+ 权限")
@@ -931,15 +954,21 @@ async def sync_minute_single(request: Request, body: dict):
     loop = asyncio.get_event_loop()
 
     def _run():
-        return kline_sync.sync_and_persist_minute([symbol], repo, capset, days=days)
+        return kline_sync.sync_and_persist_minute(
+            [symbol], repo, capset, days=days, asset_type=asset_type,
+        )
 
     written = await loop.run_in_executor(_long_task_executor, _run)
 
     # 刷新视图
     from app.jobs.daily_pipeline import _refresh_single_view
-    _refresh_single_view(repo, "kline_minute")
+    minute_view = {
+        "index": "kline_index_minute",
+        "etf": "kline_etf_minute",
+    }.get(asset_type, "kline_minute")
+    _refresh_single_view(repo, minute_view)
 
-    return {"status": "ok", "symbol": symbol, "rows": written}
+    return {"status": "ok", "symbol": symbol, "rows": written, "asset_type": asset_type}
 
 
 @router.post("/clear_minute")

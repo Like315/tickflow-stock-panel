@@ -35,11 +35,11 @@ def to_polars(data) -> pl.DataFrame:
         return pl.from_pandas(data.reset_index())
     try:
         return pl.DataFrame(data)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return pl.DataFrame()
 
 
-def normalize_daily(data, default_symbol: str | None = None, source: str = "tickflow") -> pl.DataFrame:  # noqa: ARG001
+def normalize_daily(data, default_symbol: str | None = None, source: str = "tickflow") -> pl.DataFrame:
     df = to_polars(data)
     if df.is_empty():
         return df
@@ -67,7 +67,7 @@ def normalize_daily(data, default_symbol: str | None = None, source: str = "tick
     return df.select(keep) if keep else pl.DataFrame()
 
 
-def normalize_adj_factors(data, source: str = "tickflow") -> pl.DataFrame:  # noqa: ARG001
+def normalize_adj_factors(data, source: str = "tickflow") -> pl.DataFrame:
     df = to_polars(data)
     if df.is_empty():
         return df
@@ -111,7 +111,10 @@ def normalize_minute(
         return df
     aliases = {
         "symbol": ("ts_code",),
-        "datetime": ("trade_time", "trade_date"),
+        # TickFlow minute frames include an epoch timestamp together with
+        # string trade_date/trade_time columns.  Prefer the complete epoch;
+        # a time-only string cannot be safely reconstructed on its own.
+        "datetime": ("timestamp", "trade_time", "trade_date"),
         "volume": ("vol",),
         "amount": ("amt",),
     }

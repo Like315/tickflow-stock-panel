@@ -64,6 +64,7 @@ class DataStore:
             "kline_daily_enriched",
             "kline_index_daily",
             "kline_index_enriched",
+            "kline_index_minute",
             "kline_etf_daily",
             "kline_etf_enriched",
             "kline_etf_minute",
@@ -163,6 +164,8 @@ class DataStore:
                 SELECT * FROM read_parquet('{d}/kline_index_daily/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW kline_index_enriched AS
                 SELECT * FROM read_parquet('{d}/kline_index_enriched/**/*.parquet', union_by_name=true)""",
+            f"""CREATE OR REPLACE VIEW kline_index_minute AS
+                SELECT * FROM read_parquet('{d}/kline_index_minute/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW kline_etf_daily AS
                 SELECT * FROM read_parquet('{d}/kline_etf_daily/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW kline_etf_enriched AS
@@ -256,6 +259,12 @@ class DataStore:
                        'stock' AS asset_type, 'tickflow' AS source
                 FROM kline_minute
             """)
+        if self._has_parquet("kline_index_minute"):
+            minute_parts.append("""
+                SELECT symbol, datetime, open, high, low, close, volume, amount,
+                       'index' AS asset_type, 'tickflow' AS source
+                FROM kline_index_minute
+            """)
         if self._has_parquet("kline_etf_minute"):
             minute_parts.append("""
                 SELECT symbol, datetime, open, high, low, close, volume, amount,
@@ -347,6 +356,7 @@ class KlineRepository:
         self._index_enriched_glob = str(store.data_dir / "kline_index_enriched" / "**" / "*.parquet")
         self._etf_enriched_glob = str(store.data_dir / "kline_etf_enriched" / "**" / "*.parquet")
         self._minute_glob = str(store.data_dir / "kline_minute" / "**" / "*.parquet")
+        self._index_minute_glob = str(store.data_dir / "kline_index_minute" / "**" / "*.parquet")
         self._etf_minute_glob = str(store.data_dir / "kline_etf_minute" / "**" / "*.parquet")
         self._inst_glob = str(store.data_dir / "instruments" / "**" / "*.parquet")
         self._index_inst_glob = str(store.data_dir / "instruments_index" / "**" / "*.parquet")
@@ -1431,8 +1441,12 @@ class KlineRepository:
         return pl.DataFrame()
 
     def _minute_glob_for(self, asset_type: str) -> str:
-        """按资产类型选择分钟K parquet glob。ETF 分钟数据独立存储于 kline_etf_minute。"""
-        return self._etf_minute_glob if asset_type == "etf" else self._minute_glob
+        """按资产类型选择独立的分钟 K parquet glob。"""
+        if asset_type == "index":
+            return self._index_minute_glob
+        if asset_type == "etf":
+            return self._etf_minute_glob
+        return self._minute_glob
 
     def get_minute(
         self,
@@ -1522,7 +1536,7 @@ class KlineRepository:
         """
         if not symbols or not dates:
             return pl.DataFrame()
-        base = self._etf_minute_glob.rsplit("/", 2)[0] if asset_type == "etf" else self._minute_glob.rsplit("/", 2)[0]
+        base = self._minute_glob_for(asset_type).rsplit("/", 2)[0]
         # 收集存在的分区文件路径, 避免对不存在的文件 scan 报错
         parts: list[str] = []
         for d in dates:
@@ -1705,7 +1719,10 @@ class KlineRepository:
     # ================================================================
 
     def latest_minute_date(self, symbol: str, asset_type: str = "stock") -> date | None:
-        table = "kline_etf_minute" if asset_type == "etf" else "kline_minute"
+        table = {
+            "index": "kline_index_minute",
+            "etf": "kline_etf_minute",
+        }.get(asset_type, "kline_minute")
         try:
             with self._lock:
                 row = self.db.execute(
@@ -1944,10 +1961,14 @@ class KlineRepository:
                 SELECT * FROM read_parquet('{d}/kline_index_daily/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW kline_index_enriched AS
                 SELECT * FROM read_parquet('{d}/kline_index_enriched/**/*.parquet', union_by_name=true)""",
+            f"""CREATE OR REPLACE VIEW kline_index_minute AS
+                SELECT * FROM read_parquet('{d}/kline_index_minute/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW kline_etf_daily AS
                 SELECT * FROM read_parquet('{d}/kline_etf_daily/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW kline_etf_enriched AS
                 SELECT * FROM read_parquet('{d}/kline_etf_enriched/**/*.parquet', union_by_name=true)""",
+            f"""CREATE OR REPLACE VIEW kline_etf_minute AS
+                SELECT * FROM read_parquet('{d}/kline_etf_minute/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW instruments_index AS
                 SELECT * FROM read_parquet('{d}/instruments_index/**/*.parquet', union_by_name=true)""",
             f"""CREATE OR REPLACE VIEW instruments_etf AS
@@ -1962,12 +1983,26 @@ class KlineRepository:
         with self._lock:
             self.store._register_unified_views()
 
+    def refresh_minute_views(self, asset_type: str = "stock") -> None:
+        """刷新指定资产分钟视图，并同步重建统一分钟视图。"""
+        directory, table = {
+            "index": ("kline_index_minute", "kline_index_minute"),
+            "etf": ("kline_etf_minute", "kline_etf_minute"),
+        }.get(asset_type, ("kline_minute", "kline_minute"))
+        d = self.store.data_dir.as_posix()
+        with self._lock:
+            self.db.execute(
+                f"CREATE OR REPLACE VIEW {table} AS "
+                f"SELECT * FROM read_parquet('{d}/{directory}/**/*.parquet', union_by_name=true)"
+            )
+            self.store._register_unified_views()
+
     def rebuild_views(self) -> None:
-        """重建全部 13 张 parquet 视图并重挂 unified 视图 —— 唯一权威实现。
+        """重建全部 parquet 视图并重挂 unified 视图 —— 唯一权威实现。
 
         原先 daily_pipeline._refresh_views(盘后管道) 与 /api/data/clear(清库) 各自
         内联了同一份视图重建 SQL, 清库那份还漏了几张视图导致漂移。此处收敛为单一入口:
-        覆盖全部 13 张视图 (二者的超集), 空目录 (清库后) 也能安全重挂。
+        覆盖全部视图 (二者的超集), 空目录 (清库后) 也能安全重挂。
         """
         d = self.store.data_dir.as_posix()
         views = {
@@ -1975,6 +2010,7 @@ class KlineRepository:
             "kline_enriched": f"{d}/kline_daily_enriched/**/*.parquet",
             "kline_index_daily": f"{d}/kline_index_daily/**/*.parquet",
             "kline_index_enriched": f"{d}/kline_index_enriched/**/*.parquet",
+            "kline_index_minute": f"{d}/kline_index_minute/**/*.parquet",
             "kline_etf_daily": f"{d}/kline_etf_daily/**/*.parquet",
             "kline_etf_enriched": f"{d}/kline_etf_enriched/**/*.parquet",
             "kline_etf_minute": f"{d}/kline_etf_minute/**/*.parquet",

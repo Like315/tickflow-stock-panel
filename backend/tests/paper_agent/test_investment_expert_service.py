@@ -108,6 +108,44 @@ def test_service_never_replays_minutes_before_runtime_start(tmp_path: Path) -> N
     assert service.store.list_execution_events() == []
 
 
+def test_service_skips_duplicate_and_already_processed_minutes(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 18)
+    repo = _Repo(trade_date)
+    service = InvestmentExpertService(repo, tmp_path)
+    provider = _MinuteProvider(repo.symbols, trade_date)
+    provider.frame = pl.concat([provider.frame, provider.frame])
+    service.minute_provider = provider
+    now = datetime(2026, 8, 18, 9, 33, tzinfo=CN_TZ)
+    try:
+        assert service._prepare_session(now)
+        already_processed = repo.symbols[0]
+        service._executor.last_bar_time[already_processed] = now.replace(minute=32)
+        service._last_error = "old minute replay error"
+
+        result = service._process_new_minute_bars(now)
+    finally:
+        service.close()
+
+    assert result["status"] == "succeeded"
+    assert result["processed_bars"] == len(repo.symbols) - 1
+    assert service._last_error is None
+
+
+def test_runtime_tick_is_not_reentrant(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 18)
+    service = InvestmentExpertService(_Repo(trade_date), tmp_path)
+    service._cycle_lock.acquire()
+    try:
+        result = service.run_paper_cycle_once(
+            datetime(2026, 8, 18, 9, 33, tzinfo=CN_TZ)
+        )
+    finally:
+        service._cycle_lock.release()
+        service.close()
+
+    assert result == {"status": "reused", "reason": "paper_cycle_in_progress"}
+
+
 def test_runtime_fails_closed_without_minute_capability(tmp_path: Path) -> None:
     trade_date = date(2026, 8, 18)
     service = InvestmentExpertService(_Repo(trade_date), tmp_path, capset=CapabilitySet())

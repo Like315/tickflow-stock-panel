@@ -66,6 +66,38 @@ def test_tickflow_provider_requests_unadjusted_minute_prices(monkeypatch) -> Non
     assert calls[0]["adjust"] == "none"
 
 
+def test_tickflow_provider_deduplicates_merged_chunks(monkeypatch) -> None:
+    class Klines:
+        def batch(self, symbols: list[str], **kwargs: Any) -> pl.DataFrame:
+            return pl.DataFrame({
+                "symbol": ["000001.SZ"],
+                "timestamp": [1787016660000],
+                "open": [10.0],
+                "high": [10.1],
+                "low": [9.9],
+                "close": [10.0],
+                "volume": [100.0],
+                "amount": [100_000.0],
+            })
+
+    class Client:
+        klines = Klines()
+
+    monkeypatch.setattr("app.data_providers.tickflow_provider.get_client", lambda: Client())
+    provider = TickFlowProvider()
+    provider.configure_minute_limits(batch_size=1, rpm=0)
+
+    result = provider.get_minute(
+        ["000001.SZ", "000002.SZ"],
+        datetime(2026, 8, 18, 9, 30),
+        datetime(2026, 8, 18, 9, 32),
+        "stock",
+    )
+
+    assert result.height == 1
+    assert result.select(["symbol", "datetime"]).unique().height == 1
+
+
 def test_normalize_minute_converts_aware_datetime_to_beijing_wall_time() -> None:
     result = normalize_minute(pl.DataFrame({
         "symbol": ["000001.SZ"],
@@ -120,3 +152,21 @@ def test_normalize_minute_uses_one_datetime_alias() -> None:
     }))
 
     assert result["datetime"].to_list() == [trade_time]
+
+
+def test_normalize_minute_prefers_epoch_timestamp_over_string_time_aliases() -> None:
+    result = normalize_minute(pl.DataFrame({
+        "symbol": ["600000.SH"],
+        "timestamp": [1787016660000],
+        "trade_date": ["2026-08-18"],
+        "trade_time": ["09:31:00"],
+        "open": [10.0],
+        "high": [10.1],
+        "low": [9.9],
+        "close": [10.0],
+        "volume": [100.0],
+        "amount": [100_000.0],
+    }))
+
+    assert result.height == 1
+    assert result["datetime"].to_list() == [datetime(2026, 8, 18, 9, 31)]

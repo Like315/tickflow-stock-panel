@@ -345,6 +345,29 @@ class PaperAgentStore:
                 (status, self._json(summary), self._now(), session_id),
             )
 
+    def recover_interrupted_records(self, *, before_trade_date: date) -> dict[str, int]:
+        """Close records whose in-memory worker cannot survive an application restart."""
+        finished_at = self._now()
+        interruption = self._json({"reason": "interrupted_on_restart"})
+        with self._lock, self._connect() as conn:
+            sessions = conn.execute(
+                """
+                UPDATE trading_sessions
+                SET status = 'interrupted', summary_json = ?, finished_at = ?
+                WHERE status = 'running' AND finished_at IS NULL AND trade_date < ?
+                """,
+                (interruption, finished_at, before_trade_date.isoformat()),
+            ).rowcount
+            datasets = conn.execute(
+                """
+                UPDATE dataset_runs
+                SET status = 'failed', error = 'interrupted_on_restart', finished_at = ?
+                WHERE status = 'running' AND finished_at IS NULL
+                """,
+                (finished_at,),
+            ).rowcount
+        return {"sessions": sessions, "datasets": datasets}
+
     def save_decision(
         self,
         *,

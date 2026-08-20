@@ -116,7 +116,11 @@ class TrainingDatasetBuilder:
         written_candidate_rows = 0
         downloaded_minute_rows = 0
         skipped_minute_dates = 0
-        sorted_groups = sorted(date_groups.items(), key=lambda item: str(item[0]))
+        missing_minute_dates: list[str] = []
+        sorted_groups = sorted(
+            date_groups.items(),
+            key=lambda item: item[0][0] if isinstance(item[0], tuple) else item[0],
+        )
         total = len(sorted_groups)
         previous_symbols: list[str] = []
         for index, (key, group) in enumerate(sorted_groups, start=1):
@@ -156,9 +160,18 @@ class TrainingDatasetBuilder:
                     minute.write_parquet(minute_tmp)
                     minute_tmp.replace(minute_path)
                     downloaded_minute_rows += minute.height
+                else:
+                    missing_minute_dates.append(str(trade_date))
             previous_symbols = current_symbols
             if progress_cb is not None:
                 progress_cb(index, total, str(trade_date))
+
+        if download_minutes and missing_minute_dates:
+            sample = ", ".join(missing_minute_dates[:5])
+            raise RuntimeError(
+                "minute dataset incomplete: "
+                f"{len(missing_minute_dates)} date(s) returned no data; first: {sample}"
+            )
 
         manifest = {
             "schema_version": 1,

@@ -77,6 +77,34 @@ def test_session_and_execution_events_are_append_only(tmp_path) -> None:
     assert len(store.list_execution_events(session_id=session["id"])) == 1
 
 
+def test_restart_recovery_closes_stale_sessions_and_dataset_runs(tmp_path) -> None:
+    store = PaperAgentStore(tmp_path)
+    policy = store.ensure_baseline_policy()
+    stale = store.start_session(
+        date(2026, 8, 19), policy.id, mode="paper", candidates=["A"]
+    )
+    current = store.start_session(
+        date(2026, 8, 20), policy.id, mode="paper", candidates=["B"]
+    )
+    store.record_dataset_run(
+        start_date=date(2025, 8, 20),
+        end_date=date(2026, 8, 20),
+        status="running",
+        manifest={},
+    )
+
+    recovered = store.recover_interrupted_records(before_trade_date=date(2026, 8, 20))
+
+    assert recovered == {"sessions": 1, "datasets": 1}
+    sessions = {item["id"]: item for item in store.list_sessions()}
+    assert sessions[stale["id"]]["status"] == "interrupted"
+    assert sessions[stale["id"]]["summary"] == {"reason": "interrupted_on_restart"}
+    assert sessions[current["id"]]["status"] == "running"
+    dataset = store.status()["dataset"]
+    assert dataset["status"] == "failed"
+    assert dataset["error"] == "interrupted_on_restart"
+
+
 def test_historical_minute_partition_marks_one_price_limit_up() -> None:
     trade_date = date(2026, 8, 18)
     daily = pl.DataFrame({
@@ -116,3 +144,51 @@ def test_partial_enriched_history_is_filled_from_raw_daily() -> None:
 
     assert result["date"].to_list() == raw["date"].to_list()
     assert result["rps_20"].to_list() == [None, 1.0, 1.0]
+
+
+def test_dataset_build_fails_when_required_minute_dates_are_empty(tmp_path) -> None:
+    dates = pl.date_range(date(2026, 1, 1), date(2026, 2, 10), interval="1d", eager=True)
+    daily = pl.DataFrame({
+        "symbol": ["600000.SH"] * len(dates),
+        "name": ["浦发银行"] * len(dates),
+        "date": dates,
+        "open": [10.0] * len(dates),
+        "high": [10.2] * len(dates),
+        "low": [9.8] * len(dates),
+        "close": [10.0 + index * 0.01 for index in range(len(dates))],
+        "volume": [1_000.0] * len(dates),
+        "amount": [100_000.0] * len(dates),
+    })
+
+    class Repo:
+        def latest_daily_date(self):
+            return dates[-1]
+
+        def get_instruments(self):
+            return pl.DataFrame({"symbol": ["600000.SH"], "name": ["浦发银行"]})
+
+        def get_enriched_range(self, _start_date, _end_date):
+            return daily
+
+        def get_daily_batch(self, _symbols, _start_date, _end_date, *, columns):
+            return daily.select(column for column in columns if column in daily.columns)
+
+    class EmptyMinuteProvider:
+        def __init__(self):
+            self.requested_dates = []
+
+        def get_minute(self, _symbols, **_kwargs):
+            self.requested_dates.append(_kwargs["start_time"].date())
+            return pl.DataFrame()
+
+    provider = EmptyMinuteProvider()
+    builder = TrainingDatasetBuilder(Repo(), tmp_path, provider)
+
+    with pytest.raises(RuntimeError, match="minute dataset incomplete"):
+        builder.build(
+            start_date=date(2026, 1, 22),
+            end_date=date(2026, 2, 10),
+            candidate_limit=1,
+            download_minutes=True,
+        )
+    assert provider.requested_dates == sorted(provider.requested_dates)

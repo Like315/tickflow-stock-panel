@@ -29,11 +29,11 @@ JobStatus = Literal["pending", "running", "succeeded", "failed"]
 #
 # 超时阈值按任务类型区分:
 #   - 普通任务(日K管道/扩展/修正/重算): 1200s (20 分钟)
-#   - 长任务(分钟K全市场同步,数据量是日K的 ~240 倍): 1800s (30 分钟)
+#   - 长任务(分钟K全市场同步,数据量是日K的 ~240 倍): 7200s (2 小时)
 # 分钟K即使流式落盘后仍可能跑十几到数十分钟(限速 sleep 是主因),
 # 用 600s 会误杀正常任务并留下写盘僵尸线程。
 DEFAULT_JOB_TIMEOUT_S = 1200
-LONG_JOB_TIMEOUT_S = 1800
+LONG_JOB_TIMEOUT_S = 7200
 # 向后兼容: 旧调用方引用 STALE_JOB_TIMEOUT_S
 STALE_JOB_TIMEOUT_S = DEFAULT_JOB_TIMEOUT_S
 
@@ -116,7 +116,7 @@ class JobStore:
         is_new=False 表示复用了已有活跃任务,调用方**不得**再调度新的后台任务。
 
         timeout_s: reap_stale 判定卡死的阈值。普通任务默认 1200s;
-            分钟K全市场同步等长任务传 LONG_JOB_TIMEOUT_S (1800s)。
+            分钟K全市场同步等长任务传 LONG_JOB_TIMEOUT_S (7200s)。
         """
         with self._lock:
             if self._active_id:

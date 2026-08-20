@@ -44,6 +44,9 @@ class InvestmentExpertService:
         self.strategy_engine = strategy_engine
         self.screener_service = screener_service
         self.store = PaperAgentStore(data_dir)
+        recovered = self.store.recover_interrupted_records(before_trade_date=cn_now().date())
+        if recovered["sessions"] or recovered["datasets"]:
+            logger.warning("investment expert recovered interrupted records: %s", recovered)
         self.store.ensure_baseline_policy()
         self.constitution = RiskConstitution()
         self.minute_provider = get_provider("tickflow")
@@ -52,6 +55,7 @@ class InvestmentExpertService:
         self.dataset_root = data_dir / "user_data" / "investment_expert" / "training"
         self._executor_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="investment-expert")
         self._task_lock = threading.RLock()
+        self._cycle_lock = threading.Lock()
         self._operation_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._close_event = threading.Event()
@@ -159,6 +163,14 @@ class InvestmentExpertService:
         return time(9, 30) <= clock < time(11, 31) or time(13, 0) <= clock < time(15, 1)
 
     def run_paper_cycle_once(self, now: datetime | None = None) -> dict[str, Any]:
+        if not self._cycle_lock.acquire(blocking=False):
+            return {"status": "reused", "reason": "paper_cycle_in_progress"}
+        try:
+            return self._run_paper_cycle_once(now)
+        finally:
+            self._cycle_lock.release()
+
+    def _run_paper_cycle_once(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or cn_now()
         if now.tzinfo is None:
             now = now.replace(tzinfo=CN_TZ)
@@ -455,6 +467,7 @@ class InvestmentExpertService:
         )
         if minute.is_empty():
             return {"status": "degraded", "reason": "minute_data_empty"}
+        minute = minute.unique(subset=["symbol", "datetime"], keep="last")
         processed = 0
         decisions = 0
         event_count = 0
@@ -469,16 +482,20 @@ class InvestmentExpertService:
                 continue
             if bar_time + timedelta(minutes=1) > now:
                 continue
-            context = self._candidate_context.get(str(row["symbol"]), {})
+            symbol = str(row["symbol"])
+            symbol_last_bar = self._executor.last_bar_time.get(symbol)
+            if symbol_last_bar is not None and bar_time <= symbol_last_bar:
+                continue
+            context = self._candidate_context.get(symbol, {})
             is_limit_up, is_limit_down = self._limit_flags(
-                symbol=str(row["symbol"]),
+                symbol=symbol,
                 name=str(context.get("name") or ""),
                 trade_date=now.date(),
                 previous_close=context.get("previous_close"),
                 row=row,
             )
             bar = MinuteBar(
-                symbol=str(row["symbol"]),
+                symbol=symbol,
                 datetime=bar_time,
                 received_at=now,
                 raw_open=float(row.get("raw_open", row["open"])),
@@ -534,6 +551,7 @@ class InvestmentExpertService:
                     "executor_state": self._executor.export_state(),
                 },
             )
+        self._last_error = None
         return {
             "status": "succeeded",
             "processed_bars": processed,
