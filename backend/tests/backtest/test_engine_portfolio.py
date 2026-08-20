@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+import numpy as np
 import polars as pl
 
 from app.backtest.engine import BacktestEngine, MatcherConfig
+from app.backtest.matrix import (
+    build_market_data_matrix,
+    build_market_matrix_from_signals,
+    make_signal_matrix,
+)
 
 
 def _panel(symbols: list[str], days: int = 4, price: float = 10.0, overrides: dict[tuple[str, int], dict] | None = None) -> pl.DataFrame:
@@ -66,6 +72,41 @@ def test_max_exposure_sets_target_position_and_caps_count():
     assert {t.symbol for t in result.trades} == {"A", "B", "C"}
     assert all(abs(t.position_pct - 0.2) < 0.001 for t in result.trades)
     assert result.stats["max_exposure"] <= 0.61
+
+
+def test_market_matrix_entry_price_override_uses_confirmed_intraday_fill():
+    panel = _panel(["A"], days=3)
+    market = build_market_data_matrix(panel)
+    entry = np.zeros(market.shape, dtype=np.uint8)
+    entry[0, 0] = 1
+    signals = make_signal_matrix(
+        market.shape,
+        entry=entry,
+        entry_signal_code=np.where(entry, 0, -1),
+        entry_signal_ids=("intraday_confirmed",),
+    )
+    fill = np.full(market.shape, np.nan, dtype=np.float32)
+    fill[0, 0] = 10.25
+    matrix = build_market_matrix_from_signals(
+        market,
+        signals,
+        entry_price_override=fill,
+    )
+
+    result = _engine().simulate_market_matrix(
+        matrix,
+        MatcherConfig(
+            entry_fill="close_t",
+            exit_fill="close_t",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=1,
+            initial_capital=100_000,
+        ),
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0].entry_price == 10.25
 
 
 def test_one_price_limit_up_blocks_buy():

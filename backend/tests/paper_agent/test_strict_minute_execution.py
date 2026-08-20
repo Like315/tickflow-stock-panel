@@ -37,6 +37,24 @@ def _intent(side: str, signal_minute: int, shares: int = 1000) -> OrderIntent:
     )
 
 
+def test_minute_bar_tolerates_provider_float_noise() -> None:
+    bar = _bar(
+        31,
+        raw_open=4.60,
+        raw_high=4.599999999999986,
+        raw_low=4.550000000000012,
+        raw_close=4.56,
+    )
+
+    assert bar.raw_open == 4.60
+    assert bar.raw_high == 4.599999999999986
+
+
+def test_minute_bar_rejects_materially_invalid_ohlc() -> None:
+    with pytest.raises(ValueError, match="raw_high is inconsistent"):
+        _bar(31, raw_open=10.0, raw_high=9.99, raw_low=9.9, raw_close=9.95)
+
+
 def test_signal_cannot_fill_before_next_minute() -> None:
     executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
     executor.submit(_intent("buy", 32))

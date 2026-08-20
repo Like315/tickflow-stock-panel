@@ -8,7 +8,7 @@
 
 ## 内置策略
 
-**18 个内置策略**,每个策略一个独立 Python 文件,基于 Polars 表达式向量化实现(`backend/app/strategy/builtin/`):
+**20 个内置策略**,每个策略一个独立 Python 文件,基于 Polars 表达式向量化实现(`backend/app/strategy/builtin/`):
 
 | 类型        | 代表策略                                                 |
 | :---------- | :------------------------------------------------------- |
@@ -76,6 +76,26 @@
 | `ENTRY_SIGNALS` / `EXIT_SIGNALS` | 进出场信号列(回测用) |
 
 完整字段说明与示例见 [`strategy-guide.md`](../backend/app/strategy/prompts/strategy-guide.md)。
+
+---
+
+## 回测板块上下文过滤(实验)
+
+矩阵策略回测可通过 `overrides.sector_context_filter` 叠加一级行业上下文,不改动策略本身的量价信号和退出规则。`apply_as=filter` 用作硬过滤;`apply_as=score` 则把行业趋势、主线活跃度和板块内个股相对强度作为软评分,不删除原始信号。过滤模式支持 `trend`、`mainline`、`intersection` 和 `union`。
+
+默认 `lag_bars=0`:信号日 T 收盘后同时计算量价信号、行业趋势、主线活跃度和市场阶段,并在 T+1 开盘执行,不会使用 T+1 行情。`lag_bars=1` 保留为更保守的 T-1 对照。若改成 T 日盘中成交,则不得使用当天完整日线数据。当前行业归属来自扩展行业的最新 snapshot;用于历史回测时需披露行业成分映射偏差,不能视为完整的 point-in-time 行业库。
+
+三版本量价实验包含严格量价基线、板块龙头软评分、市场阶段过滤与半仓风控,并使用账户级组合撮合。C 版要求市场分数连续两个交易日达标,过滤明显偏离 MA20 的浅突破,同时以 3 个持仓槽位匹配稀疏信号。可复现运行:
+
+```powershell
+cd backend
+.venv/Scripts/python.exe -m scripts.bt_volume_dry_breakout_sector_context `
+  --start 2024-01-02 --end 2026-08-17
+```
+
+追加 `--context-lag-bars 1` 可复现 T-1 环境因子消融对照。
+
+情景分析可用 `--skip-entry-start` 与 `--skip-entry-end` 禁止指定日期区间新开仓;区间内行情、持仓估值和卖出逻辑仍保留,不会从时间序列中删除交易日。
 
 ---
 

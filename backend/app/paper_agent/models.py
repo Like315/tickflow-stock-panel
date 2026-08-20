@@ -129,9 +129,18 @@ class MinuteBar(BaseModel):
 
     @model_validator(mode="after")
     def validate_ohlc(self) -> MinuteBar:
-        if self.raw_high < max(self.raw_open, self.raw_close, self.raw_low):
+        upper = max(self.raw_open, self.raw_close, self.raw_low)
+        lower = min(self.raw_open, self.raw_close, self.raw_high)
+        # TickFlow SDK may expose IEEE-754 residue around the exchange tick
+        # price (for example 4.599999999999986 instead of 4.60).  Accept only
+        # machine-scale differences; materially inconsistent OHLC still fails.
+        if self.raw_high < upper and not math.isclose(
+            self.raw_high, upper, rel_tol=1e-12, abs_tol=1e-9
+        ):
             raise ValueError("raw_high is inconsistent with OHLC")
-        if self.raw_low > min(self.raw_open, self.raw_close, self.raw_high):
+        if self.raw_low > lower and not math.isclose(
+            self.raw_low, lower, rel_tol=1e-12, abs_tol=1e-9
+        ):
             raise ValueError("raw_low is inconsistent with OHLC")
         return self
 

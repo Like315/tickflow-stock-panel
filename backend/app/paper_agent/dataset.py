@@ -17,6 +17,10 @@ from app.price_limits import (
 )
 
 
+class HistoricalMinuteDataError(RuntimeError):
+    """Historical minute data is missing or incomplete for an executable date."""
+
+
 def build_point_in_time_candidates(
     daily: pl.DataFrame,
     *,
@@ -111,15 +115,15 @@ class TrainingDatasetBuilder:
         minute_dir = self.root / "minute"
         candidate_dir.mkdir(parents=True, exist_ok=True)
         minute_dir.mkdir(parents=True, exist_ok=True)
-        date_groups = candidates.partition_by("trade_date", as_dict=True)
+        date_groups = self._ordered_date_groups(candidates)
         written_candidate_rows = 0
         downloaded_minute_rows = 0
         skipped_minute_dates = 0
-        sorted_groups = sorted(date_groups.items(), key=lambda item: str(item[0]))
-        total = len(sorted_groups)
+        total = len(date_groups)
         previous_symbols: list[str] = []
-        for index, (key, group) in enumerate(sorted_groups, start=1):
-            trade_date = key[0] if isinstance(key, tuple) else key
+        minute_rows_total = 0
+        minute_dates_available = 0
+        for index, (trade_date, group) in enumerate(date_groups, start=1):
             candidate_path = candidate_dir / f"date={trade_date}" / "part.parquet"
             candidate_path.parent.mkdir(parents=True, exist_ok=True)
             candidate_tmp = candidate_path.with_suffix(".parquet.tmp")
@@ -132,12 +136,19 @@ class TrainingDatasetBuilder:
             # Include yesterday's candidates for legal T+1 exits and labels.
             # Carry-over symbols remain excluded from today's buy candidates.
             symbols = sorted(set(current_symbols) | set(previous_symbols))
+            required_symbols = self._tradable_symbols(daily, trade_date, symbols)
             if (
                 download_minutes
                 and minute_path.exists()
-                and self._minute_partition_valid(minute_path, symbols)
+                and self._minute_partition_valid(
+                    minute_path,
+                    required_symbols,
+                    trade_date=trade_date,
+                )
             ):
                 skipped_minute_dates += 1
+                minute_dates_available += 1
+                minute_rows_total += self._parquet_row_count(minute_path)
             elif download_minutes:
                 start_time = datetime.combine(trade_date, time(9, 15), tzinfo=CN_TZ)
                 end_time = datetime.combine(trade_date, time(15, 5), tzinfo=CN_TZ)
@@ -148,13 +159,31 @@ class TrainingDatasetBuilder:
                     asset_type="stock",
                     freq="1m",
                 )
-                if not minute.is_empty():
-                    minute = self._add_execution_flags(minute, daily, trade_date)
-                    minute_path.parent.mkdir(parents=True, exist_ok=True)
-                    minute_tmp = minute_path.with_suffix(".parquet.tmp")
-                    minute.write_parquet(minute_tmp)
-                    minute_tmp.replace(minute_path)
-                    downloaded_minute_rows += minute.height
+                if minute.is_empty():
+                    provider_name = getattr(self.minute_provider, "name", "configured provider")
+                    raise HistoricalMinuteDataError(
+                        f"historical minute provider '{provider_name}' returned no 1m data "
+                        f"for {trade_date}; verify historical-minute entitlement and coverage"
+                    )
+                minute = self._filter_trade_date(minute, trade_date)
+                if minute.is_empty():
+                    raise HistoricalMinuteDataError(
+                        f"historical minute response contains no rows for requested date {trade_date}"
+                    )
+                minute = self._add_execution_flags(minute, daily, trade_date)
+                if not self._minute_frame_valid(minute, required_symbols, trade_date=trade_date):
+                    missing = self._missing_symbols(minute, required_symbols)
+                    suffix = f": {', '.join(missing[:5])}" if missing else ""
+                    raise HistoricalMinuteDataError(
+                        f"historical minute coverage is incomplete for {trade_date}{suffix}"
+                    )
+                minute_path.parent.mkdir(parents=True, exist_ok=True)
+                minute_tmp = minute_path.with_suffix(".parquet.tmp")
+                minute.write_parquet(minute_tmp)
+                minute_tmp.replace(minute_path)
+                downloaded_minute_rows += minute.height
+                minute_rows_total += minute.height
+                minute_dates_available += 1
             previous_symbols = current_symbols
             if progress_cb is not None:
                 progress_cb(index, total, str(trade_date))
@@ -168,6 +197,9 @@ class TrainingDatasetBuilder:
             "candidate_limit": candidate_limit,
             "candidate_dates": total,
             "candidate_rows": written_candidate_rows,
+            "minute_source": getattr(self.minute_provider, "name", "unknown"),
+            "minute_dates_available": minute_dates_available,
+            "minute_rows": minute_rows_total,
             "minute_rows_downloaded": downloaded_minute_rows,
             "minute_dates_resumed": skipped_minute_dates,
             "price_contract": {
@@ -181,13 +213,91 @@ class TrainingDatasetBuilder:
             json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
         self.root.mkdir(parents=True, exist_ok=True)
-        (self.root / "manifest.json").write_text(
+        manifest_path = self.root / "manifest.json"
+        manifest_tmp = manifest_path.with_suffix(".json.tmp")
+        manifest_tmp.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        manifest_tmp.replace(manifest_path)
         return manifest
 
     @staticmethod
-    def _minute_partition_valid(path: Path, required_symbols: list[str]) -> bool:
+    def _ordered_date_groups(candidates: pl.DataFrame) -> list[tuple[date, pl.DataFrame]]:
+        groups = candidates.partition_by("trade_date", as_dict=True)
+        resolved: list[tuple[date, pl.DataFrame]] = []
+        for key, group in groups.items():
+            trade_date = key[0] if isinstance(key, tuple) else key
+            if not isinstance(trade_date, date):
+                trade_date = date.fromisoformat(str(trade_date))
+            resolved.append((trade_date, group))
+        return sorted(resolved, key=lambda item: item[0])
+
+    @staticmethod
+    def _tradable_symbols(
+        daily: pl.DataFrame,
+        trade_date: date,
+        symbols: list[str],
+    ) -> list[str]:
+        if daily.is_empty() or not {"symbol", "date"}.issubset(daily.columns):
+            return symbols
+        filters = (pl.col("date") == trade_date) & pl.col("symbol").is_in(symbols)
+        if "volume" in daily.columns:
+            filters &= pl.col("volume").cast(pl.Float64, strict=False).fill_null(0) > 0
+        if "amount" in daily.columns:
+            filters &= pl.col("amount").cast(pl.Float64, strict=False).fill_null(0) > 0
+        return sorted(str(value) for value in daily.filter(filters)["symbol"].unique().to_list())
+
+    @staticmethod
+    def _filter_trade_date(minute: pl.DataFrame, trade_date: date) -> pl.DataFrame:
+        if "datetime" not in minute.columns:
+            return pl.DataFrame()
+        return minute.filter(pl.col("datetime").cast(pl.Datetime, strict=False).dt.date() == trade_date)
+
+    @staticmethod
+    def _missing_symbols(frame: pl.DataFrame, required_symbols: list[str]) -> list[str]:
+        if frame.is_empty() or "symbol" not in frame.columns:
+            return required_symbols
+        counts = frame.group_by("symbol").len().filter(pl.col("len") >= 3)
+        present = {str(symbol) for symbol in counts["symbol"].to_list()}
+        return sorted(set(required_symbols) - present)
+
+    @classmethod
+    def _minute_frame_valid(
+        cls,
+        frame: pl.DataFrame,
+        required_symbols: list[str],
+        *,
+        trade_date: date,
+    ) -> bool:
+        required_columns = {
+            "symbol",
+            "datetime",
+            "raw_open",
+            "raw_high",
+            "raw_low",
+            "raw_close",
+            "previous_close",
+            "is_suspended",
+            "is_limit_up",
+            "is_limit_down",
+        }
+        if frame.is_empty() or not required_columns.issubset(frame.columns):
+            return False
+        if cls._filter_trade_date(frame, trade_date).height != frame.height:
+            return False
+        return not cls._missing_symbols(frame, required_symbols)
+
+    @staticmethod
+    def _parquet_row_count(path: Path) -> int:
+        return int(pl.scan_parquet(path).select(pl.len()).collect().item())
+
+    @staticmethod
+    def _minute_partition_valid(
+        path: Path,
+        required_symbols: list[str],
+        *,
+        trade_date: date,
+    ) -> bool:
         required_columns = {
             "symbol",
             "datetime",
@@ -204,13 +314,14 @@ class TrainingDatasetBuilder:
             schema = pl.read_parquet_schema(path)
             if not required_columns.issubset(schema):
                 return False
-            frame = pl.read_parquet(path, columns=["symbol"])
+            frame = pl.read_parquet(path)
         except Exception:
             return False
-        if frame.is_empty():
-            return False
-        present = set(str(symbol) for symbol in frame["symbol"].unique().to_list())
-        return set(required_symbols).issubset(present)
+        return TrainingDatasetBuilder._minute_frame_valid(
+            frame,
+            required_symbols,
+            trade_date=trade_date,
+        )
 
     @staticmethod
     def _add_execution_flags(

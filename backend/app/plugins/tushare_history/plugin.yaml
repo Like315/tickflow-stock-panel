@@ -1,0 +1,8 @@
+name: tushare_history
+display_name: "Tushare 历史分钟（需独立权限）"
+runtime: python
+entry: app.plugins.tushare_history.provider:TushareHistoricalMinuteProvider
+check: app.plugins.tushare_history.bridge:availability
+datasets: [minute]
+description: "A股历史1分钟K线，数据始于2009年并在盘后更新。仅用于策略研究和学习；需设置 TUSHARE_TOKEN 并单独开通历史分钟权限。"
+install_hint: "先安装依赖，再设置 TUSHARE_TOKEN；历史分钟权限需在 Tushare 单独开通。"

@@ -35,11 +35,11 @@ def to_polars(data) -> pl.DataFrame:
         return pl.from_pandas(data.reset_index())
     try:
         return pl.DataFrame(data)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return pl.DataFrame()
 
 
-def normalize_daily(data, default_symbol: str | None = None, source: str = "tickflow") -> pl.DataFrame:  # noqa: ARG001
+def normalize_daily(data, default_symbol: str | None = None, source: str = "tickflow") -> pl.DataFrame:
     df = to_polars(data)
     if df.is_empty():
         return df
@@ -67,7 +67,7 @@ def normalize_daily(data, default_symbol: str | None = None, source: str = "tick
     return df.select(keep) if keep else pl.DataFrame()
 
 
-def normalize_adj_factors(data, source: str = "tickflow") -> pl.DataFrame:  # noqa: ARG001
+def normalize_adj_factors(data, source: str = "tickflow") -> pl.DataFrame:
     df = to_polars(data)
     if df.is_empty():
         return df
@@ -111,12 +111,21 @@ def normalize_minute(
         return df
     rename_map = {
         "ts_code": "symbol",
-        "trade_time": "datetime",
-        "trade_date": "datetime",
         "vol": "volume",
         "amt": "amount",
     }
     df = df.rename({key: value for key, value in rename_map.items() if key in df.columns})
+    # TickFlow minute frames contain both trade_date (date only) and trade_time
+    # (the complete bar timestamp).  Renaming both in one operation creates two
+    # ``datetime`` columns in Polars, so choose exactly one timestamp source.
+    if "datetime" not in df.columns and "trade_time" in df.columns:
+        df = df.rename({"trade_time": "datetime"})
+    elif (
+        "datetime" not in df.columns
+        and "timestamp" not in df.columns
+        and "trade_date" in df.columns
+    ):
+        df = df.rename({"trade_date": "datetime"})
     if "symbol" not in df.columns and default_symbol:
         df = df.with_columns(pl.lit(default_symbol).alias("symbol"))
     if "datetime" not in df.columns and "timestamp" in df.columns:
@@ -143,6 +152,10 @@ def normalize_minute(
                 .dt.convert_time_zone("Asia/Shanghai")
                 .dt.replace_time_zone(None)
                 .cast(pl.Datetime("us"))
+            )
+        elif dtype == pl.String:
+            df = df.with_columns(
+                pl.col("datetime").str.to_datetime(time_unit="us", strict=False)
             )
         else:
             df = df.with_columns(pl.col("datetime").cast(pl.Datetime("us"), strict=False))

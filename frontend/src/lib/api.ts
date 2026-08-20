@@ -1134,12 +1134,23 @@ export interface StrategyAlertEvent {
 
 export type UsMarketDataStatus = 'live' | 'snapshot' | 'partial'
 
+export interface UsMarketDataPathStep {
+  label: string
+  detail: string
+  status: 'ok' | 'unavailable' | 'limited' | 'cached'
+}
+
 export interface UsMarketQuote {
   symbol: string
   name: string
   last_price: number | null
+  prev_close: number | null
+  open: number | null
+  high: number | null
+  low: number | null
   change_amount: number | null
   change_pct: number | null
+  amplitude: number | null
   volume: number | null
   amount: number | null
   amount_estimated: boolean
@@ -1155,6 +1166,10 @@ export interface UsMarketBreadth {
   weak: number
   up_ratio: number
   down_ratio: number
+  average_change_pct: number
+  median_change_pct: number
+  advance_decline_ratio: number | null
+  net_advance_ratio: number
 }
 
 export interface UsMarketOverview {
@@ -1163,9 +1178,15 @@ export interface UsMarketOverview {
   source: string
   message: string
   as_of: number
+  market_timezone: string
   market_time: string | null
   beijing_time: string | null
   session: string
+  stale: boolean
+  realtime?: boolean
+  coverage?: 'full_market' | 'sample' | 'etf_realtime' | 'etf_daily' | 'snapshot'
+  coverage_label?: string
+  data_path?: UsMarketDataPathStep[]
   breadth: UsMarketBreadth | null
   distribution: Array<{ label: string; count: number; ratio: number }>
   benchmarks: UsMarketQuote[]
@@ -1174,6 +1195,7 @@ export interface UsMarketOverview {
     gainers: UsMarketQuote[]
     losers: UsMarketQuote[]
     active: UsMarketQuote[]
+    volatile?: UsMarketQuote[]
   }
 }
 
@@ -1444,6 +1466,29 @@ export interface InvestmentExpertSession {
   summary: Record<string, number | string | null>
 }
 
+export interface InvestmentExpertPerformance {
+  filled_order_count: number
+  buy_order_count: number
+  sell_order_count: number
+  closed_trade_count: number
+  winning_trade_count: number
+  losing_trade_count: number
+  breakeven_trade_count: number
+  realized_pnl: number
+  win_rate: number | null
+  average_win_pnl: number | null
+  average_loss_pnl: number | null
+  profit_loss_ratio: number | null
+  latest_fill_at: string | null
+  position_count: number
+  position_lot_count: number
+  unpriced_position_count: number
+  unrealized_pnl: number | null
+  total_pnl: number
+  total_return: number
+  valuation_as_of: string | null
+}
+
 export interface InvestmentExpertStatus {
   enabled: boolean
   running: boolean
@@ -1461,11 +1506,26 @@ export interface InvestmentExpertStatus {
     shares: number
     remaining_shares: number
     entry_price: number
+    entry_cost?: number
+    cost_basis?: number
+    market_price?: number | null
+    market_value?: number | null
+    unrealized_pnl?: number | null
+    unrealized_pnl_pct?: number | null
   }>
+  performance?: InvestmentExpertPerformance
   pending_order_count: number
   entries_enabled?: boolean
   risk_trip_reason?: string | null
   minute_capable: boolean
+  live_minute_source?: string
+  live_minute_mode?: 'intraday_batch' | 'historical_batch_fallback'
+  historical_minute_source?: string
+  historical_minute_capable?: boolean
+  historical_minute_error?: string | null
+  historical_minute_max_years?: number | null
+  historical_minute_three_year_capable?: boolean
+  historical_minute_three_year_error?: string | null
   champion?: InvestmentExpertPolicy | null
   active_model?: InvestmentExpertModel | null
   latest_model?: InvestmentExpertModel | null
@@ -1478,6 +1538,27 @@ export interface InvestmentExpertStatus {
     error?: string | null
     manifest?: Record<string, unknown>
   } | null
+}
+
+export interface InvestmentExpertTrade {
+  id: string
+  session_id: string
+  trade_date: string
+  order_id: string
+  symbol: string
+  side: 'buy' | 'sell'
+  occurred_at: string
+  fill_status: 'order_filled' | 'order_partially_filled'
+  shares: number
+  price: number | null
+  fees: number
+  realized_pnl: number | null
+  execution_reason: string | null
+  decision_id: string | null
+  decision_time: string | null
+  decision_action: 'buy' | 'sell' | null
+  decision_reason: string | null
+  decision_features: Record<string, number | string | boolean | null> | null
 }
 
 export interface InvestmentExpertExperiment {
@@ -2918,6 +2999,8 @@ export const api = {
     request<{ status: string; task: string }>('/api/investment-expert/evolution/run', { method: 'POST' }),
   investmentExpertSessions: (limit = 20) =>
     request<{ sessions: InvestmentExpertSession[] }>(`/api/investment-expert/sessions?limit=${limit}`),
+  investmentExpertTrades: (limit = 100) =>
+    request<{ trades: InvestmentExpertTrade[] }>(`/api/investment-expert/trades?limit=${limit}`),
   investmentExpertExperiments: (limit = 20) =>
     request<{ experiments: InvestmentExpertExperiment[] }>(`/api/investment-expert/experiments?limit=${limit}`),
 

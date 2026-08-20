@@ -21,8 +21,10 @@ from app.paper_agent.runtime import InvestmentExpertRuntime
 from app.paper_agent.store import PaperAgentStore
 from app.paper_agent.training import ExpertModelTrainer
 from app.price_limits import is_risk_warning_name, price_limit_pct
+from app.services import preferences
 from app.services.kline_sync import sync_and_persist_daily_batch
 from app.tickflow.capabilities import Cap
+from app.tickflow.policy import base_tier_name
 from app.tickflow.rate_limits import resolve_limit
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,10 @@ class InvestmentExpertService:
         self.store.ensure_baseline_policy()
         self.constitution = RiskConstitution()
         self.minute_provider = get_provider("tickflow")
+        (
+            self.historical_minute_provider,
+            self._historical_minute_provider_error,
+        ) = self._resolve_historical_minute_provider(self.minute_provider)
         if self.capset is not None:
             minute_limit = resolve_limit(
                 self.capset,
@@ -57,7 +63,28 @@ class InvestmentExpertService:
             configure_limits = getattr(self.minute_provider, "configure_minute_limits", None)
             if configure_limits is not None:
                 configure_limits(batch_size=minute_limit.batch, rpm=minute_limit.rpm)
-        self.dataset_builder = TrainingDatasetBuilder(repo, data_dir, self.minute_provider)
+            if self.capset.has(Cap.INTRADAY_BATCH):
+                intraday_limit = resolve_limit(
+                    self.capset,
+                    Cap.INTRADAY_BATCH,
+                    default_batch=50,
+                    default_rpm=30,
+                )
+                configure_intraday = getattr(
+                    self.minute_provider,
+                    "configure_intraday_limits",
+                    None,
+                )
+                if configure_intraday is not None:
+                    configure_intraday(
+                        batch_size=intraday_limit.batch,
+                        rpm=intraday_limit.rpm,
+                    )
+        self.dataset_builder = TrainingDatasetBuilder(
+            repo,
+            data_dir,
+            self.historical_minute_provider,
+        )
         self.dataset_root = data_dir / "user_data" / "investment_expert" / "training"
         self._executor_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="investment-expert")
         self._task_lock = threading.RLock()
@@ -80,6 +107,37 @@ class InvestmentExpertService:
         self._session_start_equity = self.constitution.initial_capital
         self._equity_peak = self.constitution.initial_capital
         self._risk_trip_reason: str | None = None
+
+    @staticmethod
+    def _resolve_historical_minute_provider(tickflow_provider):
+        provider_name = preferences.get_minute_data_provider()
+        if provider_name == "tickflow":
+            return tickflow_provider, None
+        try:
+            from app.data_providers import custom as custom_sources
+
+            if not custom_sources.provider_has_dataset(provider_name, "minute"):
+                return tickflow_provider, (
+                    f"configured historical minute provider '{provider_name}' "
+                    "does not expose the minute dataset"
+                )
+            return custom_sources.get_provider(provider_name), None
+        except Exception as exc:
+            return tickflow_provider, (
+                f"historical minute provider '{provider_name}' is unavailable: {exc}"
+            )
+
+    def _refresh_historical_minute_provider(self) -> None:
+        provider, error = self._resolve_historical_minute_provider(self.minute_provider)
+        self.historical_minute_provider = provider
+        self._historical_minute_provider_error = error
+        self.dataset_builder.minute_provider = provider
+
+    def _historical_minute_max_years(self) -> int | None:
+        if getattr(self.historical_minute_provider, "name", "tickflow") != "tickflow":
+            return None
+        # TickFlow's published Pro coverage is one year of minute history.
+        return 1 if base_tier_name() == "pro" else None
 
     def boot_check(self) -> None:
         if self.store.get_runtime_setting("enabled", False):
@@ -132,6 +190,7 @@ class InvestmentExpertService:
         while not self._stop_event.is_set():
             try:
                 self.run_paper_cycle_once()
+                self._last_error = None
             except Exception as exc:
                 self._last_error = str(exc)[:500]
                 logger.exception("investment expert paper cycle failed")
@@ -431,13 +490,27 @@ class InvestmentExpertService:
             return {"status": "degraded", "reason": "session_not_prepared"}
         start = self._next_fetch_at or now.replace(second=0, microsecond=0)
         end = now
-        minute = self.minute_provider.get_minute(
-            self._market_symbols,
-            start_time=start,
-            end_time=end,
-            asset_type="stock",
-            freq="1m",
-        )
+        intraday_fetch = getattr(self.minute_provider, "get_intraday_minute", None)
+        if (
+            intraday_fetch is not None
+            and self.capset is not None
+            and self.capset.has(Cap.INTRADAY_BATCH)
+        ):
+            minute = intraday_fetch(
+                self._market_symbols,
+                start_time=start,
+                end_time=end,
+                asset_type="stock",
+                freq="1m",
+            )
+        else:
+            minute = self.minute_provider.get_minute(
+                self._market_symbols,
+                start_time=start,
+                end_time=end,
+                asset_type="stock",
+                freq="1m",
+            )
         if minute.is_empty():
             return {"status": "degraded", "reason": "minute_data_empty"}
         processed = 0
@@ -454,16 +527,24 @@ class InvestmentExpertService:
                 continue
             if bar_time + timedelta(minutes=1) > now:
                 continue
-            context = self._candidate_context.get(str(row["symbol"]), {})
+            symbol = str(row["symbol"])
+            symbol_last_bar = self._executor.last_bar_time.get(symbol)
+            if symbol_last_bar is not None and bar_time <= symbol_last_bar:
+                # A prior attempt can fail after some symbols were applied but
+                # before the batch cursor/snapshot was committed.  Resume from
+                # the remaining symbols without replaying their decisions.
+                last_dt = bar_time if last_dt is None else max(last_dt, bar_time)
+                continue
+            context = self._candidate_context.get(symbol, {})
             is_limit_up, is_limit_down = self._limit_flags(
-                symbol=str(row["symbol"]),
+                symbol=symbol,
                 name=str(context.get("name") or ""),
                 trade_date=now.date(),
                 previous_close=context.get("previous_close"),
                 row=row,
             )
             bar = MinuteBar(
-                symbol=str(row["symbol"]),
+                symbol=symbol,
                 datetime=bar_time,
                 received_at=now,
                 raw_open=float(row.get("raw_open", row["open"])),
@@ -682,8 +763,24 @@ class InvestmentExpertService:
         candidate_limit: int = 50,
         download_minutes: bool = True,
     ) -> dict[str, Any]:
+        self._refresh_historical_minute_provider()
+        if download_minutes and self._historical_minute_provider_error:
+            return {
+                "status": "blocked",
+                "reason": self._historical_minute_provider_error,
+            }
+        max_years = self._historical_minute_max_years()
+        if download_minutes and max_years is not None and years > max_years:
+            return {
+                "status": "blocked",
+                "reason": (
+                    f"TickFlow Pro 分钟历史仅覆盖近 {max_years} 年。"
+                    "三年样本请在设置中选择具备三年覆盖的历史分钟源"
+                ),
+            }
         if (
             download_minutes
+            and getattr(self.historical_minute_provider, "name", "tickflow") == "tickflow"
             and self.capset is not None
             and not self.capset.has(Cap.KLINE_MINUTE_BATCH)
         ):
@@ -716,22 +813,44 @@ class InvestmentExpertService:
         current = cn_now()
         end_date = current.date() if current.time() >= time(16, 0) else current.date() - timedelta(days=1)
         start_date = end_date - timedelta(days=365 * years)
-        run_id = self.store.record_dataset_run(
-            start_date=start_date,
-            end_date=end_date,
-            status="running",
-            manifest={},
-        )
         if not self._operation_lock.acquire(blocking=False):
             return {"status": "reused"}
+        run_id: str | None = None
+        progress_manifest: dict[str, Any] = {
+            "minute_source": getattr(self.historical_minute_provider, "name", "unknown"),
+            "progress": {"current": 0, "total": 0, "label": None, "pct": 0.0},
+        }
         try:
+            run_id = self.store.record_dataset_run(
+                start_date=start_date,
+                end_date=end_date,
+                status="running",
+                manifest=progress_manifest,
+            )
             self._ensure_daily_history(start_date - timedelta(days=40), end_date)
+
+            def report_progress(current_step: int, total_steps: int, label: str) -> None:
+                self._dataset_progress(current_step, total_steps, label)
+                progress_manifest["progress"] = {
+                    "current": current_step,
+                    "total": total_steps,
+                    "label": label,
+                    "pct": round(current_step * 100 / max(total_steps, 1), 2),
+                }
+                self.store.record_dataset_run(
+                    start_date=start_date,
+                    end_date=end_date,
+                    status="running",
+                    manifest=progress_manifest,
+                    run_id=run_id,
+                )
+
             manifest = self.dataset_builder.build(
                 start_date=start_date,
                 end_date=end_date,
                 candidate_limit=candidate_limit,
                 download_minutes=download_minutes,
-                progress_cb=self._dataset_progress,
+                progress_cb=report_progress,
             )
             self.store.record_dataset_run(
                 start_date=start_date,
@@ -752,15 +871,16 @@ class InvestmentExpertService:
             return {"status": "succeeded", "manifest": manifest, "training": training}
         except Exception as exc:
             self._last_error = str(exc)[:500]
-            self.store.record_dataset_run(
-                start_date=start_date,
-                end_date=end_date,
-                status="failed",
-                manifest={},
-                run_id=run_id,
-                error=self._last_error,
-                finished=True,
-            )
+            if run_id is not None:
+                self.store.record_dataset_run(
+                    start_date=start_date,
+                    end_date=end_date,
+                    status="failed",
+                    manifest=progress_manifest,
+                    run_id=run_id,
+                    error=self._last_error,
+                    finished=True,
+                )
             logger.exception("investment expert dataset bootstrap failed")
             return {"status": "failed", "error": self._last_error}
         finally:
@@ -862,12 +982,140 @@ class InvestmentExpertService:
             self.store.promote_model(model.id, reason=reason, metrics=model.metrics)
         return {"status": "promoted" if promoted else "shadow", "model": model.id, "reason": reason}
 
+    @staticmethod
+    def _position_views(
+        lots: list[dict[str, Any]],
+        last_prices: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], float | None, int]:
+        rows: list[dict[str, Any]] = []
+        priced_unrealized_pnl = 0.0
+        unpriced_count = 0
+        for item in lots:
+            row = dict(item)
+            symbol = str(row.get("symbol") or "")
+            shares = int(row.get("shares") or 0)
+            remaining_shares = int(row.get("remaining_shares") or 0)
+            entry_price = float(row.get("entry_price") or 0.0)
+            entry_cost = float(row.get("entry_cost") or 0.0)
+            allocated_entry_cost = (
+                entry_cost * remaining_shares / shares if shares > 0 else 0.0
+            )
+            cost_basis = remaining_shares * entry_price + allocated_entry_cost
+            try:
+                market_price = float(last_prices[symbol])
+            except (KeyError, TypeError, ValueError):
+                market_price = None
+            if market_price is not None and (
+                not math.isfinite(market_price) or market_price <= 0
+            ):
+                market_price = None
+
+            if market_price is None:
+                market_value = None
+                unrealized_pnl = None
+                unrealized_pnl_pct = None
+                unpriced_count += 1
+            else:
+                market_value = remaining_shares * market_price
+                unrealized_pnl = market_value - cost_basis
+                unrealized_pnl_pct = unrealized_pnl / cost_basis if cost_basis > 0 else None
+                priced_unrealized_pnl += unrealized_pnl
+
+            row.update({
+                "entry_cost": round(entry_cost, 2),
+                "cost_basis": round(cost_basis, 2),
+                "market_price": round(market_price, 4) if market_price is not None else None,
+                "market_value": round(market_value, 2) if market_value is not None else None,
+                "unrealized_pnl": (
+                    round(unrealized_pnl, 2) if unrealized_pnl is not None else None
+                ),
+                "unrealized_pnl_pct": (
+                    round(unrealized_pnl_pct, 6)
+                    if unrealized_pnl_pct is not None else None
+                ),
+            })
+            rows.append(row)
+        unrealized_pnl = (
+            round(priced_unrealized_pnl, 2)
+            if unpriced_count == 0 else None
+        )
+        return rows, unrealized_pnl, unpriced_count
+
     def status(self) -> dict[str, Any]:
+        future = self._active_future
+        if future is None or future.done():
+            self._refresh_historical_minute_provider()
         base = self.store.status()
         executor = self._executor
-        snapshot = self.store.latest_portfolio_snapshot() if executor is None else None
+        snapshot = self.store.latest_portfolio_snapshot()
         snapshot_payload = (snapshot or {}).get("payload") or {}
-        future = self._active_future
+        snapshot_executor_state = snapshot_payload.get("executor_state") or {}
+        if executor is not None:
+            cash = round(executor.cash, 2)
+            equity = round(executor.equity(), 2)
+            raw_positions = [lot.model_dump(mode="json") for lot in executor.lots]
+            last_prices = dict(executor.last_prices)
+            pending_order_count = len(executor.pending)
+        else:
+            cash = (
+                round(float(snapshot["cash"]), 2)
+                if snapshot else self.constitution.initial_capital
+            )
+            equity = (
+                round(float(snapshot["equity"]), 2)
+                if snapshot else self.constitution.initial_capital
+            )
+            raw_positions = list(
+                snapshot_payload.get("lots")
+                or snapshot_executor_state.get("lots")
+                or []
+            )
+            last_prices = dict(
+                snapshot_payload.get("last_prices")
+                or snapshot_executor_state.get("last_prices")
+                or {}
+            )
+            pending_order_count = len(snapshot_executor_state.get("pending") or [])
+        positions, unrealized_pnl, unpriced_position_count = self._position_views(
+            raw_positions,
+            last_prices,
+        )
+        execution_statistics = self.store.execution_statistics()
+        total_pnl = round(equity - self.constitution.initial_capital, 2)
+        total_return = total_pnl / self.constitution.initial_capital
+        valuation_as_of = (
+            snapshot.get("as_of") if snapshot
+            else self._last_processed_bar.isoformat() if self._last_processed_bar else None
+        )
+        performance = {
+            **execution_statistics,
+            "position_count": len({row["symbol"] for row in positions}),
+            "position_lot_count": len(positions),
+            "unpriced_position_count": unpriced_position_count,
+            "unrealized_pnl": unrealized_pnl,
+            "total_pnl": total_pnl,
+            "total_return": round(total_return, 6),
+            "valuation_as_of": valuation_as_of,
+        }
+        historical_capable = bool(
+            self._historical_minute_provider_error is None
+            and (
+                getattr(self.historical_minute_provider, "name", "tickflow") != "tickflow"
+                or self.capset is None
+                or self.capset.has(Cap.KLINE_MINUTE_BATCH)
+            )
+        )
+        max_history_years = self._historical_minute_max_years()
+        three_year_capable = bool(
+            historical_capable
+            and (max_history_years is None or max_history_years >= 3)
+        )
+        three_year_error = None
+        if historical_capable and not three_year_capable:
+            three_year_error = (
+                f"TickFlow Pro 分钟历史仅覆盖近 {max_history_years} 年。"
+                "请在设置 → 数据源选择具备三年覆盖的历史分钟源"
+            )
         base.update({
             "running": bool(self._poll_thread and self._poll_thread.is_alive()),
             "active_task": self._active_task if future is not None and not future.done() else None,
@@ -875,28 +1123,33 @@ class InvestmentExpertService:
             "session_id": self._session["id"] if self._session else None,
             "candidate_count": len(self._candidates),
             "market_symbol_count": len(self._market_symbols),
-            "cash": (
-                round(executor.cash, 2) if executor
-                else round(float(snapshot["cash"]), 2) if snapshot else self.constitution.initial_capital
-            ),
-            "equity": (
-                round(executor.equity(), 2) if executor
-                else round(float(snapshot["equity"]), 2) if snapshot else self.constitution.initial_capital
-            ),
-            "positions": (
-                [lot.model_dump(mode="json") for lot in executor.lots]
-                if executor else snapshot_payload.get("lots", [])
-            ),
-            "pending_order_count": (
-                len(executor.pending) if executor
-                else len((snapshot_payload.get("executor_state") or {}).get("pending", []))
-            ),
+            "cash": cash,
+            "equity": equity,
+            "positions": positions,
+            "performance": performance,
+            "pending_order_count": pending_order_count,
             "entries_enabled": bool(
                 self._runtime is None or self._runtime.entries_enabled
             ),
             "risk_trip_reason": self._risk_trip_reason,
             "minute_capable": bool(
                 self.capset is None or self.capset.has(Cap.KLINE_MINUTE_BATCH)
+            ),
+            "live_minute_source": getattr(self.minute_provider, "name", "unknown"),
+            "historical_minute_source": getattr(
+                self.historical_minute_provider,
+                "name",
+                "unknown",
+            ),
+            "historical_minute_error": self._historical_minute_provider_error,
+            "historical_minute_capable": historical_capable,
+            "historical_minute_max_years": max_history_years,
+            "historical_minute_three_year_capable": three_year_capable,
+            "historical_minute_three_year_error": three_year_error,
+            "live_minute_mode": (
+                "intraday_batch"
+                if self.capset is not None and self.capset.has(Cap.INTRADAY_BATCH)
+                else "historical_batch_fallback"
             ),
         })
         return base

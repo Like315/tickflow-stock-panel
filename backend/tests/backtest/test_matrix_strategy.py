@@ -261,7 +261,7 @@ def test_builtin_matrix_strategies_use_their_declared_formula_modules():
         path for path in strategy_dir.glob("*.py") if path.name != "__init__.py"
     )
 
-    assert len(strategy_files) == 19
+    assert len(strategy_files) == 20
     for strategy_path in strategy_files:
         strategy = StrategyEngine._load_file(strategy_path)
         assert strategy.execution_backend == "matrix_native"
@@ -305,6 +305,34 @@ def test_direct_parquet_matrix_reports_actionable_error_when_enriched_is_empty(t
             date(2024, 1, 31),
             field_columns=set(),
         )
+
+
+def test_direct_parquet_matrix_ignores_orphan_temporary_parquet(tmp_path):
+    market_root = tmp_path / "kline_daily_enriched"
+    current = date(2024, 1, 2)
+    partition = market_root / f"date={current.isoformat()}"
+    partition.mkdir(parents=True)
+    panel = pl.DataFrame({
+        "symbol": ["000001.SZ"],
+        "date": [current],
+        "open": [10.0],
+        "high": [10.1],
+        "low": [9.9],
+        "close": [10.0],
+        "volume": [1_000.0],
+    })
+    panel.write_parquet(partition / "part.parquet")
+    panel.write_parquet(partition / "part.parquet.tmp")
+
+    market = load_market_data_matrix_from_parquet(
+        market_root,
+        current,
+        current,
+        field_columns=set(),
+    )
+
+    assert market.shape == (1, 1)
+    assert market.symbols == ("000001.SZ",)
 
 
 def test_direct_parquet_matrix_matches_panel_builder_and_reuses_mmap(tmp_path):
@@ -673,7 +701,7 @@ def test_registered_builtin_matrix_strategies_share_one_cache_profile():
     profile = build_matrix_cache_profile(engine, "stock")
     strategies = engine.strategy_definitions()
 
-    assert len(strategies) == 19
+    assert len(strategies) == 20
     assert all(strategy.execution_backend == "matrix_native" for strategy in strategies)
     assert profile.warmup_bars > 0
     assert profile.forward_bars == max(int(strategy.max_hold_days or 0) for strategy in strategies)

@@ -39,6 +39,13 @@ def _matrix_entry_score(matrix: MarketMatrix, time_id: int, asset_id: int) -> fl
     return float(matrix.score[source_time, asset_id])
 
 
+def _matrix_entry_prices(matrix: MarketMatrix, config: MatcherConfig) -> np.ndarray:
+    base = matrix.open if config.entry_fill == "open_t+1" else matrix.close
+    override = matrix.entry_price_override
+    usable = np.isfinite(override) & (override > 0)
+    return np.where(usable, override, base)
+
+
 # ================================================================
 # 数据结构
 # ================================================================
@@ -715,7 +722,7 @@ class BacktestEngine:
         options: SimulationOptions | None = None,
     ) -> SimResult:
         options = options or SimulationOptions()
-        entry_prices = matrix.open if config.entry_fill == "open_t+1" else matrix.close
+        entry_prices = _matrix_entry_prices(matrix, config)
         exit_prices = matrix.open if config.exit_fill == "open_t+1" else matrix.close
         buy_cost_pct = config.buy_cost_pct()
         sell_cost_pct = config.sell_cost_pct()
@@ -1614,7 +1621,7 @@ class BacktestEngine:
     ) -> SimResult:
         options = options or SimulationOptions()
         time_count, asset_count = matrix.shape
-        entry_prices = matrix.open if config.entry_fill == "open_t+1" else matrix.close
+        entry_prices = _matrix_entry_prices(matrix, config)
         exit_prices = matrix.open if config.exit_fill == "open_t+1" else matrix.close
         buy_cost_pct = config.buy_cost_pct()
         sell_cost_pct = config.sell_cost_pct()
