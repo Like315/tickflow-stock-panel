@@ -118,6 +118,7 @@ export function Monitor() {
   // 触发记录: 过滤 + 统计 (提升到主组件, 供 header 行使用)
   const [filter, setFilter] = useState<'all' | 'strategy' | 'signal' | 'price' | 'market' | 'sector'>('all')
   const [directionFilter, setDirectionFilter] = useState<'buy_signal' | 'sell_signal' | null>(null)
+  const [relationFilter, setRelationFilter] = useState<'watchlist' | 'holding' | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
   const [confirmClearRules, setConfirmClearRules] = useState(false)
 
@@ -133,13 +134,45 @@ export function Monitor() {
     return parts.length > 0 ? parts.join(',') : undefined
   }, [monitorExtFields])
 
+  const watchlistQuery = useQuery({
+    queryKey: QK.watchlist,
+    queryFn: api.watchlistList,
+    staleTime: 20_000,
+  })
+  const portfolioQuery = useQuery({
+    queryKey: QK.stockPortfolio,
+    queryFn: api.stockPortfolio,
+    staleTime: 20_000,
+  })
+  const watchlistSymbols = useMemo(
+    () => watchlistQuery.data?.symbols.map(item => item.symbol) ?? [],
+    [watchlistQuery.data?.symbols],
+  )
+  const holdingSymbols = useMemo(
+    () => portfolioQuery.data?.positions.map(item => item.symbol) ?? [],
+    [portfolioQuery.data?.positions],
+  )
+  const relationSymbols = relationFilter === 'watchlist'
+    ? watchlistSymbols
+    : relationFilter === 'holding'
+      ? holdingSymbols
+      : undefined
+  const relationSymbolsKey = relationSymbols?.join(',') ?? 'all-relations'
+
   const alertsQuery = useQuery({
-    queryKey: [...QK.alerts(filter === 'all' ? undefined : filter), directionFilter ?? 'all-directions', extColumnsParam ?? ''],
+    queryKey: [
+      ...QK.alerts(filter === 'all' ? undefined : filter),
+      directionFilter ?? 'all-directions',
+      relationFilter ?? 'all-relations',
+      relationSymbolsKey,
+      extColumnsParam ?? '',
+    ],
     queryFn: () => api.alertsList({
       days: 7,
       limit: 500,
       source: filter === 'all' ? undefined : filter,
       type: directionFilter ?? undefined,
+      symbols: relationSymbols,
       extColumns: extColumnsParam,
     }),
     refetchInterval: 10000,
@@ -182,7 +215,7 @@ export function Monitor() {
           <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface/40 shadow-lg shadow-black/5">
             <div className="flex items-center gap-3 border-b border-border/60 bg-surface/60 px-4 py-2.5">
               <SectionHeader icon={BellRing} title="触发记录" />
-              {/* 来源 + 买卖方向过滤 */}
+              {/* 来源 + 买卖方向 + 标的关系过滤 */}
               <div className="flex flex-col items-start gap-1">
                 <div className="flex flex-wrap items-center gap-0.5">
                   {(['all', 'strategy', 'signal', 'price', 'market', 'sector'] as const).map(f => (
@@ -214,6 +247,35 @@ export function Monitor() {
                         className={cn(
                           'rounded-md px-2 py-0.5 text-[10px] font-medium transition-all cursor-pointer',
                           active ? option.activeClass : 'bg-elevated/40 text-muted hover:bg-elevated/70 hover:text-secondary',
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    )
+                  })}
+                  <span className="mx-0.5 h-3 w-px bg-border" />
+                  {([
+                    { value: 'watchlist', label: '自选', query: watchlistQuery },
+                    { value: 'holding', label: '持股', query: portfolioQuery },
+                  ] as const).map(option => {
+                    const active = relationFilter === option.value
+                    const unavailable = option.query.isPending || (option.query.isError && !option.query.data)
+                    const title = unavailable
+                      ? `${option.label}数据暂不可用`
+                      : active
+                        ? `取消${option.label}筛选`
+                        : `只看${option.label}相关信号`
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        aria-pressed={active}
+                        disabled={unavailable}
+                        title={title}
+                        onClick={() => setRelationFilter(active ? null : option.value)}
+                        className={cn(
+                          'rounded-md px-2 py-0.5 text-[10px] font-medium transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-40',
+                          active ? 'bg-accent/15 text-accent' : 'bg-elevated/40 text-muted hover:bg-elevated/70 hover:text-secondary',
                         )}
                       >
                         {option.label}

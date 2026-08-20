@@ -2871,12 +2871,13 @@ export const api = {
     request<{ ok: boolean; generated: number }>('/api/monitor-rules/seed', { method: 'POST' }),
 
   // ===== Alerts (触发记录) =====
-  alertsList: (params?: { days?: number; limit?: number; source?: string; type?: string; extColumns?: string }) => {
+  alertsList: (params?: { days?: number; limit?: number; source?: string; type?: string; symbols?: string[]; extColumns?: string }) => {
     const qs = new URLSearchParams()
     if (params?.days) qs.set('days', String(params.days))
     if (params?.limit) qs.set('limit', String(params.limit))
     if (params?.source) qs.set('source', params.source)
     if (params?.type) qs.set('type', params.type)
+    if (params?.symbols !== undefined) qs.set('symbols', params.symbols.join(','))
     if (params?.extColumns) qs.set('ext_columns', params.extColumns)
     const s = qs.toString()
     return request<{ alerts: AlertEvent[]; total: number }>(`/api/alerts${s ? `?${s}` : ''}`)
