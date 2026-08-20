@@ -20,6 +20,7 @@ from app.services.fund_portfolio import FundPortfolioService
 from app.services.fund_research import FundResearchService
 from app.services.fund_market_research import FundMarketResearchService
 from app.services.investment_expert import InvestmentExpertService
+from app.services.news_sentiment import NewsSentimentService
 from app.services.quote_service import QuoteService
 from app.services.research_agent import ResearchAgentService
 from app.services.stock_portfolio import StockPortfolioService
@@ -205,6 +206,7 @@ async def lifespan(app: FastAPI):
         strategy_engine=strategy_engine,
         screener_service=_screener_svc,
         us_market_service=app.state.us_market_overview_service,
+        news_sentiment_service=NewsSentimentService(),
     )
     app.state.investment_expert_service = investment_expert_service
     investment_expert_service.boot_check()

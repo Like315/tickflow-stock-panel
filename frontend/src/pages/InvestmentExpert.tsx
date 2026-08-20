@@ -196,9 +196,9 @@ export function InvestmentExpert() {
                 风险熔断已触发：{data.risk_trip_reason}。系统已禁止新买入并在盘后执行回滚。
               </div>
             )}
-            {data?.session_prepare_error === 'overnight_us_market_unavailable' && (
-              <div className="mt-3 rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs text-rose-300">
-                昨夜美股收盘数据不可用，今日会话按安全策略暂不创建，也不会发起模拟买入。
+            {data?.overnight_us_market && !data.overnight_us_market.available && (
+              <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">
+                昨夜美股数据缺失或已过期，当日会话仍会正常创建；候选按本地因子排序，隔夜阈值不参与新买入判断。
               </div>
             )}
             {data?.overnight_us_market?.available && (
@@ -207,6 +207,17 @@ export function InvestmentExpert() {
                 已用于候选排序，低于策略阈值时禁止新买入。
               </div>
             )}
+            {data?.news_sentiment?.available ? (
+              <div className="mt-3 rounded-lg border border-violet-400/20 bg-violet-400/5 px-3 py-2 text-xs text-violet-200">
+                消息面因子：综合情绪 {percent(data.news_sentiment.score)} · 置信度 {percent(data.news_sentiment.confidence)} ·
+                新闻 {data.news_sentiment.item_count} 条（海外 {data.news_sentiment.regions.global}、国内 {data.news_sentiment.regions.domestic}、盘面 {data.news_sentiment.regions.market}）。
+                当前策略最高权重 {percent(data.champion?.news_candidate_weight ?? 0.25)}，盘中每 10 分钟刷新。
+              </div>
+            ) : data?.news_sentiment ? (
+              <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">
+                国内外及盘中新闻暂不可用，消息面因子按中性处理，不影响会话和原策略运行。
+              </div>
+            ) : null}
           </section>
 
           <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">

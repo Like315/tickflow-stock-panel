@@ -118,6 +118,46 @@ class _UnavailableUsMarketService:
         raise RuntimeError("US market unavailable")
 
 
+class _StaleUsMarketService(_UsMarketService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.overview["market_time"] = "2026-08-01T16:00:00-04:00"
+
+
+class _NewsSentimentService:
+    refresh_seconds = 600
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_context(self, as_of: datetime) -> dict:
+        self.calls += 1
+        return {
+            "available": True,
+            "status": "live",
+            "as_of": as_of.isoformat(),
+            "score": 0.4,
+            "confidence": 1.0,
+            "item_count": 8,
+            "signal_count": 6,
+            "source_count": 2,
+            "regions": {"global": 2, "domestic": 3, "market": 3},
+            "items": [],
+        }
+
+    @staticmethod
+    def score_candidates(_context: dict, candidates: dict) -> dict:
+        symbols = sorted(candidates)
+        return {
+            symbol: {
+                "score": 1.0 if symbol == symbols[-1] else 0.0,
+                "matched_count": 1 if symbol == symbols[-1] else 0,
+                "headlines": [],
+            }
+            for symbol in symbols
+        }
+
+
 def test_service_never_replays_minutes_before_runtime_start(tmp_path: Path) -> None:
     trade_date = date(2026, 8, 18)
     repo = _Repo(trade_date)
@@ -240,7 +280,54 @@ def test_overnight_us_direction_changes_candidate_ranking(tmp_path: Path) -> Non
     assert risk_off[0] == service.repo.symbols[-1]
 
 
-def test_session_preparation_fails_closed_without_us_overnight_data(tmp_path: Path) -> None:
+def test_news_sentiment_adds_high_weight_candidate_factor(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 20)
+    news = _NewsSentimentService()
+    service = InvestmentExpertService(
+        _Repo(trade_date),
+        tmp_path,
+        news_sentiment_service=news,
+    )
+    context = news.get_context(datetime(2026, 8, 20, 9, 15, tzinfo=CN_TZ))
+    try:
+        baseline, _ = service._select_candidates(trade_date, 10)
+        selected, candidate_context = service._select_candidates(
+            trade_date,
+            10,
+            news_context=context,
+            news_weight=0.50,
+        )
+    finally:
+        service.close()
+
+    promoted = service.repo.symbols[-1]
+    assert selected.index(promoted) < baseline.index(promoted)
+    assert candidate_context[promoted]["candidate_news_sentiment"] == 1.0
+    assert candidate_context[promoted]["score"] > candidate_context[promoted]["market_score"]
+    assert candidate_context[promoted]["news_applied_weight"] == 0.5
+
+
+def test_news_sentiment_refreshes_during_active_session(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 20)
+    news = _NewsSentimentService()
+    service = InvestmentExpertService(
+        _Repo(trade_date),
+        tmp_path,
+        news_sentiment_service=news,
+    )
+    prepared_at = datetime(2026, 8, 20, 9, 15, tzinfo=CN_TZ)
+    try:
+        assert service._prepare_session(prepared_at)
+        service._refresh_news_sentiment_context(prepared_at + timedelta(minutes=9))
+        assert news.calls == 1
+        service._refresh_news_sentiment_context(prepared_at + timedelta(minutes=10))
+    finally:
+        service.close()
+
+    assert news.calls == 2
+
+
+def test_session_preparation_degrades_without_us_overnight_data(tmp_path: Path) -> None:
     trade_date = date(2026, 8, 20)
     service = InvestmentExpertService(
         _Repo(trade_date),
@@ -254,8 +341,39 @@ def test_session_preparation_fails_closed_without_us_overnight_data(tmp_path: Pa
     finally:
         service.close()
 
-    assert result == {"status": "degraded", "reason": "overnight_us_market_unavailable"}
-    assert service.store.list_sessions() == []
+    assert result == {"status": "idle", "reason": "outside_continuous_session"}
+    assert len(service.store.list_sessions()) == 1
+    assert service.status()["overnight_us_market"] == {
+        "available": False,
+        "status": "unavailable",
+        "market_date": None,
+        "score": 0.0,
+        "tilt": 0.0,
+        "benchmarks": {},
+    }
+    assert all(
+        row["overnight_us_available"] is False
+        for row in service._candidate_context.values()
+    )
+
+
+def test_session_preparation_degrades_with_stale_us_overnight_data(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 20)
+    service = InvestmentExpertService(
+        _Repo(trade_date),
+        tmp_path,
+        us_market_service=_StaleUsMarketService(),
+    )
+    try:
+        assert service._prepare_session(datetime(2026, 8, 20, 9, 15, tzinfo=CN_TZ))
+        context = service.status()["overnight_us_market"]
+    finally:
+        service.close()
+
+    assert len(service.store.list_sessions()) == 1
+    assert context["available"] is False
+    assert context["status"] == "stale"
+    assert context["market_date"] == "2026-08-01"
 
 
 def test_runtime_fails_closed_without_minute_capability(tmp_path: Path) -> None:

@@ -48,6 +48,7 @@ class ExpertPolicy(BaseModel):
     entry_probability_threshold: float = Field(default=0.55, ge=0.50, le=0.95)
     overnight_us_candidate_weight: float = Field(default=0.15, ge=0, le=0.50)
     min_overnight_us_score: float = Field(default=-0.02, ge=-0.10, le=0.10)
+    news_candidate_weight: float = Field(default=0.25, ge=0, le=0.50)
     exit_vwap_bias: float = Field(default=-0.002, ge=-0.10, le=0.05)
     stop_loss_pct: float = Field(default=-0.05, ge=-0.30, le=-0.001)
     take_profit_pct: float = Field(default=0.08, ge=0.001, le=0.50)

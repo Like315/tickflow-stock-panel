@@ -184,7 +184,7 @@ async def fetch_market_news(
     providers = _get_providers()
     if not providers:
         return []
-    capped_limit = min(max(limit, 1), 30)
+    capped_limit = min(max(limit, 1), 120)
     provider_limit = 800 if keywords else capped_limit
     results = await asyncio.gather(
         *(provider.fetch_market(as_of=as_of, limit=provider_limit) for provider in providers),

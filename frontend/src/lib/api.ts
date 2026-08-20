@@ -1637,6 +1637,7 @@ export interface InvestmentExpertPolicy {
   entry_probability_threshold: number
   overnight_us_candidate_weight: number
   min_overnight_us_score: number
+  news_candidate_weight: number
   stop_loss_pct: number
 }
 
@@ -1696,6 +1697,25 @@ export interface InvestmentExpertStatus {
     tilt: number
     benchmarks: Record<string, number>
     breadth?: { up_ratio: number; down_ratio: number }
+  } | null
+  news_sentiment?: {
+    available: boolean
+    status: string
+    as_of?: string | null
+    score: number
+    confidence: number
+    item_count: number
+    signal_count: number
+    source_count: number
+    regions: { global: number; domestic: number; market: number }
+    items: Array<{
+      title: string
+      published_at: string
+      source: string
+      source_url: string
+      region: string
+      sentiment: number
+    }>
   } | null
   minute_capable: boolean
   champion?: InvestmentExpertPolicy | null
