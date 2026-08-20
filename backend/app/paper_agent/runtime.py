@@ -90,6 +90,8 @@ class InvestmentExpertRuntime:
         context = self.candidate_context.get(bar.symbol, {})
         features["daily_momentum_20d"] = context.get("daily_momentum_20d")
         features["candidate_score"] = context.get("score")
+        features["overnight_us_score"] = context.get("overnight_us_score")
+        features["overnight_us_tilt"] = context.get("overnight_us_tilt")
         features["model_probability"] = (
             self.decision_model.predict_probability(features)
             if self.decision_model is not None
@@ -159,6 +161,12 @@ class InvestmentExpertRuntime:
             return "abstain", "outside_entry_window"
         if int(features["bars"]) < self.policy.min_completed_bars:
             return "abstain", "insufficient_completed_bars"
+        overnight_us_score = features.get("overnight_us_score")
+        if (
+            overnight_us_score is not None
+            and float(overnight_us_score) < self.policy.min_overnight_us_score
+        ):
+            return "abstain", "overnight_us_market_risk_off"
         if vwap_bias is None or vwap_bias < self.policy.min_vwap_bias:
             return "abstain", "vwap_confirmation_missing"
         if breakout is None or breakout < self.policy.min_breakout_pct:

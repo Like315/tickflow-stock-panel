@@ -1184,6 +1184,159 @@ export interface UsMarketOverview {
   distribution: Array<{ label: string; count: number; ratio: number }>
   benchmarks: UsMarketQuote[]
   sectors: UsMarketQuote[]
+  themes?: UsMarketQuote[]
+  rankings: {
+    gainers: UsMarketQuote[]
+    losers: UsMarketQuote[]
+    active: UsMarketQuote[]
+  }
+}
+
+export type UsMarketGroupKind = 'sector' | 'theme'
+
+export interface UsMarketGroupSummary {
+  id: string
+  kind: UsMarketGroupKind
+  name: string
+  name_en: string
+  proxy_symbol?: string | null
+  proxy_quote?: UsMarketQuote | null
+  total_count?: number
+  valid_count?: number
+  coverage_ratio?: number
+  weight_coverage_ratio?: number | null
+  avg_change_pct?: number | null
+  median_change_pct?: number | null
+  weighted_change_pct?: number | null
+  up?: number
+  down?: number
+  flat?: number
+  strong?: number
+  weak?: number
+  leader?: UsMarketQuote | null
+  laggard?: UsMarketQuote | null
+}
+
+export interface UsMarketGroupCatalog {
+  schema_version: number
+  market_status: UsMarketDataStatus
+  market_as_of: number | null
+  classification: {
+    status: 'live' | 'snapshot' | 'unavailable'
+    source: string
+    standard: string
+    as_of?: string
+    fetched_at?: number
+    message?: string
+  }
+  sectors: UsMarketGroupSummary[]
+  themes: UsMarketGroupSummary[]
+}
+
+export interface UsMarketGroupMember {
+  symbol: string
+  name: string
+  sector: string
+  industry: string
+  weight_pct: number | null
+  quote: UsMarketQuote | null
+}
+
+export interface UsMarketGroupDetail {
+  schema_version: number
+  market_status: UsMarketDataStatus
+  market_as_of: number | null
+  source: {
+    status: 'live' | 'snapshot'
+    source: string
+    standard?: string
+    source_url?: string
+    as_of?: string
+    message?: string
+  }
+  summary: UsMarketGroupSummary
+  industries: UsMarketGroupSummary[]
+  members: UsMarketGroupMember[]
+}
+
+export interface UsMarketInstrument {
+  symbol: string
+  code: string
+  exchange: string
+  region: string
+  name: string
+  name_en?: string
+  instrument_type: string
+  total_shares: number | null
+  float_shares: number | null
+  sector?: string
+  industry?: string
+  country?: string
+  ipo_year?: number | null
+  market_cap?: number | null
+  last_price?: number | null
+  change_amount?: number | null
+  change_pct?: number | null
+  volume?: number | null
+  amount?: number | null
+  timestamp?: number | null
+  quote_source?: string
+  profile_url?: string
+}
+
+export interface UsMarketInstrumentCatalog {
+  schema_version: number
+  total: number
+  matched: number
+  limit: number
+  offset: number
+  classified_count: number
+  quote_coverage_count: number
+  sources: Record<string, unknown>
+  rows: UsMarketInstrument[]
+}
+
+export interface UsMarketInstrumentDetail {
+  schema_version: number
+  sources: Record<string, unknown>
+  instrument: UsMarketInstrument
+}
+
+export interface UsMarketDailyRow {
+  date: string
+  timestamp: number
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number | null
+  amount: number | null
+  change_pct: number | null
+}
+
+export interface UsMarketDailyHistory {
+  schema_version: number
+  status: 'live' | 'snapshot'
+  source: string
+  symbol: string
+  adjust: 'none' | 'forward' | 'backward'
+  fetched_at: number
+  requested_count: number
+  available_count: number
+  message?: string
+  rows: UsMarketDailyRow[]
+}
+
+export interface UsMarketRankings {
+  schema_version: number
+  status: 'live' | 'snapshot' | 'mixed'
+  source: string
+  market_status: UsMarketDataStatus | 'unavailable'
+  as_of?: string | null
+  sample_count: number
+  live_count: number
+  breadth: UsMarketBreadth | null
+  distribution: Array<{ label: string; count: number; ratio: number }>
   rankings: {
     gainers: UsMarketQuote[]
     losers: UsMarketQuote[]
@@ -1482,6 +1635,8 @@ export interface InvestmentExpertPolicy {
   min_vwap_bias: number
   min_breakout_pct: number
   entry_probability_threshold: number
+  overnight_us_candidate_weight: number
+  min_overnight_us_score: number
   stop_loss_pct: number
 }
 
@@ -1531,6 +1686,17 @@ export interface InvestmentExpertStatus {
   pending_order_count: number
   entries_enabled?: boolean
   risk_trip_reason?: string | null
+  session_prepare_error?: string | null
+  overnight_us_market?: {
+    available: boolean
+    status: string
+    market_date?: string | null
+    as_of?: number | null
+    score: number
+    tilt: number
+    benchmarks: Record<string, number>
+    breadth?: { up_ratio: number; down_ratio: number }
+  } | null
   minute_capable: boolean
   champion?: InvestmentExpertPolicy | null
   active_model?: InvestmentExpertModel | null
@@ -1548,11 +1714,14 @@ export interface InvestmentExpertStatus {
 
 export interface InvestmentExpertExperiment {
   id: string
+  champion_policy_id: string
   candidate_policy_id: string
   mutation_field: string
   status: string
   reason: string
   created_at: string
+  finished_at?: string | null
+  champion_metrics: Record<string, number | string | null>
   candidate_metrics: Record<string, number | string | null>
 }
 
@@ -1561,6 +1730,55 @@ export const api = {
 
   usMarketOverview: () => request<UsMarketOverview>('/api/us-market/overview'),
   usMarketRefresh: () => request<UsMarketOverview>('/api/us-market/refresh', { method: 'POST' }),
+  usMarketGroups: (force = false) =>
+    request<UsMarketGroupCatalog>(`/api/us-market/groups${force ? '?force=true' : ''}`),
+  usMarketGroupDetail: (kind: UsMarketGroupKind, id: string, force = false) => {
+    const params = new URLSearchParams({ kind })
+    if (force) params.set('force', 'true')
+    return request<UsMarketGroupDetail>(
+      `/api/us-market/groups/${encodeURIComponent(id)}?${params.toString()}`,
+    )
+  },
+  usMarketInstruments: (options: {
+    q?: string
+    sector?: string
+    industry?: string
+    country?: string
+    limit?: number
+    offset?: number
+    force?: boolean
+  } = {}) => {
+    const params = new URLSearchParams()
+    if (options.q) params.set('q', options.q)
+    if (options.sector) params.set('sector', options.sector)
+    if (options.industry) params.set('industry', options.industry)
+    if (options.country) params.set('country', options.country)
+    params.set('limit', String(options.limit ?? 50))
+    params.set('offset', String(options.offset ?? 0))
+    if (options.force) params.set('force', 'true')
+    return request<UsMarketInstrumentCatalog>(`/api/us-market/instruments?${params.toString()}`)
+  },
+  usMarketInstrument: (symbol: string, force = false) =>
+    request<UsMarketInstrumentDetail>(
+      `/api/us-market/instruments/${encodeURIComponent(symbol)}${force ? '?force=true' : ''}`,
+    ),
+  usMarketDaily: (
+    symbol: string,
+    count = 260,
+    adjust: 'none' | 'forward' | 'backward' = 'none',
+    force = false,
+  ) => {
+    const params = new URLSearchParams({ count: String(count), adjust })
+    if (force) params.set('force', 'true')
+    return request<UsMarketDailyHistory>(
+      `/api/us-market/instruments/${encodeURIComponent(symbol)}/daily?${params.toString()}`,
+    )
+  },
+  usMarketRankings: (limit = 10, force = false) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (force) params.set('force', 'true')
+    return request<UsMarketRankings>(`/api/us-market/rankings?${params.toString()}`)
+  },
 
   stockPortfolio: () => request<StockPortfolio>('/api/stock-portfolio'),
   stockPortfolioUpsert: (symbol: string, position: StockPositionInput) =>

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 import polars as pl
 
 from app.data_providers import get_provider
+from app.market_calendar import is_cn_trading_day
 from app.market_time import CN_TZ, cn_now
 from app.paper_agent.dataset import TrainingDatasetBuilder
 from app.paper_agent.evolution import PolicyEvaluator, PolicyEvolutionEngine
@@ -37,12 +39,16 @@ class InvestmentExpertService:
         capset=None,
         strategy_engine=None,
         screener_service=None,
+        us_market_service=None,
+        trading_day_checker: Callable[[date], bool] = is_cn_trading_day,
     ) -> None:
         self.repo = repo
         self.data_dir = data_dir
         self.capset: CapabilitySet | None = None
         self.strategy_engine = strategy_engine
         self.screener_service = screener_service
+        self.us_market_service = us_market_service
+        self._trading_day_checker = trading_day_checker
         self.store = PaperAgentStore(data_dir)
         recovered = self.store.recover_interrupted_records(before_trade_date=cn_now().date())
         if recovered["sessions"] or recovered["datasets"]:
@@ -75,6 +81,8 @@ class InvestmentExpertService:
         self._session_start_equity = self.constitution.initial_capital
         self._equity_peak = self.constitution.initial_capital
         self._risk_trip_reason: str | None = None
+        self._overnight_us_context: dict[str, Any] | None = None
+        self._prepare_failure_reason: str | None = None
 
     def update_capabilities(self, capset: CapabilitySet | None) -> None:
         """Refresh the live TickFlow capability snapshot without restarting the service."""
@@ -174,13 +182,16 @@ class InvestmentExpertService:
         now = now or cn_now()
         if now.tzinfo is None:
             now = now.replace(tzinfo=CN_TZ)
-        if now.weekday() >= 5:
-            return {"status": "idle", "reason": "weekend"}
+        if not self._trading_day_checker(now.date()):
+            return {"status": "idle", "reason": "market_closed"}
         clock = now.timetz().replace(tzinfo=None)
         if time(9, 15) <= clock < time(15, 5) and self._runtime is None:
             prepared = self._prepare_session(now)
             if not prepared:
-                return {"status": "degraded", "reason": "no_point_in_time_candidates"}
+                return {
+                    "status": "degraded",
+                    "reason": self._prepare_failure_reason or "no_point_in_time_candidates",
+                }
         if self._is_continuous_session(now):
             return self._process_new_minute_bars(now)
         if clock >= time(15, 5) and self._session and self._finalized_date != now.date():
@@ -208,8 +219,18 @@ class InvestmentExpertService:
 
     def _prepare_session(self, now: datetime) -> bool:
         champion = self.store.get_champion() or self.store.ensure_baseline_policy()
-        candidates, context = self._select_candidates(now.date(), champion.candidate_limit)
+        overnight_context = self._load_overnight_us_context(now.date())
+        if self.us_market_service is not None and overnight_context is None:
+            self._prepare_failure_reason = "overnight_us_market_unavailable"
+            return False
+        candidates, context = self._select_candidates(
+            now.date(),
+            champion.candidate_limit,
+            overnight_context=overnight_context,
+            overnight_weight=champion.overnight_us_candidate_weight,
+        )
         if not candidates:
+            self._prepare_failure_reason = "no_point_in_time_candidates"
             return False
         session = self.store.start_session(
             now.date(), champion.id, mode="paper", candidates=candidates
@@ -232,6 +253,8 @@ class InvestmentExpertService:
         self._candidates = candidates
         self._market_symbols = sorted(set(candidates) | held_symbols)
         self._candidate_context = context
+        self._overnight_us_context = overnight_context
+        self._prepare_failure_reason = None
         floor = now.replace(second=0, microsecond=0)
         self._next_fetch_at = (
             floor - timedelta(minutes=1)
@@ -247,6 +270,73 @@ class InvestmentExpertService:
         )
         self._risk_trip_reason = None
         return True
+
+    def _load_overnight_us_context(self, trade_date: date) -> dict[str, Any] | None:
+        if self.us_market_service is None:
+            return {
+                "available": False,
+                "status": "not_configured",
+                "market_date": None,
+                "score": 0.0,
+                "tilt": 0.0,
+                "benchmarks": {},
+            }
+        try:
+            overview = self.us_market_service.get_overview()
+            market_time = datetime.fromisoformat(str(overview.get("market_time") or ""))
+            market_date = market_time.date()
+            if market_date >= trade_date or (trade_date - market_date).days > 7:
+                logger.warning(
+                    "investment expert rejected stale US overnight context: %s for %s",
+                    market_date,
+                    trade_date,
+                )
+                return None
+            benchmark_weights = {
+                "SPY.US": 0.40,
+                "QQQ.US": 0.30,
+                "DIA.US": 0.20,
+                "IWM.US": 0.10,
+            }
+            benchmark_returns: dict[str, float] = {}
+            weighted_sum = 0.0
+            available_weight = 0.0
+            for row in overview.get("benchmarks") or []:
+                symbol = str(row.get("symbol") or "").upper()
+                weight = benchmark_weights.get(symbol)
+                value = row.get("change_pct")
+                if weight is None or value is None:
+                    continue
+                change_pct = float(value)
+                if not math.isfinite(change_pct):
+                    continue
+                benchmark_returns[symbol] = change_pct
+                weighted_sum += weight * change_pct
+                available_weight += weight
+            if available_weight < 0.60:
+                return None
+            index_return = weighted_sum / available_weight
+            breadth = overview.get("breadth") or {}
+            up_ratio = float(breadth.get("up_ratio") or 0.0)
+            down_ratio = float(breadth.get("down_ratio") or 0.0)
+            breadth_return = max(-1.0, min(1.0, up_ratio - down_ratio)) * 0.01
+            score = 0.8 * index_return + 0.2 * breadth_return
+            return {
+                "available": True,
+                "status": str(overview.get("status") or "unknown"),
+                "market_date": market_date.isoformat(),
+                "as_of": overview.get("as_of"),
+                "score": round(score, 8),
+                "tilt": round(max(-1.0, min(1.0, score / 0.02)), 8),
+                "benchmarks": benchmark_returns,
+                "breadth": {
+                    "up_ratio": up_ratio,
+                    "down_ratio": down_ratio,
+                },
+            }
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            logger.exception("investment expert US overnight context unavailable")
+            return None
 
     def _refresh_risk_state(self) -> bool:
         if self._executor is None or self._runtime is None:
@@ -324,7 +414,12 @@ class InvestmentExpertService:
         return executor
 
     def _select_candidates(
-        self, trade_date: date, limit: int
+        self,
+        trade_date: date,
+        limit: int,
+        *,
+        overnight_context: dict[str, Any] | None = None,
+        overnight_weight: float = 0.15,
     ) -> tuple[list[str], dict[str, dict[str, Any]]]:
         instruments = self.repo.get_instruments()
         if instruments.is_empty() or "symbol" not in instruments.columns:
@@ -366,6 +461,12 @@ class InvestmentExpertService:
                 - 1
             ).alias("_momentum"),
             pl.col("close").cast(pl.Float64).shift(1).over("symbol").alias("_previous_close"),
+            pl.col("close")
+            .cast(pl.Float64)
+            .pct_change()
+            .rolling_std(window_size=20)
+            .over("symbol")
+            .alias("_volatility_20d"),
         )
         latest = history.filter(pl.col("date") == latest_date).drop_nulls(["_momentum"])
         if latest.is_empty():
@@ -384,8 +485,11 @@ class InvestmentExpertService:
         latest = latest.with_columns(
             pl.col("_momentum").rank(descending=True).alias("_mom_rank"),
             pl.col("amount").rank(descending=True).alias("_amount_rank"),
+            pl.col("_volatility_20d").rank(descending=False).alias("_defensive_rank"),
             pl.len().cast(pl.Float64).alias("_count"),
         ).with_columns(
+            (1 - (pl.col("_mom_rank") - 1) / pl.col("_count")).alias("_momentum_score"),
+            (1 - (pl.col("_defensive_rank") - 1) / pl.col("_count")).alias("_defensive_score"),
             (
                 0.7 * (1 - (pl.col("_mom_rank") - 1) / pl.col("_count"))
                 + 0.3 * (1 - (pl.col("_amount_rank") - 1) / pl.col("_count"))
@@ -406,6 +510,21 @@ class InvestmentExpertService:
             )
         else:
             latest = latest.with_columns(pl.lit(0.0).alias("_strategy_score"))
+        overnight_score = float((overnight_context or {}).get("score") or 0.0)
+        overnight_tilt = float((overnight_context or {}).get("tilt") or 0.0)
+        applied_weight = min(max(overnight_weight, 0.0), 0.5) * abs(overnight_tilt)
+        preference = (
+            pl.col("_momentum_score")
+            if overnight_tilt >= 0
+            else pl.col("_defensive_score")
+        )
+        latest = latest.with_columns(
+            (
+                (1 - applied_weight) * pl.col("_score")
+                + applied_weight * preference
+            ).alias("_score"),
+            preference.alias("_overnight_fit"),
+        )
         latest = latest.sort(["_score", "symbol"], descending=[True, False]).head(limit)
         selected = [str(value) for value in latest["symbol"].to_list()]
         context: dict[str, dict[str, Any]] = {}
@@ -418,6 +537,9 @@ class InvestmentExpertService:
                 "score": float(row["_score"]),
                 "daily_momentum_20d": float(row["_momentum"]),
                 "strategy_consensus": float(row["_strategy_score"]),
+                "overnight_us_score": overnight_score,
+                "overnight_us_tilt": overnight_tilt,
+                "overnight_us_fit": float(row["_overnight_fit"]),
             }
         return selected, context
 
@@ -928,6 +1050,8 @@ class InvestmentExpertService:
                 self._runtime is None or self._runtime.entries_enabled
             ),
             "risk_trip_reason": self._risk_trip_reason,
+            "overnight_us_market": self._overnight_us_context,
+            "session_prepare_error": self._prepare_failure_reason,
             "minute_capable": bool(
                 self.capset is None or self.capset.has(Cap.KLINE_MINUTE_BATCH)
             ),

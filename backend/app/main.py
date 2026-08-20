@@ -23,7 +23,9 @@ from app.services.investment_expert import InvestmentExpertService
 from app.services.quote_service import QuoteService
 from app.services.research_agent import ResearchAgentService
 from app.services.stock_portfolio import StockPortfolioService
+from app.services.us_market_instruments import UsMarketInstrumentService
 from app.services.us_market_overview import UsMarketOverviewService
+from app.services.us_market_sectors import UsMarketSectorService
 from app.tickflow import client as tf_client
 from app.tickflow.policy import detect_capabilities
 from app.tickflow.repository import DataStore, KlineRepository
@@ -58,6 +60,15 @@ async def lifespan(app: FastAPI):
     app.state.fund_portfolio_service = FundPortfolioService(store.data_dir)
     app.state.stock_portfolio_service = StockPortfolioService(store.data_dir, repo)
     app.state.us_market_overview_service = UsMarketOverviewService(store.data_dir)
+    app.state.us_market_sector_service = UsMarketSectorService(
+        store.data_dir,
+        app.state.us_market_overview_service,
+    )
+    app.state.us_market_instrument_service = UsMarketInstrumentService(
+        store.data_dir,
+        app.state.us_market_overview_service,
+        app.state.us_market_sector_service.classification_store,
+    )
     app.state.fund_research_service = FundResearchService(
         app.state.fund_portfolio_service,
         repo=repo,
@@ -193,6 +204,7 @@ async def lifespan(app: FastAPI):
         capset=capset,
         strategy_engine=strategy_engine,
         screener_service=_screener_svc,
+        us_market_service=app.state.us_market_overview_service,
     )
     app.state.investment_expert_service = investment_expert_service
     investment_expert_service.boot_check()

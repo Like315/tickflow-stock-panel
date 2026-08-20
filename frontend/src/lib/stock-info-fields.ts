@@ -20,6 +20,38 @@ export type { ColumnConfig, ColumnGroup }
 // ===== 内置指标注册表 =====
 
 export const BUILTIN_INFO_FIELDS: ColumnConfig[] = [
+  // 个股归属（所有详情页固定显示，不进入用户可隐藏配置）
+  {
+    id: 'ext:ext_hy_ths:所属同花顺行业',
+    source: {
+      type: 'ext',
+      configId: 'ext_hy_ths',
+      fieldName: '所属同花顺行业',
+      fieldLabel: '所属板块',
+      fieldType: 'string',
+    },
+    label: '所属板块',
+    visible: true,
+    pinned: true,
+    align: 'left',
+    extDisplay: { displayMode: 'tag', separator: '-', maxTags: 3 },
+  },
+  {
+    id: 'ext:ext_gn_ths:所属概念',
+    source: {
+      type: 'ext',
+      configId: 'ext_gn_ths',
+      fieldName: '所属概念',
+      fieldLabel: '所属概念',
+      fieldType: 'string',
+    },
+    label: '所属概念',
+    visible: true,
+    pinned: true,
+    align: 'left',
+    standalone: true,
+    extDisplay: { displayMode: 'tag', separator: ';', maxTags: 6 },
+  },
   // 规模
   { id: 'builtin:market_cap', source: { type: 'builtin', key: 'market_cap' }, label: '市值', visible: true, align: 'left' },
   { id: 'builtin:float_market_cap', source: { type: 'builtin', key: 'float_market_cap' }, label: '流通值', visible: true, align: 'left' },
@@ -57,7 +89,9 @@ export const INFO_GROUPS: ColumnGroup[] = [
 export function loadInfoFields(): ColumnConfig[] {
   const saved = storage.stockInfoBarFields.get([]) as ColumnConfig[]
   if (saved.length === 0) return [...BUILTIN_INFO_FIELDS]
-  return mergeFields(saved, BUILTIN_INFO_FIELDS)
+  return mergeFields(saved, BUILTIN_INFO_FIELDS).map(field => (
+    field.pinned ? { ...field, visible: true } : field
+  ))
 }
 
 /** 保存信息条指标配置到 localStorage。 */
@@ -77,6 +111,10 @@ export function buildInfoExtColumnsParam(columns: ColumnConfig[]): string {
 
 /** 合并用户保存的配置与默认配置。 */
 function mergeFields(saved: ColumnConfig[], defaults: ColumnConfig[]): ColumnConfig[] {
-  // 无固定列，传入空的 pinnedFirstIds 跳过「代码置顶」逻辑
-  return mergeColumnsBase(saved, defaults, { pinnedFirstIds: [] })
+  return mergeColumnsBase(saved, defaults, {
+    pinnedFirstIds: [
+      'ext:ext_hy_ths:所属同花顺行业',
+      'ext:ext_gn_ths:所属概念',
+    ],
+  })
 }

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.services.us_market_sectors import THEME_PROXIES
 from app.tickflow.client import get_client, get_paid_realtime_client
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ SECTORS: dict[str, str] = {
     "XLU.US": "公用事业",
 }
 
-PROXY_SYMBOLS = [*BENCHMARKS, *SECTORS]
+PROXY_SYMBOLS = [*BENCHMARKS, *SECTORS, *THEME_PROXIES]
 
 
 class UsMarketUnavailableError(RuntimeError):
@@ -180,6 +181,33 @@ def _distribution(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return output
 
 
+def build_market_statistics(
+    rows: list[Mapping[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """从含现价和涨跌幅的全市场样本生成宽度与涨跌分布。"""
+    valid_rows: list[dict[str, Any]] = []
+    for row in rows:
+        last_price = _finite(row.get("last_price"))
+        change_pct = _finite(row.get("change_pct"))
+        if last_price is None or last_price <= 0 or change_pct is None:
+            continue
+        valid_rows.append({"change_pct": change_pct})
+
+    total = len(valid_rows)
+    up = sum(row["change_pct"] >= 0.00005 for row in valid_rows)
+    down = sum(row["change_pct"] <= -0.00005 for row in valid_rows)
+    return {
+        "total": total,
+        "up": up,
+        "down": down,
+        "flat": total - up - down,
+        "strong": sum(row["change_pct"] >= 0.02 for row in valid_rows),
+        "weak": sum(row["change_pct"] <= -0.02 for row in valid_rows),
+        "up_ratio": up / total if total else 0,
+        "down_ratio": down / total if total else 0,
+    }, _distribution(valid_rows)
+
+
 def build_live_overview(
     market_quotes: list[Mapping[str, Any]],
     proxy_quotes: list[Mapping[str, Any]] | None = None,
@@ -198,11 +226,7 @@ def build_live_overview(
     if not market_rows:
         raise UsMarketUnavailableError("TickFlow 未返回有效的美股全市场行情")
 
-    up = sum(row["change_pct"] >= 0.00005 for row in market_rows)
-    down = sum(row["change_pct"] <= -0.00005 for row in market_rows)
-    flat = len(market_rows) - up - down
-    positive = sum(row["change_pct"] >= 0.02 for row in market_rows)
-    weak = sum(row["change_pct"] <= -0.02 for row in market_rows)
+    breadth, distribution = build_market_statistics(market_rows)
 
     ranking_rows = [
         row
@@ -227,7 +251,6 @@ def build_live_overview(
             if symbol in normalized and _valid_market_row(normalized[symbol])
         ]
 
-    total = len(market_rows)
     return {
         "schema_version": 1,
         "status": "live",
@@ -237,20 +260,16 @@ def build_live_overview(
         "market_time": _iso_time(latest_ms, NEW_YORK_TZ),
         "beijing_time": _iso_time(latest_ms, BEIJING_TZ),
         "session": session,
-        "breadth": {
-            "total": total,
-            "up": up,
-            "down": down,
-            "flat": flat,
-            "strong": positive,
-            "weak": weak,
-            "up_ratio": up / total,
-            "down_ratio": down / total,
-        },
-        "distribution": _distribution(market_rows),
+        "breadth": breadth,
+        "distribution": distribution,
         "benchmarks": proxies(BENCHMARKS),
         "sectors": sorted(
             proxies(SECTORS),
+            key=lambda row: row["change_pct"],
+            reverse=True,
+        ),
+        "themes": sorted(
+            proxies(THEME_PROXIES),
             key=lambda row: row["change_pct"],
             reverse=True,
         ),
@@ -308,7 +327,7 @@ def _daily_proxy_quote(symbol: str, frame: Any) -> dict[str, Any] | None:
     timestamp = _timestamp_ms(latest.get("timestamp") or latest.get("date"))
     return {
         "symbol": symbol,
-        "name": BENCHMARKS.get(symbol) or SECTORS.get(symbol) or symbol,
+        "name": BENCHMARKS.get(symbol) or SECTORS.get(symbol) or THEME_PROXIES.get(symbol) or symbol,
         "last_price": last_price,
         "prev_close": prev_close,
         "volume": _finite(latest.get("volume")),
@@ -367,6 +386,11 @@ def build_proxy_overview(
             key=lambda row: row["change_pct"],
             reverse=True,
         ),
+        "themes": sorted(
+            proxies(THEME_PROXIES),
+            key=lambda row: row["change_pct"],
+            reverse=True,
+        ),
         "rankings": {"gainers": [], "losers": [], "active": []},
     }
 
@@ -406,6 +430,7 @@ class UsMarketOverviewService:
         self._refreshing = False
         self._cache: dict[str, Any] | None = None
         self._cache_at = 0.0
+        self._market_rows: list[dict[str, Any]] = []
 
     def get_overview(self, *, force: bool = False) -> dict[str, Any]:
         with self._condition:
@@ -478,7 +503,46 @@ class UsMarketOverviewService:
             raise UsMarketUnavailableError("未配置 TickFlow 实时行情客户端")
         market_quotes = client.quotes.get_by_universes(universes=[US_UNIVERSE]) or []
         proxy_quotes = self._fetch_proxy_quote_rows(client)
-        return build_live_overview(market_quotes, proxy_quotes)
+        result = build_live_overview(market_quotes, proxy_quotes)
+        market_rows = []
+        for quote in market_quotes:
+            row = normalize_us_quote(quote)
+            if row is not None and row["symbol"] not in PROXY_SYMBOLS and _valid_market_row(row):
+                market_rows.append(row)
+        with self._condition:
+            self._market_rows = market_rows
+        return result
+
+    def get_market_snapshot(
+        self, *, force: bool = False,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """返回聚合摘要和仅驻留内存的全市场规范化行情。"""
+        overview = self.get_overview(force=force)
+        with self._condition:
+            rows = copy.deepcopy(self._market_rows)
+        return overview, rows
+
+    def fetch_symbol_quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
+        """为主题 ETF 成分补取指定标的行情,不写入 A 股仓库。"""
+        normalized_symbols = list(dict.fromkeys(
+            str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()
+        ))
+        if not normalized_symbols:
+            return []
+        client = self._realtime_client_factory()
+        if client is None:
+            return []
+        try:
+            raw = client.quotes.get(symbols=normalized_symbols) or []
+        except Exception as exc:
+            logger.info("美股指定标的行情读取失败 (%d 只): %s", len(normalized_symbols), exc)
+            return []
+        rows = []
+        for quote in raw:
+            row = normalize_us_quote(quote)
+            if row is not None and _valid_market_row(row):
+                rows.append(row)
+        return rows
 
     def _fetch_realtime_proxies(self) -> dict[str, Any]:
         client = self._realtime_client_factory()

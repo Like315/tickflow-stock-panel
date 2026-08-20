@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   Bot,
   BrainCircuit,
+  ChevronDown,
   Database,
   FlaskConical,
   Loader2,
@@ -13,8 +15,10 @@ import {
   TrendingUp,
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { investmentExpertStatusLabel, investmentExpertTaskLabel } from '@/lib/investmentExpertLabels'
 import { QK } from '@/lib/queryKeys'
 
 function money(value: number | null | undefined): string {
@@ -34,8 +38,54 @@ function statusClass(status: string | null | undefined): string {
   return 'text-amber-300 bg-amber-300/10'
 }
 
+function mutationLabel(field: string): string {
+  const labels: Record<string, string> = {
+    min_vwap_bias: '最低均价偏离',
+    min_breakout_pct: '最低突破幅度',
+    exit_vwap_bias: '离场均价偏离',
+    target_position_pct: '目标仓位比例',
+  }
+  return labels[field] ?? field
+}
+
+function reasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    protected_evaluation_passed: '保护集评估通过，候选策略已晋升',
+    anti_cheat_or_data_quality_violation: '存在防作弊或数据质量违规',
+    no_protected_evaluation_data: '没有可用的保护集评估数据',
+    insufficient_closed_trades: '已平仓交易数量不足，进入影子观察',
+    expectancy_did_not_improve: '交易期望未优于原冠军策略',
+    max_drawdown_regressed: '最大回撤明显退化',
+    net_return_regressed: '净收益低于原冠军策略',
+  }
+  return labels[reason] ?? reason
+}
+
+const EXPERIMENT_METRICS = [
+  ['total_return', '总收益率'],
+  ['max_drawdown', '最大回撤'],
+  ['closed_trades', '已平仓交易'],
+  ['win_rate', '胜率'],
+  ['expectancy', '单笔期望'],
+  ['violations', '违规次数'],
+  ['processed_dates', '评估交易日'],
+] as const
+
+function experimentMetric(value: number | string | null | undefined, key: string): string {
+  if (value == null) return '--'
+  const number = Number(value)
+  if (!Number.isFinite(number)) return String(value)
+  if (['total_return', 'max_drawdown', 'win_rate', 'expectancy'].includes(key)) {
+    return `${(number * 100).toFixed(2)}%`
+  }
+  return number.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+}
+
 export function InvestmentExpert() {
   const queryClient = useQueryClient()
+  const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
+  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
+  const [expandedExperimentId, setExpandedExperimentId] = useState<string | null>(null)
   const status = useQuery({
     queryKey: QK.investmentExpertStatus,
     queryFn: api.investmentExpertStatus,
@@ -128,7 +178,7 @@ export function InvestmentExpert() {
             {data?.active_task && (
               <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                后台任务进行中：{data.active_task}
+                后台任务进行中：{investmentExpertTaskLabel(data.active_task)}
               </div>
             )}
             {data?.last_error && (
@@ -146,14 +196,25 @@ export function InvestmentExpert() {
                 风险熔断已触发：{data.risk_trip_reason}。系统已禁止新买入并在盘后执行回滚。
               </div>
             )}
+            {data?.session_prepare_error === 'overnight_us_market_unavailable' && (
+              <div className="mt-3 rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs text-rose-300">
+                昨夜美股收盘数据不可用，今日会话按安全策略暂不创建，也不会发起模拟买入。
+              </div>
+            )}
+            {data?.overnight_us_market?.available && (
+              <div className="mt-3 rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2 text-xs text-blue-200">
+                隔夜美股因子：{data.overnight_us_market.market_date} · 综合涨跌 {percent(data.overnight_us_market.score)}。
+                已用于候选排序，低于策略阈值时禁止新买入。
+              </div>
+            )}
           </section>
 
           <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
             <MetricCard icon={TrendingUp} label="模拟权益" value={money(data?.equity)} hint={`现金 ${money(data?.cash)}`} />
             <MetricCard icon={Activity} label="持仓批次" value={String(data?.positions.length ?? 0)} hint={`${data?.pending_order_count ?? 0} 个待成交订单`} />
             <MetricCard icon={ShieldCheck} label="当前策略" value={data?.champion ? `v${data.champion.version}` : '--'} hint={data?.champion?.id ?? '尚未初始化'} />
-            <MetricCard icon={BrainCircuit} label="训练模型" value={displayModel ? `v${displayModel.version}${activeModel ? '' : ' Shadow'}` : '规则基线'} hint={displayModel ? `${displayModel.sample_count.toLocaleString()} 样本` : '等待保护集门控'} />
-            <MetricCard icon={Database} label="训练数据" value={data?.dataset?.status ?? '未构建'} hint={data?.dataset ? `${data.dataset.start_date} 至 ${data.dataset.end_date}` : '默认拉取近三年'} />
+            <MetricCard icon={BrainCircuit} label="训练模型" value={displayModel ? `v${displayModel.version}${activeModel ? '' : ' 影子观察'}` : '规则基线'} hint={displayModel ? `${displayModel.sample_count.toLocaleString()} 样本` : '等待保护集门控'} />
+            <MetricCard icon={Database} label="训练数据" value={data?.dataset ? investmentExpertStatusLabel(data.dataset.status) : '未构建'} hint={data?.dataset ? `${data.dataset.start_date} 至 ${data.dataset.end_date}` : '默认拉取近三年'} />
           </section>
 
           <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
@@ -173,7 +234,16 @@ export function InvestmentExpert() {
                     <tbody>
                       {data.positions.map(position => (
                         <tr key={position.lot_id} className="border-b border-border/60 last:border-0">
-                          <td className="px-2 py-2.5 font-mono text-foreground">{position.symbol}</td>
+                          <td className="px-2 py-2.5">
+                            <button
+                              type="button"
+                              onClick={() => setPreviewSymbol(position.symbol)}
+                              className="font-mono text-accent transition-colors hover:text-accent/80 hover:underline"
+                              title={`查看 ${position.symbol} 股票详情`}
+                            >
+                              {position.symbol}
+                            </button>
+                          </td>
                           <td className="px-2 py-2.5 text-secondary">{position.acquired_date}</td>
                           <td className="px-2 py-2.5 text-right tabular-nums">{position.remaining_shares}</td>
                           <td className="px-2 py-2.5 text-right tabular-nums">{position.entry_price.toFixed(3)}</td>
@@ -209,32 +279,104 @@ export function InvestmentExpert() {
           </section>
 
           <section className="grid gap-4 xl:grid-cols-2">
-            <Panel title="模拟盘会话" subtitle="每日操作与盘后结果均持久化">
+            <Panel title="模拟盘会话" subtitle="点击会话查看候选，点击代码查询股票详情">
               <div className="space-y-2">
-                {(sessions.data?.sessions ?? []).slice(0, 8).map(session => (
-                  <div key={session.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-base/40 px-3 py-2.5 text-xs">
-                    <div>
-                      <div className="font-medium text-foreground">{session.trade_date}</div>
-                      <div className="mt-0.5 text-[10px] text-muted">{session.policy_id} · {session.candidates.length} 个候选</div>
+                {(sessions.data?.sessions ?? []).slice(0, 8).map(session => {
+                  const expanded = expandedSessionId === session.id
+                  return (
+                    <div key={session.id} className="rounded-lg border border-border/70 bg-base/40 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedSessionId(expanded ? null : session.id)}
+                        className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-elevated/60"
+                        aria-expanded={expanded}
+                      >
+                        <div>
+                          <div className="font-medium text-foreground">{session.trade_date}</div>
+                          <div className="mt-0.5 text-[10px] text-muted">{session.policy_id} · {session.candidates.length} 个候选</div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={cn('rounded-full px-2 py-0.5 text-[10px]', statusClass(session.status))}>{investmentExpertStatusLabel(session.status)}</span>
+                          <ChevronDown className={cn('h-3.5 w-3.5 text-muted transition-transform', expanded && 'rotate-180')} />
+                        </div>
+                      </button>
+                      {expanded && (
+                        <div className="border-t border-border/70 px-3 py-3">
+                          <div className="grid max-h-56 grid-cols-2 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-3 lg:grid-cols-4">
+                            {session.candidates.map((symbol, index) => (
+                              <button
+                                key={symbol}
+                                type="button"
+                                onClick={() => setPreviewSymbol(symbol)}
+                                className="rounded-md border border-border/70 bg-surface/70 px-2 py-1.5 text-left font-mono text-[11px] text-accent transition-colors hover:border-accent/40 hover:bg-elevated"
+                                title={`查询 ${symbol} 股票详情`}
+                              >
+                                <span className="mr-1 text-[9px] text-muted">{index + 1}</span>
+                                {symbol}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <span className={cn('rounded-full px-2 py-0.5 text-[10px]', statusClass(session.status))}>{session.status}</span>
-                  </div>
-                ))}
+                  )
+                })}
                 {!sessions.data?.sessions.length && <EmptyCopy text="暂无模拟盘会话。" />}
               </div>
             </Panel>
 
             <Panel title="进化实验" subtitle="单变量变异 · 失败不替换冠军策略">
               <div className="space-y-2">
-                {(experiments.data?.experiments ?? []).slice(0, 8).map(experiment => (
-                  <div key={experiment.id} className="rounded-lg border border-border/70 bg-base/40 px-3 py-2.5 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-mono text-foreground">{experiment.candidate_policy_id}</span>
-                      <span className={cn('rounded-full px-2 py-0.5 text-[10px]', statusClass(experiment.status))}>{experiment.status}</span>
+                {(experiments.data?.experiments ?? []).slice(0, 8).map(experiment => {
+                  const expanded = expandedExperimentId === experiment.id
+                  return (
+                    <div key={experiment.id} className="rounded-lg border border-border/70 bg-base/40 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedExperimentId(expanded ? null : experiment.id)}
+                        className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition-colors hover:bg-elevated/60"
+                        aria-expanded={expanded}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate font-mono text-foreground">{experiment.candidate_policy_id}</div>
+                          <div className="mt-1 text-[10px] text-muted">变异项：{mutationLabel(experiment.mutation_field)}</div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span className={cn('rounded-full px-2 py-0.5 text-[10px]', statusClass(experiment.status))}>{investmentExpertStatusLabel(experiment.status)}</span>
+                          <ChevronDown className={cn('h-3.5 w-3.5 text-muted transition-transform', expanded && 'rotate-180')} />
+                        </div>
+                      </button>
+                      {expanded && (
+                        <div className="space-y-3 border-t border-border/70 px-3 py-3">
+                          <div className="rounded-md bg-base/50 px-2.5 py-2 text-[11px] leading-5 text-secondary">
+                            <div>结论：{reasonLabel(experiment.reason)}</div>
+                            <div className="text-muted">原冠军：{experiment.champion_policy_id}</div>
+                          </div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full min-w-[420px] text-left text-[11px]">
+                              <thead className="text-muted">
+                                <tr className="border-b border-border/70">
+                                  <th className="px-2 py-1.5 font-medium">评估指标</th>
+                                  <th className="px-2 py-1.5 text-right font-medium">原冠军策略</th>
+                                  <th className="px-2 py-1.5 text-right font-medium">候选策略</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {EXPERIMENT_METRICS.map(([key, label]) => (
+                                  <tr key={key} className="border-b border-border/40 last:border-0">
+                                    <td className="px-2 py-1.5 text-secondary">{label}</td>
+                                    <td className="px-2 py-1.5 text-right tabular-nums text-muted">{experimentMetric(experiment.champion_metrics?.[key], key)}</td>
+                                    <td className="px-2 py-1.5 text-right tabular-nums text-foreground">{experimentMetric(experiment.candidate_metrics?.[key], key)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <div className="mt-1 text-[10px] text-muted">{experiment.mutation_field} · {experiment.reason}</div>
-                  </div>
-                ))}
+                  )
+                })}
                 {!experiments.data?.experiments.length && <EmptyCopy text="暂无进化实验；三年样本准备完成后可自动验证。" />}
               </div>
             </Panel>
@@ -250,6 +392,12 @@ export function InvestmentExpert() {
           </section>
         </div>
       </main>
+
+      <StockPreviewDialog
+        symbol={previewSymbol}
+        triggerInfo={null}
+        onClose={() => setPreviewSymbol(null)}
+      />
     </>
   )
 }

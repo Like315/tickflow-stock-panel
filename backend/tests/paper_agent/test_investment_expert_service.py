@@ -90,6 +90,34 @@ class _MinuteProvider:
         return self.frame
 
 
+class _UsMarketService:
+    def __init__(self, *, score_direction: int = 1) -> None:
+        self.calls = 0
+        direction = 1 if score_direction >= 0 else -1
+        self.overview = {
+            "status": "live",
+            "as_of": int(datetime(2026, 8, 19, 16, 0).timestamp() * 1000),
+            "market_time": "2026-08-19T16:00:00-04:00",
+            "benchmarks": [
+                {"symbol": "SPY.US", "change_pct": 0.012 * direction},
+                {"symbol": "QQQ.US", "change_pct": 0.018 * direction},
+                {"symbol": "DIA.US", "change_pct": 0.008 * direction},
+                {"symbol": "IWM.US", "change_pct": 0.010 * direction},
+            ],
+            "breadth": {"up_ratio": 0.68 if direction > 0 else 0.25,
+                        "down_ratio": 0.25 if direction > 0 else 0.68},
+        }
+
+    def get_overview(self) -> dict:
+        self.calls += 1
+        return self.overview
+
+
+class _UnavailableUsMarketService:
+    def get_overview(self) -> dict:
+        raise RuntimeError("US market unavailable")
+
+
 def test_service_never_replays_minutes_before_runtime_start(tmp_path: Path) -> None:
     trade_date = date(2026, 8, 18)
     repo = _Repo(trade_date)
@@ -144,6 +172,90 @@ def test_runtime_tick_is_not_reentrant(tmp_path: Path) -> None:
         service.close()
 
     assert result == {"status": "reused", "reason": "paper_cycle_in_progress"}
+
+
+def test_runtime_stays_idle_on_exchange_holiday(tmp_path: Path) -> None:
+    trade_date = date(2026, 10, 1)
+    us_market = _UsMarketService()
+    service = InvestmentExpertService(
+        _Repo(trade_date),
+        tmp_path,
+        us_market_service=us_market,
+    )
+    try:
+        result = service.run_paper_cycle_once(
+            datetime(2026, 10, 1, 9, 20, tzinfo=CN_TZ)
+        )
+    finally:
+        service.close()
+
+    assert result == {"status": "idle", "reason": "market_closed"}
+    assert us_market.calls == 0
+
+
+def test_session_preparation_records_previous_us_session_factor(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 20)
+    us_market = _UsMarketService(score_direction=-1)
+    service = InvestmentExpertService(
+        _Repo(trade_date),
+        tmp_path,
+        us_market_service=us_market,
+    )
+    try:
+        assert service._prepare_session(datetime(2026, 8, 20, 9, 15, tzinfo=CN_TZ))
+        context = service.status()["overnight_us_market"]
+    finally:
+        service.close()
+
+    assert us_market.calls == 1
+    assert context["market_date"] == "2026-08-19"
+    assert context["score"] < 0
+    assert all(
+        row["overnight_us_score"] == context["score"]
+        for row in service._candidate_context.values()
+    )
+
+
+def test_overnight_us_direction_changes_candidate_ranking(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 20)
+    service = InvestmentExpertService(_Repo(trade_date), tmp_path)
+    try:
+        risk_on, _ = service._select_candidates(
+            trade_date,
+            5,
+            overnight_context={"score": 0.02, "tilt": 1.0},
+            overnight_weight=0.5,
+        )
+        risk_off, _ = service._select_candidates(
+            trade_date,
+            5,
+            overnight_context={"score": -0.02, "tilt": -1.0},
+            overnight_weight=0.5,
+        )
+    finally:
+        service.close()
+
+    assert risk_on != risk_off
+    assert risk_on[0] == service.repo.symbols[0]
+    assert risk_off[0] == service.repo.symbols[-1]
+
+
+def test_session_preparation_fails_closed_without_us_overnight_data(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 20)
+    service = InvestmentExpertService(
+        _Repo(trade_date),
+        tmp_path,
+        us_market_service=_UnavailableUsMarketService(),
+    )
+    try:
+        result = service.run_paper_cycle_once(
+            datetime(2026, 8, 20, 9, 20, tzinfo=CN_TZ)
+        )
+    finally:
+        service.close()
+
+    assert result == {"status": "degraded", "reason": "overnight_us_market_unavailable"}
+    assert service.store.list_sessions() == []
 
 
 def test_runtime_fails_closed_without_minute_capability(tmp_path: Path) -> None:

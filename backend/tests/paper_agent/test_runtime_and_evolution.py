@@ -48,6 +48,33 @@ def test_runtime_submits_only_after_completed_bar_confirmation() -> None:
     assert third.execution_events[0].event_type in {"order_filled", "order_partially_filled"}
 
 
+def test_runtime_blocks_new_entry_when_overnight_us_market_is_risk_off() -> None:
+    executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
+    policy = ExpertPolicy(
+        id="risk-off",
+        version=1,
+        min_completed_bars=2,
+        min_vwap_bias=0,
+        min_breakout_pct=0,
+        min_overnight_us_score=-0.02,
+    )
+    runtime = InvestmentExpertRuntime(
+        session_id="risk-off-session",
+        policy=policy,
+        candidates={"A"},
+        executor=executor,
+        candidate_context={"A": {"overnight_us_score": -0.03}},
+    )
+
+    runtime.on_bar(_bar(31, 10.0, 100_000))
+    second = runtime.on_bar(_bar(32, 10.2, 102_000))
+
+    assert second.decision is not None
+    assert second.decision["action"] == "abstain"
+    assert second.decision["reason"] == "overnight_us_market_risk_off"
+    assert second.submitted_event is None
+
+
 def test_evolution_changes_exactly_one_policy_dimension() -> None:
     champion = ExpertPolicy(id="p1", version=1)
     candidate, field = PolicyEvolutionEngine().propose(champion, {"loss_rate": 0.8})
