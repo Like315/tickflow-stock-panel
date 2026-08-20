@@ -117,6 +117,7 @@ export function Monitor() {
 
   // 触发记录: 过滤 + 统计 (提升到主组件, 供 header 行使用)
   const [filter, setFilter] = useState<'all' | 'strategy' | 'signal' | 'price' | 'market' | 'sector'>('all')
+  const [directionFilter, setDirectionFilter] = useState<'buy_signal' | 'sell_signal' | null>(null)
   const [confirmClear, setConfirmClear] = useState(false)
   const [confirmClearRules, setConfirmClearRules] = useState(false)
 
@@ -133,8 +134,14 @@ export function Monitor() {
   }, [monitorExtFields])
 
   const alertsQuery = useQuery({
-    queryKey: [...QK.alerts(filter === 'all' ? undefined : filter), extColumnsParam ?? ''],
-    queryFn: () => api.alertsList({ days: 7, limit: 500, source: filter === 'all' ? undefined : filter, extColumns: extColumnsParam }),
+    queryKey: [...QK.alerts(filter === 'all' ? undefined : filter), directionFilter ?? 'all-directions', extColumnsParam ?? ''],
+    queryFn: () => api.alertsList({
+      days: 7,
+      limit: 500,
+      source: filter === 'all' ? undefined : filter,
+      type: directionFilter ?? undefined,
+      extColumns: extColumnsParam,
+    }),
     refetchInterval: 10000,
     refetchIntervalInBackground: true,
   })
@@ -175,20 +182,45 @@ export function Monitor() {
           <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-surface/40 shadow-lg shadow-black/5">
             <div className="flex items-center gap-3 border-b border-border/60 bg-surface/60 px-4 py-2.5">
               <SectionHeader icon={BellRing} title="触发记录" />
-              {/* 过滤标签 */}
-              <div className="flex flex-wrap items-center gap-0.5">
-                {(['all', 'strategy', 'signal', 'price', 'market', 'sector'] as const).map(f => (
-                  <button
-                    key={f}
-                    onClick={() => setFilter(f)}
-                    className={cn(
-                      'rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-all cursor-pointer',
-                      filter === f ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-elevated/60 hover:text-secondary',
-                    )}
-                  >
-                    {f === 'all' ? '全部' : TYPE_LABEL[f]}
-                  </button>
-                ))}
+              {/* 来源 + 买卖方向过滤 */}
+              <div className="flex flex-col items-start gap-1">
+                <div className="flex flex-wrap items-center gap-0.5">
+                  {(['all', 'strategy', 'signal', 'price', 'market', 'sector'] as const).map(f => (
+                    <button
+                      key={f}
+                      onClick={() => setFilter(f)}
+                      className={cn(
+                        'rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-all cursor-pointer',
+                        filter === f ? 'bg-accent/15 text-accent' : 'text-muted hover:bg-elevated/60 hover:text-secondary',
+                      )}
+                    >
+                      {f === 'all' ? '全部' : TYPE_LABEL[f]}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1">
+                  {([
+                    { value: 'sell_signal', label: '卖出', activeClass: 'bg-bear/15 text-bear' },
+                    { value: 'buy_signal', label: '买入', activeClass: 'bg-danger/15 text-danger' },
+                  ] as const).map(option => {
+                    const active = directionFilter === option.value
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        aria-pressed={active}
+                        title={active ? `取消${option.label}筛选` : `只看${option.label}信号`}
+                        onClick={() => setDirectionFilter(active ? null : option.value)}
+                        className={cn(
+                          'rounded-md px-2 py-0.5 text-[10px] font-medium transition-all cursor-pointer',
+                          active ? option.activeClass : 'bg-elevated/40 text-muted hover:bg-elevated/70 hover:text-secondary',
+                        )}
+                      >
+                        {option.label}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
               {/* 数量 + 清空 + 字段配置 */}
               <div className="ml-auto flex items-center gap-2 shrink-0">
