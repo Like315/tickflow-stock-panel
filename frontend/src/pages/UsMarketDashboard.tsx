@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import {
   Activity,
   ArrowDownRight,
@@ -6,12 +7,22 @@ import {
   BarChart3,
   Clock3,
   Globe2,
+  Layers3,
   Loader2,
   RefreshCw,
   TrendingUp,
+  X,
 } from 'lucide-react'
-import { api, type UsMarketDataStatus, type UsMarketQuote } from '@/lib/api'
+import {
+  api,
+  type UsMarketDataStatus,
+  type UsMarketGroupDetail,
+  type UsMarketGroupKind,
+  type UsMarketGroupSummary,
+  type UsMarketQuote,
+} from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
+import { UsMarketInstrumentDetail, UsStockExplorer } from '@/components/us-market/UsStockExplorer'
 
 function validNumber(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
@@ -141,15 +152,20 @@ const PATH_STATUS_CLASS: Record<string, string> = {
   limited: 'bg-amber-400',
   cached: 'bg-sky-400',
 }
-
 function RankingTable({
   title,
   rows,
   mode,
+  onSelect,
+  pending = false,
+  emptyMessage = '排行榜数据暂时不可用',
 }: {
   title: string
   rows: UsMarketQuote[]
   mode: 'change' | 'amount' | 'amplitude'
+  onSelect?: (symbol: string) => void
+  pending?: boolean
+  emptyMessage?: string
 }) {
   return (
     <section className="min-w-0 rounded-card border border-border bg-surface/85 p-3.5">
@@ -157,16 +173,23 @@ function RankingTable({
         <h3 className="text-xs font-semibold text-foreground">{title}</h3>
         <span className="text-[10px] text-muted">TOP {rows.length}</span>
       </div>
-      {rows.length === 0 ? (
+      {pending ? (
+        <div className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border py-8 text-xs text-muted">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />正在生成全市场排行榜快照…
+        </div>
+      ) : rows.length === 0 ? (
         <div className="rounded-md border border-dashed border-border py-8 text-center text-xs text-muted">
-          当前数据模式不提供排行榜
+          {emptyMessage}
         </div>
       ) : (
         <div className="space-y-0.5">
           {rows.map((row, index) => (
-            <div
+            <button
+              type="button"
               key={row.symbol}
-              className="grid grid-cols-[20px_minmax(0,1fr)_80px_82px] items-center gap-2 rounded-md px-1.5 py-1.5 text-[11px] hover:bg-elevated/60"
+              onClick={() => onSelect?.(row.symbol)}
+              aria-label={`查看 ${row.symbol.replace('.US', '')} 详情`}
+              className="grid w-full grid-cols-[20px_minmax(0,1fr)_80px_82px] items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-[11px] hover:bg-elevated/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/60"
             >
               <span className="font-mono text-[10px] text-muted">{index + 1}</span>
               <div className="min-w-0">
@@ -181,7 +204,7 @@ function RankingTable({
                 {mode === 'amount' && `${row.amount_estimated ? '≈' : ''}${formatCompact(row.amount)}`}
                 {mode === 'amplitude' && formatUnsignedPct(row.amplitude)}
               </span>
-            </div>
+            </button>
           ))}
         </div>
       )}
@@ -189,8 +212,147 @@ function RankingTable({
   )
 }
 
+function groupChange(group: UsMarketGroupSummary): number | null {
+  return validNumber(
+    group.weighted_change_pct
+    ?? group.avg_change_pct
+    ?? group.proxy_quote?.change_pct,
+  )
+}
+
+function GroupGrid({
+  rows,
+  selected,
+  onSelect,
+}: {
+  rows: UsMarketGroupSummary[]
+  selected: { kind: UsMarketGroupKind; id: string } | null
+  onSelect: (group: UsMarketGroupSummary) => void
+}) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {rows.map((group, index) => {
+        const change = groupChange(group)
+        const active = selected?.kind === group.kind && selected.id === group.id
+        return (
+          <button
+            key={`${group.kind}-${group.id}`}
+            type="button"
+            onClick={() => onSelect(group)}
+            className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${active ? 'border-sky-400/50 bg-sky-400/10' : 'border-border/60 bg-elevated/35 hover:border-sky-400/30'}`}
+          >
+            <span className="w-5 shrink-0 font-mono text-[10px] text-muted">{String(index + 1).padStart(2, '0')}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium text-foreground">{group.name}</span>
+              <span className="mt-0.5 block truncate font-mono text-[9px] text-muted">
+                {group.proxy_symbol?.replace('.US', '') || group.name_en}
+                {group.valid_count != null && group.total_count != null ? ` · ${group.valid_count}/${group.total_count}` : ''}
+              </span>
+            </span>
+            <span className={`shrink-0 font-mono text-xs font-semibold ${changeClass(change)}`}>{formatPct(change)}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function GroupDetailPanel({
+  detail,
+  isLoading,
+  error,
+  onClose,
+}: {
+  detail?: UsMarketGroupDetail
+  isLoading: boolean
+  error: Error | null
+  onClose: () => void
+}) {
+  return (
+    <section className="overflow-hidden rounded-card border border-sky-400/20 bg-surface/90">
+      <div className="flex items-start justify-between gap-4 border-b border-border px-4 py-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <Layers3 className="h-4 w-4 text-sky-400" />
+            <h3 className="text-sm font-semibold text-foreground">{detail?.summary.name || '板块详情'}</h3>
+            {detail?.summary.proxy_symbol && <span className="rounded-full bg-sky-400/10 px-2 py-0.5 font-mono text-[9px] text-sky-300">{detail.summary.proxy_symbol.replace('.US', '')}</span>}
+          </div>
+          <p className="mt-1 text-[10px] text-muted">
+            {detail ? `${detail.source.source} · ${detail.source.as_of || '最新分类'}` : '正在加载真实成分与行情覆盖率'}
+          </p>
+        </div>
+        <button type="button" onClick={onClose} className="rounded p-1 text-muted hover:bg-elevated hover:text-foreground" aria-label="关闭板块详情"><X className="h-4 w-4" /></button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center justify-center gap-2 py-14 text-xs text-muted"><Loader2 className="h-4 w-4 animate-spin text-sky-400" />正在聚合板块成分行情…</div>
+      ) : error ? (
+        <div className="px-5 py-12 text-center text-xs text-rose-400">{error.message}</div>
+      ) : detail ? (
+        <>
+          <div className="grid gap-2 border-b border-border bg-base/25 p-4 sm:grid-cols-3 lg:grid-cols-6">
+            {[
+              ['成分', `${detail.summary.valid_count ?? 0}/${detail.summary.total_count ?? 0}`],
+              ['覆盖率', `${((detail.summary.coverage_ratio ?? 0) * 100).toFixed(1)}%`],
+              ['平均涨跌', formatPct(detail.summary.avg_change_pct)],
+              ['中位涨跌', formatPct(detail.summary.median_change_pct)],
+              ['加权涨跌', formatPct(detail.summary.weighted_change_pct)],
+              ['涨/跌', `${detail.summary.up ?? 0}/${detail.summary.down ?? 0}`],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-lg border border-border/60 bg-surface px-3 py-2">
+                <div className="text-[9px] text-muted">{label}</div>
+                <div className="mt-1 font-mono text-xs font-semibold text-foreground">{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {detail.industries.length > 0 && (
+            <div className="border-b border-border px-4 py-3">
+              <div className="mb-2 text-[10px] font-medium text-secondary">子行业</div>
+              <div className="flex flex-wrap gap-1.5">
+                {detail.industries.slice(0, 18).map(industry => (
+                  <span key={industry.id} className="rounded-full border border-border bg-elevated/45 px-2 py-1 text-[9px] text-secondary">
+                    {industry.name} <span className={changeClass(industry.avg_change_pct)}>{formatPct(industry.avg_change_pct)}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="max-h-[430px] overflow-auto">
+            <table className="min-w-full text-left text-[10px]">
+              <thead className="sticky top-0 bg-elevated text-muted">
+                <tr>
+                  <th className="px-4 py-2 font-medium">股票</th>
+                  <th className="px-3 py-2 font-medium">子行业</th>
+                  <th className="px-3 py-2 text-right font-medium">权重</th>
+                  <th className="px-3 py-2 text-right font-medium">现价</th>
+                  <th className="px-4 py-2 text-right font-medium">涨跌幅</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/60">
+                {detail.members.map(member => (
+                  <tr key={member.symbol} className="hover:bg-elevated/30">
+                    <td className="px-4 py-2"><div className="font-medium text-foreground">{member.name}</div><div className="font-mono text-[9px] text-muted">{member.symbol.replace('.US', '')}</div></td>
+                    <td className="max-w-56 truncate px-3 py-2 text-secondary">{member.industry || member.sector || '—'}</td>
+                    <td className="px-3 py-2 text-right font-mono text-secondary">{member.weight_pct != null ? `${member.weight_pct.toFixed(2)}%` : '—'}</td>
+                    <td className="px-3 py-2 text-right font-mono text-secondary">{formatPrice(member.quote?.last_price)}</td>
+                    <td className={`px-4 py-2 text-right font-mono font-semibold ${changeClass(member.quote?.change_pct)}`}>{formatPct(member.quote?.change_pct)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </section>
+  )
+}
+
 export function UsMarketDashboard() {
   const queryClient = useQueryClient()
+  const [selectedGroup, setSelectedGroup] = useState<{ kind: UsMarketGroupKind; id: string } | null>(null)
+  const [selectedRankingSymbol, setSelectedRankingSymbol] = useState<string | null>(null)
   const overview = useQuery({
     queryKey: QK.usMarketOverview,
     queryFn: api.usMarketOverview,
@@ -198,9 +360,45 @@ export function UsMarketDashboard() {
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
   })
+  const groups = useQuery({
+    queryKey: QK.usMarketGroups,
+    queryFn: () => api.usMarketGroups(),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+  })
+  const hasOverviewRankings = Boolean(
+    overview.data
+    && (
+      overview.data.rankings.gainers.length
+      || overview.data.rankings.losers.length
+      || overview.data.rankings.active.length
+    )
+  )
+  const rankingFallback = useQuery({
+    queryKey: QK.usMarketRankings,
+    queryFn: () => api.usMarketRankings(10, true),
+    enabled: overview.data != null && !hasOverviewRankings,
+    staleTime: 60_000,
+    refetchInterval: overview.data != null && !hasOverviewRankings ? 5 * 60_000 : false,
+    refetchIntervalInBackground: false,
+  })
+  const groupDetail = useQuery({
+    queryKey: selectedGroup ? QK.usMarketGroup(selectedGroup.kind, selectedGroup.id) : ['us-market-group', 'none'],
+    queryFn: () => api.usMarketGroupDetail(selectedGroup!.kind, selectedGroup!.id),
+    enabled: selectedGroup != null,
+    staleTime: 15_000,
+    refetchInterval: selectedGroup ? 30_000 : false,
+    refetchIntervalInBackground: false,
+  })
   const refresh = useMutation({
     mutationFn: api.usMarketRefresh,
-    onSuccess: data => queryClient.setQueryData(QK.usMarketOverview, data),
+    onSuccess: data => {
+      queryClient.setQueryData(QK.usMarketOverview, data)
+      queryClient.invalidateQueries({ queryKey: QK.usMarketGroups })
+      queryClient.invalidateQueries({ queryKey: QK.usMarketRankings })
+      if (selectedGroup) queryClient.invalidateQueries({ queryKey: QK.usMarketGroup(selectedGroup.kind, selectedGroup.id) })
+    },
   })
 
   if (overview.isLoading) {
@@ -238,8 +436,19 @@ export function UsMarketDashboard() {
   const data = overview.data
   const realtime = data.realtime ?? data.status === 'live'
   const status = realtime && data.status === 'partial' ? SAMPLE_REALTIME_META : STATUS_META[data.status]
-  const breadth = data.breadth
-  const maxDistribution = Math.max(...data.distribution.map(item => item.count), 1)
+  const breadth = data.breadth ?? rankingFallback.data?.breadth ?? null
+  const distribution = data.distribution.length > 0
+    ? data.distribution
+    : rankingFallback.data?.distribution ?? []
+  const statisticsPending = data.breadth == null && rankingFallback.isLoading
+  const statisticsSource = data.breadth == null && rankingFallback.data?.breadth
+    ? rankingFallback.data.source
+    : null
+  const rankings = hasOverviewRankings
+    ? data.rankings
+    : rankingFallback.data?.rankings ?? { gainers: [], losers: [], active: [], volatile: [] }
+  const rankingPending = !hasOverviewRankings && rankingFallback.isLoading
+  const maxDistribution = Math.max(...distribution.map(item => item.count), 1)
   const dataPath = data.data_path?.length
     ? data.data_path
     : [
@@ -339,8 +548,10 @@ export function UsMarketDashboard() {
 
       <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
         <section className="rounded-card border border-border bg-surface/85 p-4">
-          <SectionTitle icon={Activity} title="市场宽度" hint={breadth ? data.coverage_label ?? `${breadth.total.toLocaleString()} 只有效样本` : '全市场或核心样本实时路径下可用'} />
-          {breadth ? (
+          <SectionTitle icon={Activity} title="市场宽度" hint={breadth ? `${data.coverage_label ?? `${breadth.total.toLocaleString()} 只有效样本`}${statisticsSource ? ` · ${statisticsSource}` : ''}` : '全市场或核心样本实时路径下可用'} />
+          {statisticsPending ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-xs text-muted"><Loader2 className="h-4 w-4 animate-spin text-sky-400" />正在生成全市场宽度快照…</div>
+          ) : breadth ? (
             <>
               {data.coverage === 'sample' && (
                 <div className="mb-3 rounded-md border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[10px] leading-4 text-amber-200/80">
@@ -412,10 +623,12 @@ export function UsMarketDashboard() {
         </section>
 
         <section className="rounded-card border border-border bg-surface/85 p-4">
-          <SectionTitle icon={BarChart3} title="涨跌分布" />
-          {data.distribution.length > 0 ? (
+          <SectionTitle icon={BarChart3} title="涨跌分布" hint={statisticsSource || undefined} />
+          {statisticsPending ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-xs text-muted"><Loader2 className="h-4 w-4 animate-spin text-sky-400" />正在生成全市场涨跌分布…</div>
+          ) : distribution.length > 0 ? (
             <div className="space-y-3 pt-1">
-              {data.distribution.map((item, index) => (
+              {distribution.map((item, index) => (
                 <div key={item.label} className="grid grid-cols-[76px_minmax(0,1fr)_58px] items-center gap-2 text-[10px]">
                   <span className="font-mono text-muted">{item.label}</span>
                   <div className="h-2 overflow-hidden rounded-full bg-elevated">
@@ -435,7 +648,7 @@ export function UsMarketDashboard() {
       </div>
 
       <section className="rounded-card border border-border bg-surface/85 p-4">
-        <SectionTitle icon={Globe2} title="行业表现" hint="SPDR 行业 ETF 代理" />
+        <SectionTitle icon={Globe2} title="行业 ETF 代理" hint="SPDR 一级行业" />
         {data.sectors.length > 0 ? (
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {data.sectors.map((sector, index) => (
@@ -454,12 +667,67 @@ export function UsMarketDashboard() {
         )}
       </section>
 
-      <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-4">
-        <RankingTable title="涨幅榜" rows={data.rankings.gainers} mode="change" />
-        <RankingTable title="跌幅榜" rows={data.rankings.losers} mode="change" />
-        <RankingTable title="成交活跃" rows={data.rankings.active} mode="amount" />
-        <RankingTable title="高振幅" rows={data.rankings.volatile ?? []} mode="amplitude" />
-      </div>
+      <section className="rounded-card border border-border bg-surface/85 p-4">
+        <SectionTitle
+          icon={Layers3}
+          title="全市场行业聚合"
+          hint={groups.data ? `${groups.data.sectors.length} 个行业 · ${groups.data.classification.standard}` : 'Nasdaq SIC 映射'}
+        />
+        {groups.isLoading ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-xs text-muted"><Loader2 className="h-4 w-4 animate-spin text-sky-400" />正在加载行业分类并聚合行情…</div>
+        ) : groups.isError ? (
+          <div className="py-8 text-center text-xs text-rose-400">{groups.error instanceof Error ? groups.error.message : '行业分类暂时不可用'}</div>
+        ) : groups.data && groups.data.sectors.length > 0 ? (
+          <GroupGrid rows={groups.data.sectors} selected={selectedGroup} onSelect={group => setSelectedGroup({ kind: group.kind, id: group.id })} />
+        ) : (
+          <div className="py-8 text-center text-xs text-muted">当前行情或分类快照不足，无法生成行业聚合</div>
+        )}
+      </section>
+
+      <section className="rounded-card border border-border bg-surface/85 p-4">
+        <SectionTitle icon={TrendingUp} title="细分行业与主题" hint="State Street ETF + 官方每日成分" />
+        {groups.data?.themes?.length ? (
+          <GroupGrid rows={groups.data.themes} selected={selectedGroup} onSelect={group => setSelectedGroup({ kind: group.kind, id: group.id })} />
+        ) : (
+          <div className="py-8 text-center text-xs text-muted">暂无细分主题行情</div>
+        )}
+      </section>
+
+      {selectedGroup && (
+        <GroupDetailPanel
+          detail={groupDetail.data}
+          isLoading={groupDetail.isLoading}
+          error={groupDetail.error instanceof Error ? groupDetail.error : null}
+          onClose={() => setSelectedGroup(null)}
+        />
+      )}
+
+      <UsStockExplorer sectors={groups.data?.sectors ?? []} />
+
+      <section>
+        <div className="mb-2 flex items-center justify-between gap-3 text-[10px] text-muted">
+          <span>全市场排行榜</span>
+          <span>
+            {hasOverviewRankings
+              ? 'TickFlow 实时行情'
+              : rankingFallback.data
+                ? `${rankingFallback.data.source}${rankingFallback.data.as_of ? ` · ${rankingFallback.data.as_of}` : ''}`
+                : '正在准备降级快照'}
+          </span>
+        </div>
+        <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-4">
+          <RankingTable title="涨幅榜" rows={rankings.gainers} mode="change" onSelect={setSelectedRankingSymbol} pending={rankingPending} emptyMessage={rankingFallback.isError ? 'Nasdaq 排行榜快照暂时不可用' : undefined} />
+          <RankingTable title="跌幅榜" rows={rankings.losers} mode="change" onSelect={setSelectedRankingSymbol} pending={rankingPending} emptyMessage={rankingFallback.isError ? 'Nasdaq 排行榜快照暂时不可用' : undefined} />
+          <RankingTable title="成交活跃" rows={rankings.active} mode="amount" onSelect={setSelectedRankingSymbol} pending={rankingPending} emptyMessage={rankingFallback.isError ? 'Nasdaq 排行榜快照暂时不可用' : undefined} />
+          <RankingTable title="高振幅" rows={rankings.volatile ?? []} mode="amplitude" onSelect={setSelectedRankingSymbol} pending={rankingPending} emptyMessage={rankingFallback.isError ? 'Nasdaq 排行榜快照暂时不可用' : undefined} />
+        </div>
+        {selectedRankingSymbol && (
+          <UsMarketInstrumentDetail
+            symbol={selectedRankingSymbol}
+            onClose={() => setSelectedRankingSymbol(null)}
+          />
+        )}
+      </section>
 
       <footer className="pb-2 text-center text-[10px] leading-5 text-muted">
         SPY、QQQ、DIA、IWM 及行业基金用于代理主要指数和板块表现，不代表指数本身。

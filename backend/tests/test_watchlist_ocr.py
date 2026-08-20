@@ -1,4 +1,5 @@
 """自选截图 OCR：代码抽取、预处理、API 门禁与并发限制（不依赖本机 tesseract）。"""
+
 from __future__ import annotations
 
 import threading
@@ -17,6 +18,7 @@ from app.api import watchlist as watchlist_api
 from app.api.watchlist import BatchAddRequest, add_batch, import_from_image, ocr_status
 from app.config import settings
 from app.services import watchlist
+from app.services.watchlist_ocr import provider as ocr_provider
 from app.services.watchlist_ocr.pipeline import (
     extract_codes,
     import_watchlist_image,
@@ -163,6 +165,28 @@ def test_preprocess_downsamples_large_edge():
     # 2500×1000 = 2.5M 像素未超限，但长边 > 2000，应降采样
     out = preprocess_for_ocr(_png_bytes(2500, 1000))
     assert max(out.size) <= 2000
+
+
+def test_resolve_tesseract_uses_common_install_path_without_process_path(
+    tmp_path: Path,
+    monkeypatch,
+):
+    executable = tmp_path / "Tesseract-OCR" / "tesseract.exe"
+    executable.parent.mkdir()
+    executable.touch()
+    monkeypatch.delenv("TESSERACT_CMD", raising=False)
+    monkeypatch.setattr(ocr_provider.shutil, "which", lambda _command: None)
+    monkeypatch.setattr(ocr_provider, "_WINDOWS_TESSERACT_PATHS", (str(executable),))
+
+    assert ocr_provider._resolve_tesseract_command() == str(executable)
+
+
+def test_resolve_tesseract_prefers_explicit_configuration(tmp_path: Path, monkeypatch):
+    executable = tmp_path / "custom-tesseract.exe"
+    monkeypatch.setenv("TESSERACT_CMD", str(executable))
+    monkeypatch.setattr(ocr_provider.shutil, "which", lambda _command: None)
+
+    assert ocr_provider._resolve_tesseract_command() == str(executable)
 
 
 def test_ocr_status_reflects_provider(monkeypatch):

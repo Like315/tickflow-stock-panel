@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import polars as pl
 import pytest
 
@@ -45,6 +47,27 @@ def test_create_new_after_terminal(tmp_path):
     jid2, new2 = store.create()
     assert jid2 != jid1
     assert new2 is True
+
+
+def test_long_job_timeout_allows_full_market_minute_sync(tmp_path):
+    """全市场分钟线同步超过 30 分钟时仍应保持运行, 超过 2 小时才回收。"""
+    store = JobStore(store_dir=tmp_path / "jobs")
+    jid, _ = store.create(timeout_s=pipeline_jobs.LONG_JOB_TIMEOUT_S)
+    store.start(jid)
+
+    job = store.get(jid)
+    assert job is not None
+    job["started_at"] = (
+        datetime.now(UTC) - timedelta(minutes=31)
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+    store.reap_stale()
+    assert store.get(jid)["status"] == "running"
+
+    job["started_at"] = (
+        datetime.now(UTC) - timedelta(hours=2, seconds=1)
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+    store.reap_stale()
+    assert store.get(jid)["status"] == "failed"
 
 
 def test_run_slot_is_exclusive():

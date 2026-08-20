@@ -90,6 +90,13 @@ class InvestmentExpertRuntime:
         context = self.candidate_context.get(bar.symbol, {})
         features["daily_momentum_20d"] = context.get("daily_momentum_20d")
         features["candidate_score"] = context.get("score")
+        features["overnight_us_available"] = context.get("overnight_us_available")
+        features["overnight_us_score"] = context.get("overnight_us_score")
+        features["overnight_us_tilt"] = context.get("overnight_us_tilt")
+        features["news_sentiment_score"] = context.get("news_sentiment_score")
+        features["candidate_news_sentiment"] = context.get("candidate_news_sentiment")
+        features["news_sentiment_confidence"] = context.get("news_sentiment_confidence")
+        features["news_factor_score"] = context.get("news_factor_score")
         features["model_probability"] = (
             self.decision_model.predict_probability(features)
             if self.decision_model is not None
@@ -159,9 +166,31 @@ class InvestmentExpertRuntime:
             return "abstain", "outside_entry_window"
         if int(features["bars"]) < self.policy.min_completed_bars:
             return "abstain", "insufficient_completed_bars"
-        if vwap_bias is None or vwap_bias < self.policy.min_vwap_bias:
+        overnight_us_score = features.get("overnight_us_score")
+        if (
+            features.get("overnight_us_available") is not False
+            and overnight_us_score is not None
+            and float(overnight_us_score) < self.policy.min_overnight_us_score
+        ):
+            return "abstain", "overnight_us_market_risk_off"
+        news_factor_score = max(
+            -1.0,
+            min(1.0, float(features.get("news_factor_score") or 0.0)),
+        )
+        news_confirmation_bias = (
+            news_factor_score * self.policy.news_candidate_weight * 0.004
+        )
+        required_vwap_bias = self.policy.min_vwap_bias - news_confirmation_bias
+        required_breakout_pct = max(
+            0.0,
+            self.policy.min_breakout_pct - news_confirmation_bias,
+        )
+        features["news_confirmation_bias"] = news_confirmation_bias
+        features["required_vwap_bias"] = required_vwap_bias
+        features["required_breakout_pct"] = required_breakout_pct
+        if vwap_bias is None or vwap_bias < required_vwap_bias:
             return "abstain", "vwap_confirmation_missing"
-        if breakout is None or breakout < self.policy.min_breakout_pct:
+        if breakout is None or breakout < required_breakout_pct:
             return "abstain", "opening_range_breakout_missing"
         probability = features.get("model_probability")
         if self.decision_model is not None and probability is None:

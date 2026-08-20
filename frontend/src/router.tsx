@@ -17,6 +17,7 @@ const Data = lazy(() => import('./pages/Data').then(m => ({ default: m.Data })))
 const Monitor = lazy(() => import('./pages/Monitor').then(m => ({ default: m.Monitor })))
 const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })))
 const UsMarketDashboard = lazy(() => import('./pages/UsMarketDashboard').then(m => ({ default: m.UsMarketDashboard })))
+const StockPortfolio = lazy(() => import('./pages/StockPortfolio').then(m => ({ default: m.StockPortfolio })))
 const FundPortfolio = lazy(() => import('./pages/FundPortfolio').then(m => ({ default: m.FundPortfolio })))
 const AnalysisDetail = lazy(() => import('./pages/AnalysisDetail').then(m => ({ default: m.AnalysisDetail })))
 const ConceptAnalysis = lazy(() => import('./pages/ConceptAnalysis').then(m => ({ default: m.ConceptAnalysis })))
@@ -73,6 +74,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Dashboard /> },
       { path: 'us-market', element: <UsMarketDashboard /> },
+      { path: 'holdings', element: <StockPortfolio /> },
       { path: 'funds', element: <FundPortfolio /> },
       { path: 'overview', element: <Navigate to="/" replace /> },
       { path: 'analysis', element: <Navigate to="/settings?tab=ext-pages" replace /> },

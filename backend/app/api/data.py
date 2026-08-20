@@ -26,7 +26,7 @@ _TABLE_TTL_LARGE = 120.0  # 大表(分钟K等)单独 TTL，避免多分区聚合
 _STORAGE_TTL = 60.0  # storage 文件扫描独立 TTL,stage 写完不触发重算
 
 # 聚合慢的大表（分区数多、行数多），使用更长的 TTL
-_LARGE_TABLES = {"minute"}
+_LARGE_TABLES = {"minute", "index_minute", "etf_minute"}
 
 _storage_cache: dict[str, Any] | None = None
 _storage_cache_ts: float = 0.0
@@ -376,13 +376,17 @@ def _safe_aggregate_adj_factor(repo) -> dict | None:
         return None
 
 
-def _safe_aggregate_minute(repo) -> dict | None:
-    """kline_minute 统计 — 从分区目录名获取交易日数，跳过全表扫描。
+def _safe_aggregate_minute(repo, asset_type: str = "stock") -> dict | None:
+    """分钟线统计 — 从分区目录名获取交易日数，跳过全表扫描。
 
     分钟 K 按 date=YYYY-MM-DD 分区存储，直接数目录即可，
     无需 count(*) / count(DISTINCT ...) 等昂贵查询。
     """
-    minute_dir = repo.store.data_dir / "kline_minute"
+    directory = {
+        "index": "kline_index_minute",
+        "etf": "kline_etf_minute",
+    }.get(asset_type, "kline_minute")
+    minute_dir = repo.store.data_dir / directory
     if not minute_dir.exists():
         return None
 
@@ -486,11 +490,13 @@ def _compute_storage(data_dir: Path) -> dict:
         "enriched": data_dir / "kline_daily_enriched",
         "index_daily": data_dir / "kline_index_daily",
         "index_enriched": data_dir / "kline_index_enriched",
+        "index_minute": data_dir / "kline_index_minute",
         "index_instruments": data_dir / "instruments_index",
         "etf_daily": data_dir / "kline_etf_daily",
         "etf_enriched": data_dir / "kline_etf_enriched",
         "etf_instruments": data_dir / "instruments_etf",
         "etf_adj_factor": data_dir / "adj_factor_etf",
+        "etf_minute": data_dir / "kline_etf_minute",
         "minute": data_dir / "kline_minute",
         "adj_factor": data_dir / "adj_factor",
         "instruments": data_dir / "instruments",
@@ -504,8 +510,8 @@ def _compute_storage(data_dir: Path) -> dict:
         stats[f"{key}_files"] = fc
         stats[f"{key}_size_mb"] = sz
 
-    # total: 再加上其他零散文件(pools, financials, capabilities.json 等)
-    other_dirs = ["pools", "financials", "backtest_results", "screener_results", "ai_cache"]
+    # total: 再加上其他零散目录, 每个目录只计一次
+    other_dirs = ["pools", "backtest_results", "screener_results", "ai_cache"]
     for name in other_dirs:
         d = data_dir / name
         if d.exists():
@@ -519,11 +525,6 @@ def _compute_storage(data_dir: Path) -> dict:
         stats["financials_files"] = fc
         stats["financials_size_mb"] = sz
         total_size += sz
-    for name in other_dirs:
-        d = data_dir / name
-        if d.exists():
-            _, s = _scan_dir_stats(d)
-            total_size += s
     # 根目录散文件
     for entry in os.scandir(data_dir):
         if entry.is_file(follow_symlinks=False):
@@ -595,10 +596,12 @@ def status(request: Request) -> dict:
         "enriched":    _get_table_stats("enriched",    lambda: _safe_aggregate_enriched(repo)),
     "index_daily":       _get_table_stats("index_daily",       lambda: _safe_aggregate_index_daily(repo)),
     "index_enriched":    _get_table_stats("index_enriched",    lambda: _safe_aggregate_index_enriched(repo)),
+    "index_minute":      _get_table_stats("index_minute",      lambda: _safe_aggregate_minute(repo, "index")),
     "index_instruments": _get_table_stats("index_instruments", lambda: _safe_aggregate_index_instruments(repo)),
     "etf_daily":         _get_table_stats("etf_daily",         lambda: _safe_aggregate_etf_daily(repo)),
     "etf_enriched":      _get_table_stats("etf_enriched",      lambda: _safe_aggregate_etf_enriched(repo)),
     "etf_instruments":   _get_table_stats("etf_instruments",   lambda: _safe_aggregate_etf_instruments(repo)),
+    "etf_minute":        _get_table_stats("etf_minute",        lambda: _safe_aggregate_minute(repo, "etf")),
     "minute":      _get_table_stats("minute",      lambda: _safe_aggregate_minute(repo)),
         "adj_factor":  _get_table_stats("adj_factor",  lambda: _safe_aggregate_adj_factor(repo)),
         "instruments": _get_table_stats("instruments", lambda: _safe_aggregate_instruments(repo)),
@@ -628,7 +631,7 @@ def clear_data(request: Request):
     deleted = 0
 
     for sub in (
-        "kline_daily", "kline_daily_enriched", "kline_index_daily", "kline_index_enriched",
+        "kline_daily", "kline_daily_enriched", "kline_index_daily", "kline_index_enriched", "kline_index_minute",
         "kline_etf_daily", "kline_etf_enriched", "kline_etf_minute", "kline_minute",
         "adj_factor", "adj_factor_etf", "instruments", "instruments_index", "instruments_etf", "pools", "financials",
         "backtest_results", "screener_results", "ai_cache",

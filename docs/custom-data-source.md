@@ -315,3 +315,32 @@ datasets:
 ```
 
 把这段 YAML 保存为 `data/data_sources/my_source.yaml`,然后在设置页重新加载即可。
+
+## 美股板块参考数据契约
+
+美股看板还会使用两类只读参考数据。它们与 `daily`、`realtime` 等主行情
+provider 分离，由 `UsMarketReferenceProvider` 先完成供应商字段标准化，业务服务不读取
+供应商原始响应：
+
+- `sector_classifications`：每行包含 `symbol`、`name`、`sector`、`industry`；
+  `symbol` 统一为 `XXX.US`。内置实现使用 Nasdaq/Quotemedia 的 SIC 映射分类。
+- `theme_holdings`：每行包含 `symbol`、`name`、`weight_pct`、`sector`；
+  `weight_pct` 使用百分数值，例如 `3.25` 表示 `3.25%`。内置实现使用 State Street
+  主题 ETF 每日持仓。
+
+当前 YAML 自定义数据源暂不开放这两个数据集。替换内置参考数据源时，应实现
+`backend/app/data_providers/us_market_reference.py` 中的同名 Protocol，并保持上述字段、
+单位和空数据失败语义不变。
+
+美股全量代码与历史行情使用独立的 `UsMarketDataProvider` 契约：
+
+- `get_instruments`：返回 `US_Equity` 的全量 `symbol`、`code`、`name`、`exchange`、
+  `instrument_type`、`total_shares`、`float_shares`。单批档案失败不得丢失 universe
+  中的代码，缺少元数据时保留最小档案。
+- `get_daily`：返回 `date`、`timestamp`、OHLC、`volume`、`amount`、`change_pct`；
+  `change_pct` 使用小数制，行按日期升序，复权类型为 `none`、`forward` 或
+  `backward`。
+
+内置实现位于 `backend/app/data_providers/us_market_data.py`。全量档案缓存 24 小时，
+单股历史行情按代码和复权类型缓存 4 小时；上游不可用时使用最近快照，没有快照则
+fail-closed。

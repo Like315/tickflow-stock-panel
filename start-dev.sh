@@ -22,7 +22,7 @@ BACKEND_PID=$!
 # 启动前端
 echo "[dev] 启动前端 (port 3011)..."
 cd "$FRONTEND_DIR"
-"$NODE_EXE" node_modules/vite/bin/vite.js --host 0.0.0.0 --port 3011 &
+BACKEND_PORT=3020 "$NODE_EXE" node_modules/vite/bin/vite.js --host 0.0.0.0 --port 3011 &
 FRONTEND_PID=$!
 
 echo ""

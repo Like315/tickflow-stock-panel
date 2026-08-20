@@ -131,14 +131,34 @@ if (-not [string]::IsNullOrWhiteSpace($BackendExtras)) {
     }
 }
 
-if (-not (Test-Path (Join-Path $BackendDir '.venv')) -or $BackendExtraArgs.Count) {
-    if ($BackendExtraArgs.Count) {
+$BackendVenv = Join-Path $BackendDir '.venv'
+$BackendNeedsSync = -not (Test-Path $BackendVenv)
+if (-not $BackendNeedsSync) {
+    Push-Location $BackendDir
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5 wraps native stderr as NativeCommandError. uv writes
+        # informational check output there even on success, so do not let the
+        # script-wide Stop preference turn a successful check into a fatal error.
+        $ErrorActionPreference = 'SilentlyContinue'
+        & uv sync --check --inexact @BackendExtraArgs *> $null
+        $BackendNeedsSync = $LASTEXITCODE -ne 0
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+        Pop-Location
+    }
+}
+
+if ($BackendNeedsSync) {
+    if (-not (Test-Path $BackendVenv)) {
+        Log-Info 'first run - installing Python deps (1-2 min)...'
+    } elseif ($BackendExtraArgs.Count) {
         Log-Info "syncing Python deps with extras: $BackendExtras"
     } else {
-        Log-Info 'first run - installing Python deps (1-2 min)...'
+        Log-Info 'Python deps are missing or outdated - syncing...'
     }
     Push-Location $BackendDir
-    try { & uv sync @BackendExtraArgs } finally { Pop-Location }
+    try { & uv sync --inexact @BackendExtraArgs } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { Log-Err 'uv sync failed'; exit 1 }
     Log-Ok 'backend deps installed'
 }
@@ -183,14 +203,15 @@ $backendJob = Start-Job -Name 'backend' -ScriptBlock {
 } -ArgumentList $backendPidFile, $BackendDir, $BackendPort
 
 $frontendJob = Start-Job -Name 'frontend' -ScriptBlock {
-    param($pidFile, $dir, $port)
+    param($pidFile, $dir, $port, $backendPort)
     # 同上: job 子进程默认 GBK, pnpm/前端工具链也是 UTF-8 输出, 需对齐。
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
     $OutputEncoding           = New-Object System.Text.UTF8Encoding $false
     $PID | Out-File -FilePath $pidFile -Encoding ascii -Force
+    $env:BACKEND_PORT = [string]$backendPort
     Set-Location $dir
     & pnpm dev --host 0.0.0.0 --port $port 2>&1
-} -ArgumentList $frontendPidFile, $FrontendDir, $FrontendPort
+} -ArgumentList $frontendPidFile, $FrontendDir, $FrontendPort, $BackendPort
 
 # Wait up to 5 seconds for the PID files to materialise
 function Read-JobPid($file) {

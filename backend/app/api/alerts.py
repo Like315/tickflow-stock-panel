@@ -23,15 +23,25 @@ def list_alerts(
     limit: int = 5000,
     source: str | None = None,
     type: str | None = None,
+    symbols: str | None = None,
     ext_columns: str | None = None,
 ):
     """查询触发记录 (时间倒序)。
 
+    symbols: 逗号分隔的标准股票代码; 传空字符串时返回空列表。
     ext_columns: 逗号分隔的 "configId.fieldName", 传入后按 symbol 富化行业/概念等 ext 字段,
     每条记录附带 {configId}__{fieldName} 键 (与 watchlist/screener 一致)。
     """
+    symbol_set = None if symbols is None else {
+        symbol.strip() for symbol in symbols.split(",") if symbol.strip()
+    }
     events = alert_store.list_recent(
-        _data_dir(request), days=days, limit=limit, source=source, type=type,
+        _data_dir(request),
+        days=days,
+        limit=limit,
+        source=source,
+        type=type,
+        symbols=symbol_set,
     )
     if ext_columns and events:
         try:

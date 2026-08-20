@@ -88,6 +88,19 @@ class ExpertModelTrainer:
             (date.fromisoformat(path.parent.name.split("=", 1)[1]), path)
             for path in candidate_paths
         ]
+        manifest_path = self.dataset_root / "manifest.json"
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            try:
+                manifest_start = date.fromisoformat(str(manifest["start_date"]))
+                manifest_end = date.fromisoformat(str(manifest["end_date"]))
+            except (KeyError, ValueError):
+                pass
+            else:
+                dated_paths = [
+                    item for item in dated_paths
+                    if manifest_start <= item[0] <= manifest_end
+                ]
         samples: list[_Sample] = []
         for index, (trade_date, candidate_path) in enumerate(dated_paths[:-1]):
             next_date = dated_paths[index + 1][0]

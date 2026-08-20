@@ -39,7 +39,21 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
     if (res.status !== 401 && !quiet) toast(msg, 'error')
     throw new Error(msg)
   }
-  return res.json() as Promise<T>
+  const contentType = (res.headers.get('content-type') ?? '').toLowerCase()
+  if (!contentType.includes('application/json')) {
+    const msg = path.startsWith('/api/') && contentType.includes('text/html')
+      ? '服务端尚未加载该接口，请重启后端服务后重试'
+      : '服务端返回了无法识别的数据格式'
+    if (!quiet) toast(msg, 'error')
+    throw new Error(msg)
+  }
+  try {
+    return await res.json() as T
+  } catch {
+    const msg = '服务端返回的数据不是有效 JSON'
+    if (!quiet) toast(msg, 'error')
+    throw new Error(msg)
+  }
 }
 
 // ===== Capabilities =====
@@ -1166,10 +1180,10 @@ export interface UsMarketBreadth {
   weak: number
   up_ratio: number
   down_ratio: number
-  average_change_pct: number
-  median_change_pct: number
-  advance_decline_ratio: number | null
-  net_advance_ratio: number
+  average_change_pct?: number
+  median_change_pct?: number
+  advance_decline_ratio?: number | null
+  net_advance_ratio?: number
 }
 
 export interface UsMarketOverview {
@@ -1191,6 +1205,160 @@ export interface UsMarketOverview {
   distribution: Array<{ label: string; count: number; ratio: number }>
   benchmarks: UsMarketQuote[]
   sectors: UsMarketQuote[]
+  themes?: UsMarketQuote[]
+  rankings: {
+    gainers: UsMarketQuote[]
+    losers: UsMarketQuote[]
+    active: UsMarketQuote[]
+    volatile?: UsMarketQuote[]
+  }
+}
+
+export type UsMarketGroupKind = 'sector' | 'theme'
+
+export interface UsMarketGroupSummary {
+  id: string
+  kind: UsMarketGroupKind
+  name: string
+  name_en: string
+  proxy_symbol?: string | null
+  proxy_quote?: UsMarketQuote | null
+  total_count?: number
+  valid_count?: number
+  coverage_ratio?: number
+  weight_coverage_ratio?: number | null
+  avg_change_pct?: number | null
+  median_change_pct?: number | null
+  weighted_change_pct?: number | null
+  up?: number
+  down?: number
+  flat?: number
+  strong?: number
+  weak?: number
+  leader?: UsMarketQuote | null
+  laggard?: UsMarketQuote | null
+}
+
+export interface UsMarketGroupCatalog {
+  schema_version: number
+  market_status: UsMarketDataStatus
+  market_as_of: number | null
+  classification: {
+    status: 'live' | 'snapshot' | 'unavailable'
+    source: string
+    standard: string
+    as_of?: string
+    fetched_at?: number
+    message?: string
+  }
+  sectors: UsMarketGroupSummary[]
+  themes: UsMarketGroupSummary[]
+}
+
+export interface UsMarketGroupMember {
+  symbol: string
+  name: string
+  sector: string
+  industry: string
+  weight_pct: number | null
+  quote: UsMarketQuote | null
+}
+
+export interface UsMarketGroupDetail {
+  schema_version: number
+  market_status: UsMarketDataStatus
+  market_as_of: number | null
+  source: {
+    status: 'live' | 'snapshot'
+    source: string
+    standard?: string
+    source_url?: string
+    as_of?: string
+    message?: string
+  }
+  summary: UsMarketGroupSummary
+  industries: UsMarketGroupSummary[]
+  members: UsMarketGroupMember[]
+}
+
+export interface UsMarketInstrument {
+  symbol: string
+  code: string
+  exchange: string
+  region: string
+  name: string
+  name_en?: string
+  instrument_type: string
+  total_shares: number | null
+  float_shares: number | null
+  sector?: string
+  industry?: string
+  country?: string
+  ipo_year?: number | null
+  market_cap?: number | null
+  last_price?: number | null
+  change_amount?: number | null
+  change_pct?: number | null
+  volume?: number | null
+  amount?: number | null
+  timestamp?: number | null
+  quote_source?: string
+  profile_url?: string
+}
+
+export interface UsMarketInstrumentCatalog {
+  schema_version: number
+  total: number
+  matched: number
+  limit: number
+  offset: number
+  classified_count: number
+  quote_coverage_count: number
+  sources: Record<string, unknown>
+  rows: UsMarketInstrument[]
+}
+
+export interface UsMarketInstrumentDetail {
+  schema_version: number
+  sources: Record<string, unknown>
+  instrument: UsMarketInstrument
+}
+
+export interface UsMarketDailyRow {
+  date: string
+  timestamp: number
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number | null
+  amount: number | null
+  change_pct: number | null
+}
+
+export interface UsMarketDailyHistory {
+  schema_version: number
+  status: 'live' | 'snapshot'
+  source: string
+  symbol: string
+  adjust: 'none' | 'forward' | 'backward'
+  fetched_at: number
+  requested_count: number
+  available_count: number
+  message?: string
+  rows: UsMarketDailyRow[]
+}
+
+export interface UsMarketRankings {
+  schema_version: number
+  status: 'live' | 'snapshot' | 'mixed'
+  source: string
+  market_status: UsMarketDataStatus | 'unavailable'
+  as_of?: string | null
+  sample_count: number
+  live_count: number
+  breadth: UsMarketBreadth | null
+  distribution: Array<{ label: string; count: number; ratio: number }>
   rankings: {
     gainers: UsMarketQuote[]
     losers: UsMarketQuote[]
@@ -1359,6 +1527,58 @@ export interface FundRefreshResult {
   portfolio: FundPortfolio
 }
 
+// ===== Stock Portfolio =====
+export interface StockPositionInput {
+  name: string
+  buy_price: number
+  quantity: number
+}
+
+export interface StockPosition extends StockPositionInput {
+  symbol: string
+  cost_amount: number
+  current_price: number | null
+  market_value: number | null
+  profit_amount: number | null
+  /** 小数制：0.1 表示 10%。 */
+  profit_pct: number | null
+  /** 小数制：0.01 表示 1%。 */
+  change_pct: number | null
+  price_date: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface StockPortfolio {
+  updated_at: string | null
+  price_date: string | null
+  summary: {
+    currency: 'CNY'
+    position_count: number
+    total_cost_amount: number
+    total_market_value: number | null
+    total_profit_amount: number | null
+    /** 小数制：0.1 表示 10%。 */
+    profit_pct: number | null
+  }
+  positions: StockPosition[]
+}
+
+export interface StockPortfolioImportCandidate {
+  code: string
+  symbol: string
+  name: string
+  quantity: number | null
+  cost_amount: number | null
+  buy_price: number | null
+}
+
+export interface StockPortfolioImportPreview {
+  provider: string
+  candidates: StockPortfolioImportCandidate[]
+  warnings: string[]
+}
+
 // ===== 基金市场研究（基于历史净值 + 大盘趋势，不依赖持仓） =====
 export type FundMarketTier = '长期持有' | '减仓' | '可买入' | '观望'
 
@@ -1438,6 +1658,9 @@ export interface InvestmentExpertPolicy {
   min_vwap_bias: number
   min_breakout_pct: number
   entry_probability_threshold: number
+  overnight_us_candidate_weight: number
+  min_overnight_us_score: number
+  news_candidate_weight: number
   stop_loss_pct: number
 }
 
@@ -1517,6 +1740,36 @@ export interface InvestmentExpertStatus {
   pending_order_count: number
   entries_enabled?: boolean
   risk_trip_reason?: string | null
+  session_prepare_error?: string | null
+  overnight_us_market?: {
+    available: boolean
+    status: string
+    market_date?: string | null
+    as_of?: number | null
+    score: number
+    tilt: number
+    benchmarks: Record<string, number>
+    breadth?: { up_ratio: number; down_ratio: number }
+  } | null
+  news_sentiment?: {
+    available: boolean
+    status: string
+    as_of?: string | null
+    score: number
+    confidence: number
+    item_count: number
+    signal_count: number
+    source_count: number
+    regions: { global: number; domestic: number; market: number }
+    items: Array<{
+      title: string
+      published_at: string
+      source: string
+      source_url: string
+      region: string
+      sentiment: number
+    }>
+  } | null
   minute_capable: boolean
   live_minute_source?: string
   live_minute_mode?: 'intraday_batch' | 'historical_batch_fallback'
@@ -1563,11 +1816,14 @@ export interface InvestmentExpertTrade {
 
 export interface InvestmentExpertExperiment {
   id: string
+  champion_policy_id: string
   candidate_policy_id: string
   mutation_field: string
   status: string
   reason: string
   created_at: string
+  finished_at?: string | null
+  champion_metrics: Record<string, number | string | null>
   candidate_metrics: Record<string, number | string | null>
 }
 
@@ -1576,6 +1832,77 @@ export const api = {
 
   usMarketOverview: () => request<UsMarketOverview>('/api/us-market/overview'),
   usMarketRefresh: () => request<UsMarketOverview>('/api/us-market/refresh', { method: 'POST' }),
+  usMarketGroups: (force = false) =>
+    request<UsMarketGroupCatalog>(`/api/us-market/groups${force ? '?force=true' : ''}`),
+  usMarketGroupDetail: (kind: UsMarketGroupKind, id: string, force = false) => {
+    const params = new URLSearchParams({ kind })
+    if (force) params.set('force', 'true')
+    return request<UsMarketGroupDetail>(
+      `/api/us-market/groups/${encodeURIComponent(id)}?${params.toString()}`,
+    )
+  },
+  usMarketInstruments: (options: {
+    q?: string
+    sector?: string
+    industry?: string
+    country?: string
+    limit?: number
+    offset?: number
+    force?: boolean
+  } = {}) => {
+    const params = new URLSearchParams()
+    if (options.q) params.set('q', options.q)
+    if (options.sector) params.set('sector', options.sector)
+    if (options.industry) params.set('industry', options.industry)
+    if (options.country) params.set('country', options.country)
+    params.set('limit', String(options.limit ?? 50))
+    params.set('offset', String(options.offset ?? 0))
+    if (options.force) params.set('force', 'true')
+    return request<UsMarketInstrumentCatalog>(`/api/us-market/instruments?${params.toString()}`)
+  },
+  usMarketInstrument: (symbol: string, force = false) =>
+    request<UsMarketInstrumentDetail>(
+      `/api/us-market/instruments/${encodeURIComponent(symbol)}${force ? '?force=true' : ''}`,
+    ),
+  usMarketDaily: (
+    symbol: string,
+    count = 260,
+    adjust: 'none' | 'forward' | 'backward' = 'none',
+    force = false,
+  ) => {
+    const params = new URLSearchParams({ count: String(count), adjust })
+    if (force) params.set('force', 'true')
+    return request<UsMarketDailyHistory>(
+      `/api/us-market/instruments/${encodeURIComponent(symbol)}/daily?${params.toString()}`,
+    )
+  },
+  usMarketRankings: (limit = 10, force = false) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (force) params.set('force', 'true')
+    return request<UsMarketRankings>(`/api/us-market/rankings?${params.toString()}`)
+  },
+
+  stockPortfolio: () => request<StockPortfolio>('/api/stock-portfolio'),
+  stockPortfolioUpsert: (symbol: string, position: StockPositionInput) =>
+    request<StockPortfolio>(`/api/stock-portfolio/positions/${encodeURIComponent(symbol)}`, {
+      method: 'PUT',
+      body: JSON.stringify(position),
+    }),
+  stockPortfolioDelete: (symbol: string) =>
+    request<StockPortfolio>(`/api/stock-portfolio/positions/${encodeURIComponent(symbol)}`, {
+      method: 'DELETE',
+    }),
+  stockPortfolioOcrStatus: () =>
+    request<{ provider: string; available: boolean }>('/api/stock-portfolio/ocr-status'),
+  stockPortfolioImportPreview: (file: File, signal?: AbortSignal) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request<StockPortfolioImportPreview>('/api/stock-portfolio/import-preview', {
+      method: 'POST',
+      body: form,
+      signal,
+    })
+  },
 
   fundPortfolio: () => request<FundPortfolio>('/api/funds/portfolio'),
   fundLookup: (code: string) =>
@@ -2864,12 +3191,13 @@ export const api = {
     request<{ ok: boolean; generated: number }>('/api/monitor-rules/seed', { method: 'POST' }),
 
   // ===== Alerts (触发记录) =====
-  alertsList: (params?: { days?: number; limit?: number; source?: string; type?: string; extColumns?: string }) => {
+  alertsList: (params?: { days?: number; limit?: number; source?: string; type?: string; symbols?: string[]; extColumns?: string }) => {
     const qs = new URLSearchParams()
     if (params?.days) qs.set('days', String(params.days))
     if (params?.limit) qs.set('limit', String(params.limit))
     if (params?.source) qs.set('source', params.source)
     if (params?.type) qs.set('type', params.type)
+    if (params?.symbols !== undefined) qs.set('symbols', params.symbols.join(','))
     if (params?.extColumns) qs.set('ext_columns', params.extColumns)
     const s = qs.toString()
     return request<{ alerts: AlertEvent[]; total: number }>(`/api/alerts${s ? `?${s}` : ''}`)

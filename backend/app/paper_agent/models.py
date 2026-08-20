@@ -46,6 +46,9 @@ class ExpertPolicy(BaseModel):
     min_vwap_bias: float = Field(default=0.001, ge=-0.05, le=0.10)
     min_breakout_pct: float = Field(default=0.001, ge=0, le=0.10)
     entry_probability_threshold: float = Field(default=0.55, ge=0.50, le=0.95)
+    overnight_us_candidate_weight: float = Field(default=0.15, ge=0, le=0.50)
+    min_overnight_us_score: float = Field(default=-0.02, ge=-0.10, le=0.10)
+    news_candidate_weight: float = Field(default=0.25, ge=0, le=0.50)
     exit_vwap_bias: float = Field(default=-0.002, ge=-0.10, le=0.05)
     stop_loss_pct: float = Field(default=-0.05, ge=-0.30, le=-0.001)
     take_profit_pct: float = Field(default=0.08, ge=0.001, le=0.50)
@@ -129,17 +132,16 @@ class MinuteBar(BaseModel):
 
     @model_validator(mode="after")
     def validate_ohlc(self) -> MinuteBar:
-        upper = max(self.raw_open, self.raw_close, self.raw_low)
-        lower = min(self.raw_open, self.raw_close, self.raw_high)
-        # TickFlow SDK may expose IEEE-754 residue around the exchange tick
-        # price (for example 4.599999999999986 instead of 4.60).  Accept only
-        # machine-scale differences; materially inconsistent OHLC still fails.
-        if self.raw_high < upper and not math.isclose(
-            self.raw_high, upper, rel_tol=1e-12, abs_tol=1e-9
+        highest = max(self.raw_open, self.raw_close, self.raw_low)
+        lowest = min(self.raw_open, self.raw_close, self.raw_high)
+        # Provider floats can carry machine-scale residue around the exchange
+        # tick price; tolerate only that residue, not materially invalid OHLC.
+        if self.raw_high < highest and not math.isclose(
+            self.raw_high, highest, rel_tol=1e-12, abs_tol=1e-9
         ):
             raise ValueError("raw_high is inconsistent with OHLC")
-        if self.raw_low > lower and not math.isclose(
-            self.raw_low, lower, rel_tol=1e-12, abs_tol=1e-9
+        if self.raw_low > lowest and not math.isclose(
+            self.raw_low, lowest, rel_tol=1e-12, abs_tol=1e-9
         ):
             raise ValueError("raw_low is inconsistent with OHLC")
         return self

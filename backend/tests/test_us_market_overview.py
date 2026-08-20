@@ -308,7 +308,8 @@ def test_service_prefers_batch_quotes_for_realtime_sample(tmp_path: Path) -> Non
     result = service.get_overview()
 
     assert result["coverage"] == "sample"
-    assert len(quotes.batch_calls) == 7
+    expected_batches = (len(PROXY_SYMBOLS) + len(REALTIME_SAMPLE) + 4) // 5
+    assert len(quotes.batch_calls) == expected_batches
 
 
 def test_cached_response_is_isolated_from_caller_mutation(tmp_path: Path) -> None:

@@ -87,15 +87,16 @@ class TrainingDatasetBuilder:
         latest_available = self.repo.latest_daily_date()
         query_end = min(end_date, latest_available) if latest_available is not None else end_date
         instruments = self.repo.get_instruments()
-        daily = self.repo.get_enriched_range(start_date - timedelta(days=40), query_end)
-        if daily is None or daily.is_empty():
-            symbols = instruments["symbol"].to_list() if "symbol" in instruments.columns else []
-            daily = self.repo.get_daily_batch(
-                symbols,
-                start_date - timedelta(days=40),
-                query_end,
-                columns=["symbol", "date", "open", "high", "low", "close", "volume", "amount"],
-            )
+        query_start = start_date - timedelta(days=40)
+        enriched = self.repo.get_enriched_range(query_start, query_end)
+        symbols = instruments["symbol"].to_list() if "symbol" in instruments.columns else []
+        raw = self.repo.get_daily_batch(
+            symbols,
+            query_start,
+            query_end,
+            columns=["symbol", "date", "open", "high", "low", "close", "volume", "amount"],
+        )
+        daily = self._merge_daily_history(enriched, raw)
         if "name" not in daily.columns and "name" in instruments.columns and not daily.is_empty():
             daily = daily.join(
                 instruments.select("symbol", "name").unique("symbol"),
@@ -120,6 +121,7 @@ class TrainingDatasetBuilder:
         downloaded_minute_rows = 0
         skipped_minute_dates = 0
         total = len(date_groups)
+        missing_minute_dates: list[str] = []
         previous_symbols: list[str] = []
         minute_rows_total = 0
         minute_dates_available = 0
@@ -162,6 +164,7 @@ class TrainingDatasetBuilder:
                 if minute.is_empty():
                     provider_name = getattr(self.minute_provider, "name", "configured provider")
                     raise HistoricalMinuteDataError(
+                        "minute dataset incomplete: "
                         f"historical minute provider '{provider_name}' returned no 1m data "
                         f"for {trade_date}; verify historical-minute entitlement and coverage"
                     )
@@ -187,6 +190,13 @@ class TrainingDatasetBuilder:
             previous_symbols = current_symbols
             if progress_cb is not None:
                 progress_cb(index, total, str(trade_date))
+
+        if download_minutes and missing_minute_dates:
+            sample = ", ".join(missing_minute_dates[:5])
+            raise RuntimeError(
+                "minute dataset incomplete: "
+                f"{len(missing_minute_dates)} date(s) returned no data; first: {sample}"
+            )
 
         manifest = {
             "schema_version": 1,
@@ -220,6 +230,20 @@ class TrainingDatasetBuilder:
         )
         manifest_tmp.replace(manifest_path)
         return manifest
+
+    @staticmethod
+    def _merge_daily_history(
+        enriched: pl.DataFrame | None,
+        raw: pl.DataFrame | None,
+    ) -> pl.DataFrame:
+        """Prefer enriched rows while filling uncovered dates from raw daily history."""
+        if enriched is None or enriched.is_empty():
+            return raw if raw is not None else pl.DataFrame()
+        if raw is None or raw.is_empty():
+            return enriched
+        keys = enriched.select("symbol", "date").unique()
+        missing_raw = raw.join(keys, on=["symbol", "date"], how="anti")
+        return pl.concat([enriched, missing_raw], how="diagonal_relaxed")
 
     @staticmethod
     def _ordered_date_groups(candidates: pl.DataFrame) -> list[tuple[date, pl.DataFrame]]:

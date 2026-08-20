@@ -100,6 +100,28 @@ def test_chronological_model_training_and_immutable_promotion(tmp_path: Path) ->
     assert store.get_active_model() == model
 
 
+def test_training_uses_only_the_manifest_date_window(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "training"
+    _write_training_fixture(dataset_root)
+    window_start = date(2024, 1, 7)
+    window_end = date(2024, 2, 6)
+    (dataset_root / "manifest.json").write_text(
+        json.dumps({
+            "manifest_hash": "windowed-fixture",
+            "start_date": window_start.isoformat(),
+            "end_date": window_end.isoformat(),
+        }),
+        encoding="utf-8",
+    )
+
+    model = ExpertModelTrainer(dataset_root).train(version=1)
+
+    assert model.trained_start == window_start
+    assert model.trained_end == window_end - timedelta(days=1)
+    assert model.sample_count == 300
+    assert model.dataset_manifest_hash == "windowed-fixture"
+
+
 def test_model_rejects_missing_features() -> None:
     model = TrainedDecisionModel(
         id="m1",

@@ -86,13 +86,22 @@ free_port backend  "$BACKEND_PORT"
 free_port frontend "$FRONTEND_PORT"
 
 # ===== 3. 依赖安装 =====
-if [ ! -d "$BACKEND_DIR/.venv" ] || [ "${#BACKEND_EXTRA_ARGS[@]}" -gt 0 ]; then
-  if [ "${#BACKEND_EXTRA_ARGS[@]}" -gt 0 ]; then
+backend_needs_sync=0
+if [ ! -d "$BACKEND_DIR/.venv" ]; then
+  backend_needs_sync=1
+elif ! ( cd "$BACKEND_DIR" && uv sync --check --inexact "${BACKEND_EXTRA_ARGS[@]}" >/dev/null 2>&1 ); then
+  backend_needs_sync=1
+fi
+
+if [ "$backend_needs_sync" -eq 1 ]; then
+  if [ ! -d "$BACKEND_DIR/.venv" ]; then
+    info "后端首次启动 — 安装 Python 依赖(约 1-2 分钟)..."
+  elif [ "${#BACKEND_EXTRA_ARGS[@]}" -gt 0 ]; then
     info "同步后端 Python 依赖，extras: $BACKEND_EXTRAS"
   else
-    info "后端首次启动 — 安装 Python 依赖(约 1-2 分钟)..."
+    info "后端 Python 依赖缺失或已过期，正在同步..."
   fi
-  ( cd "$BACKEND_DIR" && uv sync "${BACKEND_EXTRA_ARGS[@]}" )
+  ( cd "$BACKEND_DIR" && uv sync --inexact "${BACKEND_EXTRA_ARGS[@]}" )
   ok "后端依赖装好了"
 fi
 
@@ -145,7 +154,7 @@ PIDS+=("$!")
 
 (
   cd "$FRONTEND_DIR"
-  pnpm dev --host 0.0.0.0 --port "$FRONTEND_PORT" 2>&1 \
+  BACKEND_PORT="$BACKEND_PORT" pnpm dev --host 0.0.0.0 --port "$FRONTEND_PORT" 2>&1 \
     | prefix_awk "$(printf "${GREEN}[frontend]${NC} ")"
 ) &
 PIDS+=("$!")

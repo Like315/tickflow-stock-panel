@@ -71,8 +71,9 @@ def list_recent(
     limit: int = MAX_RECORDS,
     source: str | None = None,
     type: str | None = None,
+    symbols: set[str] | None = None,
 ) -> list[dict]:
-    """读取近 N 天记录,按时间倒序,支持按 source/type 过滤。
+    """读取近 N 天记录,按时间倒序,支持按 source/type/symbols 过滤。
 
     持锁读: prune/delete/clear 会整文件重写, 无锁读可能读到截断内容。
     """
@@ -97,6 +98,8 @@ def list_recent(
                 if source and ev.get("source") != source:
                     continue
                 if type and ev.get("type") != type:
+                    continue
+                if symbols is not None and ev.get("symbol") not in symbols:
                     continue
                 out.append(ev)
     except Exception as e:

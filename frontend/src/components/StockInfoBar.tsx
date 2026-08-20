@@ -64,10 +64,15 @@ function renderExtInline(
   const sliced = showAll ? tags : tags.slice(0, maxTags)
   const shown = hiddenIndices?.length ? sliced.filter((_, i) => !hiddenIndices.includes(i)) : sliced
   const overflow = tags.length - shown.length
+  const tagTone = col.source.type === 'ext' && col.source.configId === 'ext_hy_ths'
+    ? 'bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-200/80 dark:bg-sky-400/10 dark:text-sky-300 dark:ring-sky-400/20'
+    : col.source.type === 'ext' && col.source.configId === 'ext_gn_ths'
+      ? 'bg-indigo-50 text-indigo-700 ring-1 ring-inset ring-indigo-200/80 dark:bg-indigo-400/10 dark:text-indigo-300 dark:ring-indigo-400/20'
+      : 'bg-yellow-500/10 text-yellow-600 dark:text-yellow-500'
   return (
     <span className="inline-flex flex-wrap items-center gap-0.5">
       {shown.map((tag, i) => (
-        <span key={i} className="inline-block px-1 rounded text-[10px] leading-tight text-yellow-500 bg-yellow-500/10">
+        <span key={i} className={`inline-block rounded px-1 text-[10px] leading-tight ${tagTone}`}>
           {tag}
         </span>
       ))}

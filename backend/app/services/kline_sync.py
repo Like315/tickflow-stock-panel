@@ -16,6 +16,7 @@ import polars as pl
 from app.data_providers.base import AssetType
 from app.indicators.pipeline import filter_halt_days
 from app.market_time import cn_now
+from app.parquet import atomic_write_parquet
 from app.services import preferences
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.client import get_client
@@ -23,20 +24,6 @@ from app.tickflow.rate_limits import chunked, resolve_limit, sleep_between_batch
 from app.tickflow.repository import KlineRepository
 
 logger = logging.getLogger(__name__)
-
-
-def _atomic_write_parquet(df: pl.DataFrame, out) -> None:
-    """先写临时文件再原子替换, 避免进程中断留下损坏的 parquet。
-
-    与 repository._atomic_write_parquet 同语义。adj_factor 的 all.parquet 是全市场
-    单文件、每次「读→concat→原地写」, 直接 write_parquet(out) 在进程被 kill
-    (dev.sh 清端口用 kill -9)、reap 超时或断电时会留下半截文件, 之后复权视图
-    scan_parquet 整条链路报错、enriched 全市场重算不出。临时文件后缀 .tmp 不匹配
-    *.parquet glob, 不会被扫描误读。
-    """
-    tmp = out.with_name(out.name + ".tmp")
-    df.write_parquet(tmp)
-    tmp.replace(out)  # 同目录 rename, POSIX/NTFS 均为原子操作
 
 
 # 标准列(无论 SDK 返回什么形状,我们把它规范成这套)
@@ -358,9 +345,9 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
                 merged = pl.concat([existing, new_data]).unique(
                     subset=["symbol", "trade_date"], keep="last",
                 ).sort(["symbol", "trade_date"])
-                _atomic_write_parquet(merged, out)
+                atomic_write_parquet(merged, out)
                 return merged.height - before, affected
-            _atomic_write_parquet(new_data.sort(["symbol", "trade_date"]), out)
+            atomic_write_parquet(new_data.sort(["symbol", "trade_date"]), out)
             return new_data.height, affected
         # 自定义源未配置 adj_factor → 回退 TickFlow
 
@@ -426,13 +413,13 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
         merged = pl.concat([existing, new_data]).unique(
             subset=["symbol", "trade_date"], keep="last",
         ).sort(["symbol", "trade_date"])
-        _atomic_write_parquet(merged, out)
+        atomic_write_parquet(merged, out)
         added = merged.height - before
         logger.info("adj_factor merged: %d total (+%d new), %d/%d symbols",
                      merged.height, added, new_data.height, len(symbols))
         return added, affected
     else:
-        _atomic_write_parquet(new_data.sort(["symbol", "trade_date"]), out)
+        atomic_write_parquet(new_data.sort(["symbol", "trade_date"]), out)
         logger.info("adj_factor synced: %d rows (%d symbols)", new_data.height, len(symbols))
         return new_data.height, affected
 
@@ -524,7 +511,7 @@ def _write_minute_partition(df: pl.DataFrame, minute_dir) -> int:
         else:
             day_df = day_df.drop("_trade_date")
         day_df = day_df.sort("symbol", "datetime")
-        _atomic_write_parquet(day_df, out)
+        atomic_write_parquet(day_df, out)
         written += day_df.height
     return written
 
@@ -883,10 +870,25 @@ def fetch_adj_factor_single(symbol: str) -> pl.DataFrame:
     return _normalize_adj_factor(raw)
 
 
-def _latest_minute_datetime(repo: KlineRepository) -> datetime | None:
+def _minute_storage(asset_type: AssetType) -> tuple[str, str]:
+    """返回可持久化资产的 (目录名, DuckDB 视图名)。"""
+    if asset_type == "stock":
+        return "kline_minute", "kline_minute"
+    if asset_type == "index":
+        return "kline_index_minute", "kline_index_minute"
+    if asset_type == "etf":
+        return "kline_etf_minute", "kline_etf_minute"
+    raise ValueError(f"unsupported minute storage asset_type: {asset_type}")
+
+
+def _latest_minute_datetime(
+    repo: KlineRepository,
+    asset_type: AssetType = "stock",
+) -> datetime | None:
     """本地分钟 K 数据的最新时间。"""
+    _, table = _minute_storage(asset_type)
     try:
-        res = repo.execute_one("SELECT max(datetime) FROM kline_minute")
+        res = repo.execute_one(f"SELECT max(datetime) FROM {table}")
         if res and res[0]:
             d = res[0]
             if isinstance(d, datetime):
@@ -897,10 +899,14 @@ def _latest_minute_datetime(repo: KlineRepository) -> datetime | None:
     return None
 
 
-def _earliest_minute_datetime(repo: KlineRepository) -> datetime | None:
+def _earliest_minute_datetime(
+    repo: KlineRepository,
+    asset_type: AssetType = "stock",
+) -> datetime | None:
     """本地分钟 K 数据的最早时间 (用于向前扩展的起点)。"""
+    _, table = _minute_storage(asset_type)
     try:
-        res = repo.execute_one("SELECT min(datetime) FROM kline_minute")
+        res = repo.execute_one(f"SELECT min(datetime) FROM {table}")
         if res and res[0]:
             d = res[0]
             if isinstance(d, datetime):
@@ -911,14 +917,18 @@ def _earliest_minute_datetime(repo: KlineRepository) -> datetime | None:
     return None
 
 
-def _cleanup_null_datetime_minute(repo: KlineRepository) -> None:
+def _cleanup_null_datetime_minute(
+    repo: KlineRepository,
+    asset_type: AssetType = "stock",
+) -> None:
     """检测并清除 datetime 全为 null 的旧版分钟 K 数据(迁移用)。"""
-    minute_dir = repo.store.data_dir / "kline_minute"
+    directory, table = _minute_storage(asset_type)
+    minute_dir = repo.store.data_dir / directory
     if not minute_dir.exists():
         return
     try:
         row = repo.execute_one(
-            "SELECT count(*) AS total, count(datetime) AS non_null FROM kline_minute"
+            f"SELECT count(*) AS total, count(datetime) AS non_null FROM {table}"
         )
         if row and row[0] > 0 and (row[1] is None or row[1] == 0):
             # 全部 datetime 为 null — 清除所有分钟 K parquet
@@ -931,9 +941,13 @@ def _cleanup_null_datetime_minute(repo: KlineRepository) -> None:
         logger.debug("minute cleanup check failed: %s", e)
 
 
-def _migrate_symbol_to_date_partition(repo: KlineRepository) -> None:
+def _migrate_symbol_to_date_partition(
+    repo: KlineRepository,
+    asset_type: AssetType = "stock",
+) -> None:
     """将旧版 symbol= 分区迁移为 date= 分区。迁移完成后删除旧目录。"""
-    minute_dir = repo.store.data_dir / "kline_minute"
+    directory, _ = _minute_storage(asset_type)
+    minute_dir = repo.store.data_dir / directory
     if not minute_dir.exists():
         return
 
@@ -975,7 +989,7 @@ def _migrate_symbol_to_date_partition(repo: KlineRepository) -> None:
         out = minute_dir / f"date={trade_date}" / "part.parquet"
         out.parent.mkdir(parents=True, exist_ok=True)
         day_df = day_df.drop("_trade_date").sort("symbol", "datetime")
-        _atomic_write_parquet(day_df, out)
+        atomic_write_parquet(day_df, out)
 
     # 删旧目录
     for d in old_dirs:
@@ -998,6 +1012,7 @@ def sync_and_persist_minute(
     days: int = 5,
     on_chunk_done: Callable[[int, int, str], None] | None = None,
     extend_backward: bool = False,
+    asset_type: AssetType = "stock",
 ) -> int:
     """同步分钟 K 并存到 Parquet(前复权价格, SDK 端 adjust=qfq)。返回写入行数。
 
@@ -1018,18 +1033,20 @@ def sync_and_persist_minute(
     if not minute_is_custom and not capset.has(Cap.KLINE_MINUTE_BATCH):
         return 0
 
+    directory, table = _minute_storage(asset_type)
+
     # 迁移:旧版 _normalize_minute 未转换 timestamp→datetime,导致全部 datetime 为 null
     # 检测到后直接清除(这些数据无法使用)
-    _cleanup_null_datetime_minute(repo)
+    _cleanup_null_datetime_minute(repo, asset_type)
 
     # 迁移:旧版按 symbol= 分区转为 date= 分区
-    _migrate_symbol_to_date_partition(repo)
+    _migrate_symbol_to_date_partition(repo, asset_type)
 
     now = datetime.now()
 
     if extend_backward:
         # 向前扩展模式: 从本地最早数据往前补, 叠加已有数据避免缺口。
-        earliest_dt = _earliest_minute_datetime(repo)
+        earliest_dt = _earliest_minute_datetime(repo, asset_type)
         # 按交易日换算自然日 (7/5 系数)。>41 交易日时 +10 天余量覆盖节假日。
         # (分段由 sync_minute_batch 的 segment_trading_days 控制, 与此处的区间天数独立。)
         calendar_days = int(days * 7 / 5) + (10 if days > 41 else 0)
@@ -1042,7 +1059,7 @@ def sync_and_persist_minute(
             end_time = now
     else:
         # 默认增量模式: 首次拉取回溯 N 天, 已有数据则从最新时间增量补到今天
-        last_dt = _latest_minute_datetime(repo)
+        last_dt = _latest_minute_datetime(repo, asset_type)
         if last_dt:
             start_time = last_dt
         else:
@@ -1059,7 +1076,7 @@ def sync_and_persist_minute(
 
     # 流式落盘: 每段拉完立即写盘, 内存峰值 = 单段 (而非全量)。
     # 全量攒内存曾导致 1 年全市场分钟 K OOM 卡死 (3 亿行 / 数十 GB)。
-    minute_dir = repo.store.data_dir / "kline_minute"
+    minute_dir = repo.store.data_dir / directory
     written_box = [0]  # list 闭包, 绕过 Python 闭包外层赋值
 
     def _persist(seg_df: pl.DataFrame) -> None:
@@ -1072,7 +1089,7 @@ def sync_and_persist_minute(
         on_chunk_done=on_chunk_done,
         segment_trading_days=segment_days,
         on_segment=_persist,
-        asset_type="stock",
+        asset_type=asset_type,
     )
 
     if written_box[0] == 0:
@@ -1081,13 +1098,32 @@ def sync_and_persist_minute(
 
     # 刷新视图
     try:
-        d = repo.store.data_dir.as_posix()
-        repo.db.execute(
-            f"""CREATE OR REPLACE VIEW kline_minute AS
-                SELECT * FROM read_parquet('{d}/kline_minute/**/*.parquet', union_by_name=true)"""
-        )
+        repo.refresh_minute_views(asset_type)
     except Exception as e:  # noqa: BLE001
-        logger.warning("refresh kline_minute view failed: %s", e)
+        logger.warning("refresh %s view failed: %s", table, e)
 
-    logger.info("minute K synced: %d rows (%d symbols)", written, len(symbols))
+    logger.info(
+        "minute K synced: %d rows (%d symbols, asset_type=%s)",
+        written,
+        len(symbols),
+        asset_type,
+    )
+    return written
+
+
+def persist_minute_frame(
+    df: pl.DataFrame,
+    repo: KlineRepository,
+    asset_type: AssetType = "stock",
+) -> int:
+    """把按需拉取的股票、指数或 ETF 分钟 K 合并落盘并刷新对应视图。"""
+    if df.is_empty():
+        return 0
+    directory, table = _minute_storage(asset_type)
+    written = _write_minute_partition(df, repo.store.data_dir / directory)
+    if written:
+        try:
+            repo.refresh_minute_views(asset_type)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("refresh %s view after on-demand persist failed: %s", table, e)
     return written

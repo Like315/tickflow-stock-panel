@@ -109,23 +109,26 @@ def normalize_minute(
     df = to_polars(data)
     if df.is_empty():
         return df
-    rename_map = {
-        "ts_code": "symbol",
-        "vol": "volume",
-        "amt": "amount",
+    aliases = {
+        "symbol": ("ts_code",),
+        # TickFlow minute frames include an epoch timestamp together with
+        # string trade_date/trade_time columns.  Prefer the complete epoch;
+        # a time-only string cannot be safely reconstructed on its own.
+        "datetime": ("timestamp", "trade_time", "trade_date"),
+        "volume": ("vol",),
+        "amount": ("amt",),
     }
-    df = df.rename({key: value for key, value in rename_map.items() if key in df.columns})
-    # TickFlow minute frames contain both trade_date (date only) and trade_time
-    # (the complete bar timestamp).  Renaming both in one operation creates two
-    # ``datetime`` columns in Polars, so choose exactly one timestamp source.
-    if "datetime" not in df.columns and "trade_time" in df.columns:
-        df = df.rename({"trade_time": "datetime"})
-    elif (
-        "datetime" not in df.columns
-        and "timestamp" not in df.columns
-        and "trade_date" in df.columns
-    ):
-        df = df.rename({"trade_date": "datetime"})
+    rename_map: dict[str, str] = {}
+    columns = set(df.columns)
+    for target, sources in aliases.items():
+        if target in columns:
+            continue
+        source = next((name for name in sources if name in columns), None)
+        if source is not None:
+            rename_map[source] = target
+            columns.add(target)
+    if rename_map:
+        df = df.rename(rename_map)
     if "symbol" not in df.columns and default_symbol:
         df = df.with_columns(pl.lit(default_symbol).alias("symbol"))
     if "datetime" not in df.columns and "timestamp" in df.columns:

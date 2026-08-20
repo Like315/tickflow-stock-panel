@@ -287,6 +287,8 @@ def test_get_minute_batch_splits_stock_and_etf(monkeypatch):
         return pl.DataFrame()
     sync_spy = MagicMock(side_effect=fake_sync)
     monkeypatch.setattr(kline_api.kline_sync, "sync_minute_batch", sync_spy)
+    persist_spy = MagicMock(return_value=1)
+    monkeypatch.setattr(kline_api.kline_sync, "persist_minute_frame", persist_spy)
 
     # mock repo: ETF 集合含 510300.SH; 本地分钟K返回空 (强制走 incomplete 补拉)
     mock_repo = MagicMock()
@@ -309,6 +311,8 @@ def test_get_minute_batch_splits_stock_and_etf(monkeypatch):
     assert sync_spy.call_count == 2
     call_assets = sorted(call.kwargs.get("asset_type") for call in sync_spy.call_args_list)
     assert call_assets == ["etf", "stock"]
+    persist_assets = sorted(call.kwargs.get("asset_type") for call in persist_spy.call_args_list)
+    assert persist_assets == ["etf", "stock"]
 
     # 两个 symbol 都在结果里 (concat 后按 symbol filter 命中)
     assert "600519.SH" in result["data"]
@@ -379,9 +383,9 @@ def test_sync_and_persist_minute_custom_persists(monkeypatch, tmp_path):
     _setup_custom_provider(monkeypatch, mock_provider, has_dataset=True)
 
     # mock sync_and_persist_minute 内部依赖 (通过 monkeypatch kline_sync 模块属性)
-    monkeypatch.setattr(kline_sync, "_cleanup_null_datetime_minute", lambda repo: None)
-    monkeypatch.setattr(kline_sync, "_migrate_symbol_to_date_partition", lambda repo: None)
-    monkeypatch.setattr(kline_sync, "_latest_minute_datetime", lambda repo: None)
+    monkeypatch.setattr(kline_sync, "_cleanup_null_datetime_minute", lambda repo, asset_type="stock": None)
+    monkeypatch.setattr(kline_sync, "_migrate_symbol_to_date_partition", lambda repo, asset_type="stock": None)
+    monkeypatch.setattr(kline_sync, "_latest_minute_datetime", lambda repo, asset_type="stock": None)
     monkeypatch.setattr(kline_sync, "resolve_limit", lambda *a, **kw: MagicMock(batch=100, rpm=30))
     monkeypatch.setattr(kline_sync.preferences, "get_minute_sync_segment_days", lambda: 20)
 
@@ -409,6 +413,89 @@ def test_sync_and_persist_minute_custom_persists(monkeypatch, tmp_path):
     assert written == expected_df.height
     assert written > 0
     get_client_spy.assert_not_called()
+
+
+def test_sync_and_persist_minute_etf_uses_etf_storage(monkeypatch, tmp_path):
+    """ETF 分钟线应写入独立目录并刷新 ETF 视图。"""
+    expected_df = _mock_minute_df(symbol="510300.SH")
+    mock_provider = MagicMock()
+    mock_provider.get_minute.return_value = expected_df
+    _setup_custom_provider(monkeypatch, mock_provider, has_dataset=True)
+
+    monkeypatch.setattr(
+        kline_sync,
+        "_cleanup_null_datetime_minute",
+        lambda repo, asset_type="stock": None,
+    )
+    monkeypatch.setattr(
+        kline_sync,
+        "_migrate_symbol_to_date_partition",
+        lambda repo, asset_type="stock": None,
+    )
+    monkeypatch.setattr(
+        kline_sync,
+        "_latest_minute_datetime",
+        lambda repo, asset_type="stock": None,
+    )
+    monkeypatch.setattr(
+        kline_sync,
+        "resolve_limit",
+        lambda *args, **kwargs: MagicMock(batch=100, rpm=30),
+    )
+    monkeypatch.setattr(
+        kline_sync.preferences,
+        "get_minute_sync_segment_days",
+        lambda: 20,
+    )
+
+    write_spy = MagicMock(return_value=expected_df.height)
+    monkeypatch.setattr(kline_sync, "_write_minute_partition", write_spy)
+
+    mock_repo = MagicMock()
+    mock_repo.store.data_dir = tmp_path
+    mock_repo.db.execute = MagicMock()
+
+    written = kline_sync.sync_and_persist_minute(
+        ["510300.SH"],
+        mock_repo,
+        MagicMock(),
+        asset_type="etf",
+    )
+
+    assert written == expected_df.height
+    assert write_spy.call_args.args[1] == tmp_path / "kline_etf_minute"
+    mock_repo.refresh_minute_views.assert_called_once_with("etf")
+    assert mock_provider.get_minute.call_args.kwargs["asset_type"] == "etf"
+
+
+def test_minute_storage_paths_are_isolated_by_asset_type():
+    assert kline_sync._minute_storage("stock") == ("kline_minute", "kline_minute")
+    assert kline_sync._minute_storage("index") == (
+        "kline_index_minute",
+        "kline_index_minute",
+    )
+    assert kline_sync._minute_storage("etf") == (
+        "kline_etf_minute",
+        "kline_etf_minute",
+    )
+
+
+def test_refresh_minute_views_also_refreshes_unified_view(tmp_path):
+    import threading
+
+    from app.tickflow.repository import KlineRepository
+
+    repo = object.__new__(KlineRepository)
+    repo._lock = threading.Lock()
+    repo.db = MagicMock()
+    repo.store = MagicMock()
+    repo.store.data_dir = tmp_path
+
+    repo.refresh_minute_views("index")
+
+    sql = repo.db.execute.call_args.args[0]
+    assert "CREATE OR REPLACE VIEW kline_index_minute" in sql
+    repo.store._register_unified_views.assert_called_once_with()
 
 
 # ---------- 测试 13: get_provider 异常时 fall through TickFlow (Issue 2) ----------
@@ -682,23 +769,109 @@ def test_intraday_monitor_support_resolver_exception_falls_back(monkeypatch):
     assert support["source"] == "minute_batch"
 
 
-# ---------- 测试 20: sync_minute_single 拒绝指数 symbol (防污染 kline_minute) ----------
+# ---------- 测试 20: sync_minute_single 指数独立落盘 ----------
 
-def test_sync_minute_single_rejects_index_symbol():
-    """指数分钟K无本地存储, 落库会污染股票分钟表; 端点应显式 400 而非 500。"""
+def test_sync_minute_single_routes_index_to_index_storage(monkeypatch):
+    """单只指数同步应传递 index 类型并刷新指数分钟视图。"""
     import asyncio
 
-    import pytest
-    from fastapi import HTTPException
-
     from app.api import kline as kline_api
+    from app.jobs import daily_pipeline
 
     mock_repo = MagicMock()
     mock_repo.resolve_asset_type.return_value = "index"
+    mock_capset = MagicMock()
+    mock_request = MagicMock()
+    mock_request.app.state.repo = mock_repo
+    mock_request.app.state.capabilities = mock_capset
+
+    monkeypatch.setattr(kline_api, "_minute_allowed", lambda capset: True)
+    monkeypatch.setattr(
+        "app.services.preferences.get_minute_sync_days",
+        lambda: 30,
+    )
+    sync_spy = MagicMock(return_value=240)
+    monkeypatch.setattr(kline_api.kline_sync, "sync_and_persist_minute", sync_spy)
+    refresh_spy = MagicMock()
+    monkeypatch.setattr(daily_pipeline, "_refresh_single_view", refresh_spy)
+
+    result = asyncio.run(
+        kline_api.sync_minute_single(mock_request, {"symbol": "000001.SH"})
+    )
+
+    assert result["asset_type"] == "index"
+    assert result["rows"] == 240
+    assert sync_spy.call_args.kwargs["asset_type"] == "index"
+    refresh_spy.assert_called_once_with(mock_repo, "kline_index_minute")
+
+
+def test_sync_minute_single_routes_etf_to_etf_storage(monkeypatch):
+    """单只 ETF 同步应传递 ETF 类型并刷新 ETF 分钟视图。"""
+    import asyncio
+
+    from app.api import kline as kline_api
+    from app.jobs import daily_pipeline
+
+    mock_repo = MagicMock()
+    mock_repo.resolve_asset_type.return_value = "etf"
+    mock_capset = MagicMock()
+    mock_request = MagicMock()
+    mock_request.app.state.repo = mock_repo
+    mock_request.app.state.capabilities = mock_capset
+
+    monkeypatch.setattr(kline_api, "_minute_allowed", lambda capset: True)
+    monkeypatch.setattr(
+        "app.services.preferences.get_minute_sync_days",
+        lambda: 30,
+    )
+    sync_spy = MagicMock(return_value=240)
+    monkeypatch.setattr(kline_api.kline_sync, "sync_and_persist_minute", sync_spy)
+    refresh_spy = MagicMock()
+    monkeypatch.setattr(daily_pipeline, "_refresh_single_view", refresh_spy)
+
+    result = asyncio.run(
+        kline_api.sync_minute_single(mock_request, {"symbol": "510300.SH"})
+    )
+
+    assert result == {
+        "status": "ok",
+        "symbol": "510300.SH",
+        "rows": 240,
+        "asset_type": "etf",
+    }
+    assert sync_spy.call_args.kwargs["asset_type"] == "etf"
+    refresh_spy.assert_called_once_with(mock_repo, "kline_etf_minute")
+
+
+def test_index_minute_live_fetch_is_persisted(monkeypatch):
+    """指数分钟端点本地缺失时应实时拉取并写入指数分钟目录。"""
+    from app.api import indices as indices_api
+
+    expected = _mock_minute_df(symbol="000001.SH")
+    mock_repo = MagicMock()
+    mock_repo.get_index_instruments.return_value = pl.DataFrame()
+    mock_repo.get_minute.return_value = pl.DataFrame()
     mock_request = MagicMock()
     mock_request.app.state.repo = mock_repo
 
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(kline_api.sync_minute_single(mock_request, {"symbol": "000001.SH"}))
-    assert exc_info.value.status_code == 400
-    assert "指数" in str(exc_info.value.detail)
+    fetch_spy = MagicMock(return_value=expected)
+    persist_spy = MagicMock(return_value=expected.height)
+    monkeypatch.setattr(indices_api.kline_sync, "fetch_minute_single", fetch_spy)
+    monkeypatch.setattr(indices_api.kline_sync, "persist_minute_frame", persist_spy)
+    invalidate_spy = MagicMock()
+    monkeypatch.setattr("app.api.data.invalidate_data_cache", invalidate_spy)
+
+    result = indices_api.get_index_minute(
+        mock_request,
+        symbol="000001.SH",
+        trade_date=date(2026, 1, 15),
+    )
+
+    assert result["source"] == "live"
+    fetch_spy.assert_called_once_with(
+        "000001.SH",
+        date(2026, 1, 15),
+        asset_type="index",
+    )
+    persist_spy.assert_called_once_with(expected, mock_repo, asset_type="index")
+    invalidate_spy.assert_called_once_with("index_minute")

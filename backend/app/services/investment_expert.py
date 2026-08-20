@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 import polars as pl
 
 from app.data_providers import get_provider
+from app.market_calendar import is_cn_trading_day
 from app.market_time import CN_TZ, cn_now
 from app.paper_agent.dataset import TrainingDatasetBuilder
 from app.paper_agent.evolution import PolicyEvaluator, PolicyEvolutionEngine
@@ -23,7 +25,7 @@ from app.paper_agent.training import ExpertModelTrainer
 from app.price_limits import is_risk_warning_name, price_limit_pct
 from app.services import preferences
 from app.services.kline_sync import sync_and_persist_daily_batch
-from app.tickflow.capabilities import Cap
+from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.policy import base_tier_name
 from app.tickflow.rate_limits import resolve_limit
 
@@ -39,13 +41,22 @@ class InvestmentExpertService:
         capset=None,
         strategy_engine=None,
         screener_service=None,
+        us_market_service=None,
+        news_sentiment_service=None,
+        trading_day_checker: Callable[[date], bool] = is_cn_trading_day,
     ) -> None:
         self.repo = repo
         self.data_dir = data_dir
-        self.capset = capset
+        self.capset: CapabilitySet | None = None
         self.strategy_engine = strategy_engine
         self.screener_service = screener_service
+        self.us_market_service = us_market_service
+        self.news_sentiment_service = news_sentiment_service
+        self._trading_day_checker = trading_day_checker
         self.store = PaperAgentStore(data_dir)
+        recovered = self.store.recover_interrupted_records(before_trade_date=cn_now().date())
+        if recovered["sessions"] or recovered["datasets"]:
+            logger.warning("investment expert recovered interrupted records: %s", recovered)
         self.store.ensure_baseline_policy()
         self.constitution = RiskConstitution()
         self.minute_provider = get_provider("tickflow")
@@ -53,33 +64,7 @@ class InvestmentExpertService:
             self.historical_minute_provider,
             self._historical_minute_provider_error,
         ) = self._resolve_historical_minute_provider(self.minute_provider)
-        if self.capset is not None:
-            minute_limit = resolve_limit(
-                self.capset,
-                Cap.KLINE_MINUTE_BATCH,
-                default_batch=50,
-                default_rpm=30,
-            )
-            configure_limits = getattr(self.minute_provider, "configure_minute_limits", None)
-            if configure_limits is not None:
-                configure_limits(batch_size=minute_limit.batch, rpm=minute_limit.rpm)
-            if self.capset.has(Cap.INTRADAY_BATCH):
-                intraday_limit = resolve_limit(
-                    self.capset,
-                    Cap.INTRADAY_BATCH,
-                    default_batch=50,
-                    default_rpm=30,
-                )
-                configure_intraday = getattr(
-                    self.minute_provider,
-                    "configure_intraday_limits",
-                    None,
-                )
-                if configure_intraday is not None:
-                    configure_intraday(
-                        batch_size=intraday_limit.batch,
-                        rpm=intraday_limit.rpm,
-                    )
+        self.update_capabilities(capset)
         self.dataset_builder = TrainingDatasetBuilder(
             repo,
             data_dir,
@@ -88,6 +73,7 @@ class InvestmentExpertService:
         self.dataset_root = data_dir / "user_data" / "investment_expert" / "training"
         self._executor_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="investment-expert")
         self._task_lock = threading.RLock()
+        self._cycle_lock = threading.Lock()
         self._operation_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._close_event = threading.Event()
@@ -107,6 +93,51 @@ class InvestmentExpertService:
         self._session_start_equity = self.constitution.initial_capital
         self._equity_peak = self.constitution.initial_capital
         self._risk_trip_reason: str | None = None
+        self._overnight_us_context: dict[str, Any] | None = None
+        self._news_sentiment_context: dict[str, Any] | None = None
+        self._next_news_refresh_at: datetime | None = None
+        self._prepare_failure_reason: str | None = None
+
+    def update_capabilities(self, capset: CapabilitySet | None) -> None:
+        """Refresh the live TickFlow capability snapshot without restarting the service."""
+        if capset is self.capset:
+            return
+        had_minute = bool(self.capset and self.capset.has(Cap.KLINE_MINUTE_BATCH))
+        self.capset = capset
+        has_minute = bool(capset and capset.has(Cap.KLINE_MINUTE_BATCH))
+        if capset is not None:
+            minute_limit = resolve_limit(
+                capset,
+                Cap.KLINE_MINUTE_BATCH,
+                default_batch=50,
+                default_rpm=30,
+            )
+            configure_limits = getattr(self.minute_provider, "configure_minute_limits", None)
+            if configure_limits is not None:
+                configure_limits(batch_size=minute_limit.batch, rpm=minute_limit.rpm)
+            if capset.has(Cap.INTRADAY_BATCH):
+                intraday_limit = resolve_limit(
+                    capset,
+                    Cap.INTRADAY_BATCH,
+                    default_batch=50,
+                    default_rpm=30,
+                )
+                configure_intraday = getattr(
+                    self.minute_provider,
+                    "configure_intraday_limits",
+                    None,
+                )
+                if configure_intraday is not None:
+                    configure_intraday(
+                        batch_size=intraday_limit.batch,
+                        rpm=intraday_limit.rpm,
+                    )
+        if had_minute != has_minute:
+            logger.info(
+                "InvestmentExpertService capabilities updated: KLINE_MINUTE_BATCH %s -> %s",
+                had_minute,
+                has_minute,
+            )
 
     @staticmethod
     def _resolve_historical_minute_provider(tickflow_provider):
@@ -203,16 +234,27 @@ class InvestmentExpertService:
         return time(9, 30) <= clock < time(11, 31) or time(13, 0) <= clock < time(15, 1)
 
     def run_paper_cycle_once(self, now: datetime | None = None) -> dict[str, Any]:
+        if not self._cycle_lock.acquire(blocking=False):
+            return {"status": "reused", "reason": "paper_cycle_in_progress"}
+        try:
+            return self._run_paper_cycle_once(now)
+        finally:
+            self._cycle_lock.release()
+
+    def _run_paper_cycle_once(self, now: datetime | None = None) -> dict[str, Any]:
         now = now or cn_now()
         if now.tzinfo is None:
             now = now.replace(tzinfo=CN_TZ)
-        if now.weekday() >= 5:
-            return {"status": "idle", "reason": "weekend"}
+        if not self._trading_day_checker(now.date()):
+            return {"status": "idle", "reason": "market_closed"}
         clock = now.timetz().replace(tzinfo=None)
         if time(9, 15) <= clock < time(15, 5) and self._runtime is None:
             prepared = self._prepare_session(now)
             if not prepared:
-                return {"status": "degraded", "reason": "no_point_in_time_candidates"}
+                return {
+                    "status": "degraded",
+                    "reason": self._prepare_failure_reason or "no_point_in_time_candidates",
+                }
         if self._is_continuous_session(now):
             return self._process_new_minute_bars(now)
         if clock >= time(15, 5) and self._session and self._finalized_date != now.date():
@@ -240,8 +282,18 @@ class InvestmentExpertService:
 
     def _prepare_session(self, now: datetime) -> bool:
         champion = self.store.get_champion() or self.store.ensure_baseline_policy()
-        candidates, context = self._select_candidates(now.date(), champion.candidate_limit)
+        overnight_context = self._load_overnight_us_context(now.date())
+        news_context = self._load_news_sentiment_context(now)
+        candidates, context = self._select_candidates(
+            now.date(),
+            champion.candidate_limit,
+            overnight_context=overnight_context,
+            overnight_weight=champion.overnight_us_candidate_weight,
+            news_context=news_context,
+            news_weight=champion.news_candidate_weight,
+        )
         if not candidates:
+            self._prepare_failure_reason = "no_point_in_time_candidates"
             return False
         session = self.store.start_session(
             now.date(), champion.id, mode="paper", candidates=candidates
@@ -264,6 +316,12 @@ class InvestmentExpertService:
         self._candidates = candidates
         self._market_symbols = sorted(set(candidates) | held_symbols)
         self._candidate_context = context
+        self._overnight_us_context = overnight_context
+        self._news_sentiment_context = news_context
+        self._next_news_refresh_at = now + timedelta(
+            seconds=self._news_refresh_seconds()
+        )
+        self._prepare_failure_reason = None
         floor = now.replace(second=0, microsecond=0)
         self._next_fetch_at = (
             floor - timedelta(minutes=1)
@@ -279,6 +337,121 @@ class InvestmentExpertService:
         )
         self._risk_trip_reason = None
         return True
+
+    def _load_overnight_us_context(self, trade_date: date) -> dict[str, Any]:
+        if self.us_market_service is None:
+            return self._unavailable_overnight_us_context("not_configured")
+        try:
+            overview = self.us_market_service.get_overview()
+            market_time = datetime.fromisoformat(str(overview.get("market_time") or ""))
+            market_date = market_time.date()
+            if market_date >= trade_date or (trade_date - market_date).days > 7:
+                logger.warning(
+                    "investment expert rejected stale US overnight context: %s for %s",
+                    market_date,
+                    trade_date,
+                )
+                return self._unavailable_overnight_us_context(
+                    "stale",
+                    market_date=market_date,
+                )
+            benchmark_weights = {
+                "SPY.US": 0.40,
+                "QQQ.US": 0.30,
+                "DIA.US": 0.20,
+                "IWM.US": 0.10,
+            }
+            benchmark_returns: dict[str, float] = {}
+            weighted_sum = 0.0
+            available_weight = 0.0
+            for row in overview.get("benchmarks") or []:
+                symbol = str(row.get("symbol") or "").upper()
+                weight = benchmark_weights.get(symbol)
+                value = row.get("change_pct")
+                if weight is None or value is None:
+                    continue
+                change_pct = float(value)
+                if not math.isfinite(change_pct):
+                    continue
+                benchmark_returns[symbol] = change_pct
+                weighted_sum += weight * change_pct
+                available_weight += weight
+            if available_weight < 0.60:
+                return self._unavailable_overnight_us_context(
+                    "incomplete",
+                    market_date=market_date,
+                )
+            index_return = weighted_sum / available_weight
+            breadth = overview.get("breadth") or {}
+            up_ratio = float(breadth.get("up_ratio") or 0.0)
+            down_ratio = float(breadth.get("down_ratio") or 0.0)
+            breadth_return = max(-1.0, min(1.0, up_ratio - down_ratio)) * 0.01
+            score = 0.8 * index_return + 0.2 * breadth_return
+            return {
+                "available": True,
+                "status": str(overview.get("status") or "unknown"),
+                "market_date": market_date.isoformat(),
+                "as_of": overview.get("as_of"),
+                "score": round(score, 8),
+                "tilt": round(max(-1.0, min(1.0, score / 0.02)), 8),
+                "benchmarks": benchmark_returns,
+                "breadth": {
+                    "up_ratio": up_ratio,
+                    "down_ratio": down_ratio,
+                },
+            }
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            logger.exception("investment expert US overnight context unavailable")
+            return self._unavailable_overnight_us_context("unavailable")
+
+    @staticmethod
+    def _unavailable_overnight_us_context(
+        status: str,
+        *,
+        market_date: date | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "available": False,
+            "status": status,
+            "market_date": market_date.isoformat() if market_date else None,
+            "score": 0.0,
+            "tilt": 0.0,
+            "benchmarks": {},
+        }
+
+    def _load_news_sentiment_context(self, as_of: datetime) -> dict[str, Any]:
+        if self.news_sentiment_service is None:
+            return self._unavailable_news_sentiment_context("not_configured", as_of)
+        try:
+            return self.news_sentiment_service.get_context(as_of)
+        except Exception:
+            logger.exception("investment expert news sentiment unavailable")
+            return self._unavailable_news_sentiment_context("unavailable", as_of)
+
+    @staticmethod
+    def _unavailable_news_sentiment_context(
+        status: str,
+        as_of: datetime,
+    ) -> dict[str, Any]:
+        return {
+            "available": False,
+            "status": status,
+            "as_of": as_of.isoformat(timespec="seconds"),
+            "score": 0.0,
+            "confidence": 0.0,
+            "item_count": 0,
+            "signal_count": 0,
+            "source_count": 0,
+            "regions": {"global": 0, "domestic": 0, "market": 0},
+            "items": [],
+        }
+
+    def _news_refresh_seconds(self) -> int:
+        value = getattr(self.news_sentiment_service, "refresh_seconds", 600)
+        try:
+            return max(60, int(value))
+        except (TypeError, ValueError):
+            return 600
 
     def _refresh_risk_state(self) -> bool:
         if self._executor is None or self._runtime is None:
@@ -356,7 +529,14 @@ class InvestmentExpertService:
         return executor
 
     def _select_candidates(
-        self, trade_date: date, limit: int
+        self,
+        trade_date: date,
+        limit: int,
+        *,
+        overnight_context: dict[str, Any] | None = None,
+        overnight_weight: float = 0.15,
+        news_context: dict[str, Any] | None = None,
+        news_weight: float = 0.25,
     ) -> tuple[list[str], dict[str, dict[str, Any]]]:
         instruments = self.repo.get_instruments()
         if instruments.is_empty() or "symbol" not in instruments.columns:
@@ -398,13 +578,22 @@ class InvestmentExpertService:
                 - 1
             ).alias("_momentum"),
             pl.col("close").cast(pl.Float64).shift(1).over("symbol").alias("_previous_close"),
+            pl.col("close")
+            .cast(pl.Float64)
+            .pct_change()
+            .rolling_std(window_size=20)
+            .over("symbol")
+            .alias("_volatility_20d"),
         )
         latest = history.filter(pl.col("date") == latest_date).drop_nulls(["_momentum"])
         if latest.is_empty():
             return [], {}
+        instrument_map = {
+            str(row["symbol"]): row for row in instruments.iter_rows(named=True)
+        }
         name_map = {
-            str(row["symbol"]): str(row.get("name") or row["symbol"])
-            for row in instruments.iter_rows(named=True)
+            symbol: str(row.get("name") or symbol)
+            for symbol, row in instrument_map.items()
         }
         eligible_symbols = [
             symbol for symbol in symbols
@@ -416,8 +605,11 @@ class InvestmentExpertService:
         latest = latest.with_columns(
             pl.col("_momentum").rank(descending=True).alias("_mom_rank"),
             pl.col("amount").rank(descending=True).alias("_amount_rank"),
+            pl.col("_volatility_20d").rank(descending=False).alias("_defensive_rank"),
             pl.len().cast(pl.Float64).alias("_count"),
         ).with_columns(
+            (1 - (pl.col("_mom_rank") - 1) / pl.col("_count")).alias("_momentum_score"),
+            (1 - (pl.col("_defensive_rank") - 1) / pl.col("_count")).alias("_defensive_score"),
             (
                 0.7 * (1 - (pl.col("_mom_rank") - 1) / pl.col("_count"))
                 + 0.3 * (1 - (pl.col("_amount_rank") - 1) / pl.col("_count"))
@@ -438,6 +630,80 @@ class InvestmentExpertService:
             )
         else:
             latest = latest.with_columns(pl.lit(0.0).alias("_strategy_score"))
+        overnight_available = bool(
+            overnight_context is not None
+            and overnight_context.get("available", True)
+        )
+        overnight_score = float((overnight_context or {}).get("score") or 0.0)
+        overnight_tilt = float((overnight_context or {}).get("tilt") or 0.0)
+        applied_weight = min(max(overnight_weight, 0.0), 0.5) * abs(overnight_tilt)
+        preference = (
+            pl.col("_momentum_score")
+            if overnight_tilt >= 0
+            else pl.col("_defensive_score")
+        )
+        latest = latest.with_columns(
+            (
+                (1 - applied_weight) * pl.col("_score")
+                + applied_weight * preference
+            ).alias("_score"),
+            pl.col("_momentum_score").alias("_news_momentum_preference"),
+            pl.col("_defensive_score").alias("_news_defensive_preference"),
+            preference.alias("_overnight_fit"),
+        )
+        latest = latest.with_columns(pl.col("_score").alias("_market_score"))
+        news_available = bool((news_context or {}).get("available"))
+        news_confidence = float((news_context or {}).get("confidence") or 0.0)
+        global_news_score = float((news_context or {}).get("score") or 0.0)
+        applied_news_weight = (
+            min(max(news_weight, 0.0), 0.5) * min(max(news_confidence, 0.0), 1.0)
+            if news_available
+            else 0.0
+        )
+        candidate_news = self._score_candidate_news(news_context or {}, instrument_map)
+        if candidate_news:
+            news_frame = pl.DataFrame({
+                "symbol": list(candidate_news),
+                "_candidate_news_score": [
+                    float(value.get("score") or 0.0)
+                    for value in candidate_news.values()
+                ],
+                "_candidate_news_matches": [
+                    int(value.get("matched_count") or 0)
+                    for value in candidate_news.values()
+                ],
+            })
+            latest = latest.join(news_frame, on="symbol", how="left")
+        else:
+            latest = latest.with_columns(
+                pl.lit(0.0).alias("_candidate_news_score"),
+                pl.lit(0).alias("_candidate_news_matches"),
+            )
+        latest = latest.with_columns(
+            pl.col("_candidate_news_score").fill_null(0.0),
+            pl.col("_candidate_news_matches").fill_null(0),
+        )
+        if global_news_score > 0.05:
+            news_preference = pl.col("_news_momentum_preference")
+        elif global_news_score < -0.05:
+            news_preference = pl.col("_news_defensive_preference")
+        else:
+            news_preference = pl.lit(0.5)
+        latest = latest.with_columns(
+            (
+                0.4 * news_preference
+                + 0.6 * ((pl.col("_candidate_news_score") + 1) / 2)
+            ).alias("_news_fit"),
+            (
+                0.4 * global_news_score
+                + 0.6 * pl.col("_candidate_news_score")
+            ).alias("_news_factor_score"),
+        ).with_columns(
+            (
+                (1 - applied_news_weight) * pl.col("_score")
+                + applied_news_weight * pl.col("_news_fit")
+            ).alias("_score")
+        )
         latest = latest.sort(["_score", "symbol"], descending=[True, False]).head(limit)
         selected = [str(value) for value in latest["symbol"].to_list()]
         context: dict[str, dict[str, Any]] = {}
@@ -450,8 +716,37 @@ class InvestmentExpertService:
                 "score": float(row["_score"]),
                 "daily_momentum_20d": float(row["_momentum"]),
                 "strategy_consensus": float(row["_strategy_score"]),
+                "market_score": float(row["_market_score"]),
+                "momentum_score": float(row["_news_momentum_preference"]),
+                "defensive_score": float(row["_news_defensive_preference"]),
+                "overnight_us_available": overnight_available,
+                "overnight_us_score": overnight_score,
+                "overnight_us_tilt": overnight_tilt,
+                "overnight_us_fit": float(row["_overnight_fit"]),
+                "news_sentiment_available": news_available,
+                "news_sentiment_score": global_news_score,
+                "news_sentiment_confidence": news_confidence,
+                "candidate_news_sentiment": float(row["_candidate_news_score"]),
+                "candidate_news_matches": int(row["_candidate_news_matches"]),
+                "news_factor_score": float(row["_news_factor_score"]),
+                "news_fit": float(row["_news_fit"]),
+                "news_applied_weight": applied_news_weight,
             }
         return selected, context
+
+    def _score_candidate_news(
+        self,
+        news_context: dict[str, Any],
+        candidates: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        scorer = getattr(self.news_sentiment_service, "score_candidates", None)
+        if scorer is None:
+            return {}
+        try:
+            return scorer(news_context, candidates)
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            logger.exception("investment expert candidate news scoring unavailable")
+            return {}
 
     def _strategy_consensus_scores(self, as_of: date) -> dict[str, float]:
         if self.strategy_engine is None or self.screener_service is None:
@@ -485,9 +780,55 @@ class InvestmentExpertService:
                     votes[symbol] = votes.get(symbol, 0) + 1
         return {symbol: count / len(strategy_ids) for symbol, count in votes.items()}
 
+    def _refresh_news_sentiment_context(self, now: datetime) -> None:
+        if self._runtime is None or self._session is None:
+            return
+        if self._next_news_refresh_at is not None and now < self._next_news_refresh_at:
+            return
+        context = self._load_news_sentiment_context(now)
+        self._news_sentiment_context = context
+        self._next_news_refresh_at = now + timedelta(
+            seconds=self._news_refresh_seconds()
+        )
+        candidate_metadata = {
+            symbol: row for symbol, row in self._candidate_context.items()
+            if symbol in self._candidates
+        }
+        scored = self._score_candidate_news(context, candidate_metadata)
+        available = bool(context.get("available"))
+        confidence = float(context.get("confidence") or 0.0)
+        global_score = float(context.get("score") or 0.0)
+        policy_weight = min(max(self._runtime.policy.news_candidate_weight, 0.0), 0.5)
+        applied_weight = policy_weight * min(max(confidence, 0.0), 1.0) if available else 0.0
+        for symbol, row in candidate_metadata.items():
+            candidate = scored.get(symbol) or {}
+            candidate_score = float(candidate.get("score") or 0.0)
+            if global_score > 0.05:
+                preference = float(row.get("momentum_score") or 0.5)
+            elif global_score < -0.05:
+                preference = float(row.get("defensive_score") or 0.5)
+            else:
+                preference = 0.5
+            news_fit = 0.4 * preference + 0.6 * ((candidate_score + 1) / 2)
+            news_factor_score = 0.4 * global_score + 0.6 * candidate_score
+            market_score = float(row.get("market_score") or row.get("score") or 0.0)
+            row.update({
+                "score": (1 - applied_weight) * market_score + applied_weight * news_fit,
+                "news_sentiment_available": available,
+                "news_sentiment_score": global_score,
+                "news_sentiment_confidence": confidence,
+                "candidate_news_sentiment": candidate_score,
+                "candidate_news_matches": int(candidate.get("matched_count") or 0),
+                "news_factor_score": news_factor_score,
+                "news_fit": news_fit,
+                "news_applied_weight": applied_weight,
+            })
+        self._runtime.candidate_context = self._candidate_context
+
     def _process_new_minute_bars(self, now: datetime) -> dict[str, Any]:
         if self._runtime is None or self._executor is None or self._session is None:
             return {"status": "degraded", "reason": "session_not_prepared"}
+        self._refresh_news_sentiment_context(now)
         start = self._next_fetch_at or now.replace(second=0, microsecond=0)
         end = now
         intraday_fetch = getattr(self.minute_provider, "get_intraday_minute", None)
@@ -513,6 +854,7 @@ class InvestmentExpertService:
             )
         if minute.is_empty():
             return {"status": "degraded", "reason": "minute_data_empty"}
+        minute = minute.unique(subset=["symbol", "datetime"], keep="last")
         processed = 0
         decisions = 0
         event_count = 0
@@ -600,6 +942,7 @@ class InvestmentExpertService:
                     "executor_state": self._executor.export_state(),
                 },
             )
+        self._last_error = None
         return {
             "status": "succeeded",
             "processed_bars": processed,
@@ -1116,6 +1459,12 @@ class InvestmentExpertService:
                 f"TickFlow Pro 分钟历史仅覆盖近 {max_history_years} 年。"
                 "请在设置 → 数据源选择具备三年覆盖的历史分钟源"
             )
+        news_sentiment = None
+        if self._news_sentiment_context is not None:
+            news_sentiment = {
+                **self._news_sentiment_context,
+                "items": list(self._news_sentiment_context.get("items") or [])[:8],
+            }
         base.update({
             "running": bool(self._poll_thread and self._poll_thread.is_alive()),
             "active_task": self._active_task if future is not None and not future.done() else None,
@@ -1132,6 +1481,9 @@ class InvestmentExpertService:
                 self._runtime is None or self._runtime.entries_enabled
             ),
             "risk_trip_reason": self._risk_trip_reason,
+            "overnight_us_market": self._overnight_us_context,
+            "news_sentiment": news_sentiment,
+            "session_prepare_error": self._prepare_failure_reason,
             "minute_capable": bool(
                 self.capset is None or self.capset.has(Cap.KLINE_MINUTE_BATCH)
             ),

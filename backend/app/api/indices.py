@@ -99,6 +99,14 @@ def get_index_daily(
         return {"symbol": symbol, "name": info.get("name"), "index_info": info, "rows": [], "source": "none"}
 
     enriched = compute_enriched(raw, factors=None, instruments=None)
+    repo.append_index_daily(raw)
+    repo.append_index_enriched(enriched)
+    from app.jobs.daily_pipeline import _refresh_single_view
+    _refresh_single_view(repo, "kline_index_daily")
+    _refresh_single_view(repo, "kline_index_enriched")
+    from app.api.data import invalidate_data_cache
+    invalidate_data_cache("index_daily")
+    invalidate_data_cache("index_enriched")
     rows = enriched.filter((pl.col("date") >= start) & (pl.col("date") <= end)).to_dicts()
     return {"symbol": symbol, "name": info.get("name"), "index_info": info, "rows": rows, "source": "live"}
 
@@ -109,18 +117,26 @@ def get_index_minute(
     symbol: str = Query(..., description="指数代码, 如 000001.SH"),
     trade_date: date | None = Query(None, alias="date", description="交易日期, 默认今天"),
 ):
-    """实时读取指数分钟 K。不写入股票分钟 parquet。"""
+    """读取指数分钟 K，本地缺失时实时拉取并写入指数分钟分区。"""
     repo = request.app.state.repo
     info = _index_info(repo, symbol)
     day = trade_date or date.today()
-    df = kline_sync.fetch_minute_single(symbol, day, asset_type="index")
+    df = repo.get_minute(symbol, day, asset_type="index")
+    source = "local"
+    if df.is_empty() or df.height < 216:
+        df = kline_sync.fetch_minute_single(symbol, day, asset_type="index")
+        source = "live" if not df.is_empty() else "none"
+        if not df.is_empty():
+            kline_sync.persist_minute_frame(df, repo, asset_type="index")
+            from app.api.data import invalidate_data_cache
+            invalidate_data_cache("index_minute")
     return {
         "symbol": symbol,
         "name": info.get("name"),
         "index_info": info,
         "date": str(day),
         "rows": df.to_dicts(),
-        "source": "live" if not df.is_empty() else "none",
+        "source": source,
     }
 
 
