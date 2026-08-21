@@ -13,6 +13,9 @@ from typing import Any
 import polars as pl
 
 from app.data_providers import get_provider
+from app.data_providers.huggingface_archive import (
+    HuggingFaceAshareMinuteArchive,
+)
 from app.market_calendar import is_cn_trading_day
 from app.market_time import CN_TZ, cn_now
 from app.paper_agent.dataset import TrainingDatasetBuilder
@@ -72,6 +75,7 @@ class InvestmentExpertService:
         screener_service=None,
         us_market_service=None,
         news_sentiment_service=None,
+        historical_minute_archive=None,
         trading_day_checker: Callable[[date], bool] = is_cn_trading_day,
     ) -> None:
         self.repo = repo
@@ -81,6 +85,10 @@ class InvestmentExpertService:
         self.screener_service = screener_service
         self.us_market_service = us_market_service
         self.news_sentiment_service = news_sentiment_service
+        self.historical_minute_archive = (
+            historical_minute_archive
+            or HuggingFaceAshareMinuteArchive(data_dir)
+        )
         self._trading_day_checker = trading_day_checker
         self.store = PaperAgentStore(data_dir)
         recovered = self.store.recover_interrupted_records(before_trade_date=cn_now().date())
@@ -210,6 +218,13 @@ class InvestmentExpertService:
         return True
 
     @staticmethod
+    def _subtract_years(value: date, years: int) -> date:
+        try:
+            return value.replace(year=value.year - years)
+        except ValueError:
+            return value.replace(year=value.year - years, day=28)
+
+    @staticmethod
     def _dataset_window(years: int) -> tuple[date, date]:
         current = cn_now()
         end_date = (
@@ -217,7 +232,25 @@ class InvestmentExpertService:
             if current.time() >= time(16, 0)
             else current.date() - timedelta(days=1)
         )
-        return end_date - timedelta(days=365 * years), end_date
+        return InvestmentExpertService._subtract_years(end_date, years), end_date
+
+    def _remote_minute_start_date(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> date | None:
+        """Return the first date routed to the configured provider, if any."""
+        if self._historical_minute_provider_error is not None:
+            return None
+        if getattr(self.historical_minute_provider, "name", "tickflow") != "tickflow":
+            return start_date
+        if self.capset is not None and not self.capset.has(Cap.KLINE_MINUTE_BATCH):
+            return None
+        max_years = self._historical_minute_max_years()
+        if max_years is None:
+            return start_date
+        return max(start_date, self._subtract_years(end_date, max_years))
 
     def _local_historical_minute_bounds(
         self,
@@ -236,42 +269,6 @@ class InvestmentExpertService:
                 )
                 bounds[asset_type] = (None, None)
         return bounds
-
-    def _local_historical_minute_capable(self, years: int) -> bool:
-        required_start, required_end = self._dataset_window(years)
-        return any(
-            local_start is not None
-            and local_end is not None
-            and local_start <= required_start
-            and local_end >= required_end
-            for local_start, local_end in self._local_historical_minute_bounds().values()
-        )
-
-    def _historical_minute_unavailable_reason(self, years: int) -> str:
-        provider_reason = self._historical_minute_provider_error
-        max_years = self._historical_minute_max_years()
-        if provider_reason is None and max_years is not None and years > max_years:
-            provider_reason = f"TickFlow Pro 分钟历史仅覆盖近 {max_years} 年"
-        elif provider_reason is None:
-            provider_reason = "当前历史分钟数据源没有目标年限权限"
-        labels = {"stock": "股票", "index": "指数", "etf": "ETF"}
-        local_ranges = []
-        local_bounds = self._local_historical_minute_bounds()
-        for asset_type in ("stock", "index", "etf"):
-            local_start, local_end = local_bounds.get(
-                asset_type,
-                (None, None),
-            )
-            value = (
-                f"{local_start.isoformat()} 至 {local_end.isoformat()}"
-                if local_start is not None and local_end is not None
-                else "无可用分区"
-            )
-            local_ranges.append(f"{labels[asset_type]} {value}")
-        return (
-            f"{provider_reason}; 本地分钟库覆盖: {'; '.join(local_ranges)}, "
-            f"仍不足以构建 {years} 年样本"
-        )
 
     def boot_check(self) -> None:
         if self.store.get_runtime_setting("enabled", False):
@@ -1460,17 +1457,6 @@ class InvestmentExpertService:
         download_minutes: bool = True,
     ) -> dict[str, Any]:
         self._refresh_historical_minute_provider()
-        remote_minutes_enabled = bool(
-            download_minutes and self._remote_historical_minute_capable(years)
-        )
-        local_minutes_enabled = bool(
-            download_minutes and self._local_historical_minute_capable(years)
-        )
-        if download_minutes and not remote_minutes_enabled and not local_minutes_enabled:
-            return {
-                "status": "blocked",
-                "reason": self._historical_minute_unavailable_reason(years),
-            }
         if (
             download_minutes
             and self._poll_thread is not None
@@ -1487,7 +1473,6 @@ class InvestmentExpertService:
                 years,
                 candidate_limit,
                 download_minutes,
-                remote_minutes_enabled,
             )
         return {"status": "started", "task": "dataset_bootstrap"}
 
@@ -1496,9 +1481,12 @@ class InvestmentExpertService:
         years: int,
         candidate_limit: int,
         download_minutes: bool,
-        remote_minutes_enabled: bool,
     ) -> dict[str, Any]:
         start_date, end_date = self._dataset_window(years)
+        remote_minute_start_date = self._remote_minute_start_date(
+            start_date=start_date,
+            end_date=end_date,
+        )
         if not self._operation_lock.acquire(blocking=False):
             return {"status": "reused"}
         run_id: str | None = None
@@ -1507,6 +1495,55 @@ class InvestmentExpertService:
             "progress": {"current": 0, "total": 0, "label": None, "pct": 0.0},
         }
         try:
+            archive_start: date | None = None
+            archive_end: date | None = None
+            archive_revision: str | None = None
+            if download_minutes and (
+                remote_minute_start_date is None
+                or remote_minute_start_date > start_date
+            ):
+                coverage = self.historical_minute_archive.coverage()
+                archive_revision = coverage.revision
+                if remote_minute_start_date is None:
+                    end_date = min(end_date, coverage.last_date)
+                    start_date = self._subtract_years(end_date, years)
+                    archive_end = end_date
+                else:
+                    archive_end = remote_minute_start_date - timedelta(days=1)
+                archive_start = start_date
+                if (
+                    archive_start < coverage.first_date
+                    or archive_end > coverage.last_date
+                ):
+                    raise RuntimeError(
+                        "Hugging Face minute archive does not cover the requested "
+                        f"fallback window {archive_start} to {archive_end}; published "
+                        f"coverage is {coverage.first_date} to {coverage.last_date}"
+                    )
+            progress_manifest["minute_source_plan"] = {
+                "remote_source": getattr(
+                    self.historical_minute_provider,
+                    "name",
+                    "unknown",
+                ),
+                "remote_start_date": (
+                    remote_minute_start_date.isoformat()
+                    if remote_minute_start_date is not None
+                    else None
+                ),
+                "fallback_source": (
+                    self.historical_minute_archive.name
+                    if archive_start is not None
+                    else None
+                ),
+                "fallback_revision": archive_revision,
+                "fallback_start_date": (
+                    archive_start.isoformat() if archive_start is not None else None
+                ),
+                "fallback_end_date": (
+                    archive_end.isoformat() if archive_end is not None else None
+                ),
+            }
             run_id = self.store.record_dataset_run(
                 start_date=start_date,
                 end_date=end_date,
@@ -1531,12 +1568,33 @@ class InvestmentExpertService:
                     run_id=run_id,
                 )
 
+            if archive_start is not None and archive_end is not None:
+                self.dataset_builder.build(
+                    start_date=start_date,
+                    end_date=end_date,
+                    candidate_limit=candidate_limit,
+                    download_minutes=False,
+                )
+                self.historical_minute_archive.backfill_candidates(
+                    candidate_dir=self.dataset_root / "candidates",
+                    start_date=archive_start,
+                    end_date=archive_end,
+                    progress_cb=report_progress,
+                )
+
             manifest = self.dataset_builder.build(
                 start_date=start_date,
                 end_date=end_date,
                 candidate_limit=candidate_limit,
                 download_minutes=download_minutes,
-                remote_minutes_enabled=remote_minutes_enabled,
+                remote_minutes_enabled=remote_minute_start_date is not None,
+                remote_minute_start_date=remote_minute_start_date,
+                fallback_minute_source=(
+                    self.historical_minute_archive.name
+                    if archive_start is not None
+                    else None
+                ),
+                fallback_minute_revision=archive_revision,
                 progress_cb=report_progress,
             )
             self.store.record_dataset_run(
@@ -1794,12 +1852,10 @@ class InvestmentExpertService:
         )
         max_history_years = self._historical_minute_max_years()
         remote_three_year_capable = self._remote_historical_minute_capable(3)
-        local_three_year_capable = self._local_historical_minute_capable(3)
         local_minute_bounds = self._local_historical_minute_bounds()
-        three_year_capable = remote_three_year_capable or local_three_year_capable
+        archive_fallback_capable = self.historical_minute_archive is not None
+        three_year_capable = remote_three_year_capable or archive_fallback_capable
         three_year_error = None
-        if not three_year_capable:
-            three_year_error = self._historical_minute_unavailable_reason(3)
         news_sentiment = None
         if self._news_sentiment_context is not None:
             news_sentiment = {
@@ -1838,7 +1894,12 @@ class InvestmentExpertService:
             "historical_minute_capable": historical_capable,
             "historical_minute_max_years": max_history_years,
             "historical_minute_remote_three_year_capable": remote_three_year_capable,
-            "historical_minute_local_three_year_capable": local_three_year_capable,
+            "historical_minute_archive_fallback_capable": archive_fallback_capable,
+            "historical_minute_archive_fallback_source": getattr(
+                self.historical_minute_archive,
+                "name",
+                None,
+            ),
             "historical_minute_local_coverage": {
                 asset_type: {
                     "start": start.isoformat() if start else None,

@@ -164,6 +164,7 @@ export function InvestmentExpert() {
   const [previewStock, setPreviewStock] = useState<{ symbol: string; name: string } | null>(null)
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [expandedExperimentId, setExpandedExperimentId] = useState<string | null>(null)
+  const [datasetYears, setDatasetYears] = useState(3)
   const status = useQuery({
     queryKey: QK.investmentExpertStatus,
     queryFn: api.investmentExpertStatus,
@@ -188,7 +189,7 @@ export function InvestmentExpert() {
   const start = useMutation({ mutationFn: api.investmentExpertStart, onSuccess: invalidate })
   const stop = useMutation({ mutationFn: api.investmentExpertStop, onSuccess: invalidate })
   const bootstrap = useMutation({
-    mutationFn: () => api.investmentExpertBootstrap(3, 50),
+    mutationFn: () => api.investmentExpertBootstrap(datasetYears, 50),
     onSuccess: invalidate,
   })
   const train = useMutation({ mutationFn: api.investmentExpertTrain, onSuccess: invalidate })
@@ -292,7 +293,20 @@ export function InvestmentExpert() {
                 ) : (
                   <ActionButton label="启动盯盘" icon={Play} pending={start.isPending} disabled={data?.minute_capable === false} onClick={() => start.mutate()} primary />
                 )}
-                <ActionButton label="构建三年历史样本" icon={Database} pending={bootstrap.isPending || data?.active_task === 'dataset_bootstrap'} disabled={busy || data?.historical_minute_three_year_capable === false} onClick={() => bootstrap.mutate()} />
+                <label className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2 py-1.5 text-xs text-muted">
+                  样本年限
+                  <select
+                    className="bg-transparent text-foreground outline-none"
+                    value={datasetYears}
+                    disabled={busy}
+                    onChange={event => setDatasetYears(Number(event.target.value))}
+                  >
+                    {[1, 2, 3, 4, 5].map(years => (
+                      <option key={years} value={years}>{years} 年</option>
+                    ))}
+                  </select>
+                </label>
+                <ActionButton label={`构建${datasetYears}年历史样本`} icon={Database} pending={bootstrap.isPending || data?.active_task === 'dataset_bootstrap'} disabled={busy} onClick={() => bootstrap.mutate()} />
                 <ActionButton label="重新训练" icon={BrainCircuit} pending={train.isPending || data?.active_task === 'model_training'} disabled={busy} onClick={() => train.mutate()} />
                 <ActionButton label="发起进化" icon={FlaskConical} pending={evolve.isPending || data?.active_task === 'evolution'} disabled={busy} onClick={() => evolve.mutate()} />
               </div>
@@ -318,7 +332,16 @@ export function InvestmentExpert() {
             )}
             {data?.historical_minute_error && (
               <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">
-                历史分钟源不可用：{data.historical_minute_error}
+                历史分钟主源不可用：{data.historical_minute_error}
+                {data.historical_minute_archive_fallback_capable
+                  ? `；构建样本时将自动使用 ${data.historical_minute_archive_fallback_source ?? 'Hugging Face 归档'}。`
+                  : ''}
+              </div>
+            )}
+            {data?.historical_minute_remote_three_year_capable === false
+              && data.historical_minute_archive_fallback_capable && (
+              <div className="mt-3 rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2 text-xs text-blue-200">
+                TickFlow 无法覆盖完整三年窗口时，较早区间会自动取自 Hugging Face A 股 1 分钟归档；TickFlow 可覆盖的近期区间仍优先使用 TickFlow。
               </div>
             )}
             {data?.historical_minute_three_year_error && (

@@ -1788,6 +1788,9 @@ export interface InvestmentExpertStatus {
   historical_minute_capable?: boolean
   historical_minute_error?: string | null
   historical_minute_max_years?: number | null
+  historical_minute_remote_three_year_capable?: boolean
+  historical_minute_archive_fallback_capable?: boolean
+  historical_minute_archive_fallback_source?: string | null
   historical_minute_three_year_capable?: boolean
   historical_minute_three_year_error?: string | null
   champion?: InvestmentExpertPolicy | null

@@ -84,6 +84,9 @@ class TrainingDatasetBuilder:
         candidate_limit: int = 50,
         download_minutes: bool = True,
         remote_minutes_enabled: bool = True,
+        remote_minute_start_date: date | None = None,
+        fallback_minute_source: str | None = None,
+        fallback_minute_revision: str | None = None,
         progress_cb=None,
     ) -> dict[str, Any]:
         latest_available = self.repo.latest_daily_date()
@@ -129,10 +132,11 @@ class TrainingDatasetBuilder:
         previous_symbols: list[str] = []
         minute_rows_total = 0
         minute_dates_available = 0
+        remote_minute_dates = 0
         audited_gap_pairs: set[tuple[date, str]] = set()
         audited_gaps = (
             self._load_audited_minute_gaps()
-            if not remote_minutes_enabled
+            if fallback_minute_source is not None
             else pl.DataFrame()
         )
         for index, (trade_date, group) in enumerate(date_groups, start=1):
@@ -149,11 +153,18 @@ class TrainingDatasetBuilder:
             # Carry-over symbols remain excluded from today's buy candidates.
             symbols = sorted(set(current_symbols) | set(previous_symbols))
             required_symbols = self._tradable_symbols(daily, trade_date, symbols)
+            remote_for_date = bool(
+                remote_minutes_enabled
+                and (
+                    remote_minute_start_date is None
+                    or trade_date >= remote_minute_start_date
+                )
+            )
             allowed_missing_symbols = self._audited_gap_symbols(
                 audited_gaps,
                 trade_date,
                 required_symbols,
-            )
+            ) if not remote_for_date else []
             if (
                 download_minutes
                 and minute_path.exists()
@@ -178,7 +189,7 @@ class TrainingDatasetBuilder:
                 start_time = datetime.combine(trade_date, time(9, 15), tzinfo=CN_TZ)
                 end_time = datetime.combine(trade_date, time(15, 5), tzinfo=CN_TZ)
                 local = pl.DataFrame()
-                if remote_minutes_enabled:
+                if remote_for_date:
                     minute = self.minute_provider.get_minute(
                         symbols,
                         start_time=start_time,
@@ -190,7 +201,7 @@ class TrainingDatasetBuilder:
                     local = self._load_local_minute(symbols, trade_date)
                     minute = local
                 if minute.is_empty():
-                    if not remote_minutes_enabled:
+                    if not remote_for_date:
                         raise HistoricalMinuteDataError(
                             "minute dataset incomplete: canonical local stock/index/ETF "
                             f"partitions returned no 1m data for {trade_date}"
@@ -236,8 +247,9 @@ class TrainingDatasetBuilder:
                 if local.height:
                     local_minute_dates += 1
                     local_minute_rows += local.height
-                elif remote_minutes_enabled:
+                elif remote_for_date:
                     downloaded_minute_rows += minute.height
+                    remote_minute_dates += 1
                 minute_rows_total += minute.height
                 minute_dates_available += 1
             previous_symbols = current_symbols
@@ -251,6 +263,13 @@ class TrainingDatasetBuilder:
                 f"{len(missing_minute_dates)} date(s) returned no data; first: {sample}"
             )
 
+        minute_sources = []
+        if remote_minutes_enabled:
+            minute_sources.append(
+                getattr(self.minute_provider, "name", "configured provider")
+            )
+        if fallback_minute_source is not None:
+            minute_sources.append(fallback_minute_source)
         manifest = {
             "schema_version": 1,
             "source": "provider_or_canonical_local_fallback",
@@ -261,7 +280,15 @@ class TrainingDatasetBuilder:
             "candidate_dates": total,
             "candidate_rows": written_candidate_rows,
             "minute_source": getattr(self.minute_provider, "name", "unknown"),
+            "minute_sources": list(dict.fromkeys(minute_sources)),
             "minute_remote_enabled": remote_minutes_enabled,
+            "minute_remote_start_date": (
+                remote_minute_start_date.isoformat()
+                if remote_minute_start_date is not None
+                else None
+            ),
+            "minute_fallback_revision": fallback_minute_revision,
+            "minute_dates_remote": remote_minute_dates,
             "minute_dates_available": minute_dates_available,
             "minute_rows": minute_rows_total,
             "minute_rows_downloaded": downloaded_minute_rows,

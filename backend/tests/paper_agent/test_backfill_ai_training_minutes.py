@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+import duckdb
 import polars as pl
 import pytest
 
-from scripts.backfill_ai_training_minutes import (
+from app.data_providers.huggingface_archive import (
     BACKFILL_FILENAME,
     VERIFIED_GAP_CLASSIFICATION,
     _merge_local_partition,
+    _query_batch,
     _validate_missing_against_audit,
     build_candidate_pairs,
+    parse_archive_coverage,
 )
 
 
@@ -86,3 +89,59 @@ def test_missing_pairs_must_be_verified_by_upstream_audit(tmp_path) -> None:
     )
     with pytest.raises(RuntimeError, match="not verified"):
         _validate_missing_against_audit(unexpected, audit_path=audit_path)
+
+
+def test_archive_query_converts_source_volume_shares_to_canonical_lots(
+    tmp_path,
+) -> None:
+    raw_dir = tmp_path / "raw"
+    source_path = raw_dir / "data" / "stock_1m" / "SH" / "600000.parquet"
+    source_path.parent.mkdir(parents=True)
+    pl.DataFrame({
+        "symbol": ["600000"],
+        "exchange": ["SH"],
+        "timestamp": [datetime(2024, 1, 2, 9, 30)],
+        "open": [10.0],
+        "high": [10.1],
+        "low": [9.9],
+        "close": [10.0],
+        "volume": [12_300],
+        "turnover": [123_000.0],
+    }).write_parquet(source_path)
+    pairs = pl.DataFrame({
+        "trade_date": [date(2024, 1, 2)],
+        "symbol": ["600000.SH"],
+    })
+    output = tmp_path / "batch.parquet"
+    connection = duckdb.connect(database=":memory:")
+    try:
+        _query_batch(
+            connection,
+            pairs=pairs,
+            symbols=["600000.SH"],
+            output_path=output,
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 2),
+            raw_dir=raw_dir,
+        )
+    finally:
+        connection.close()
+
+    result = pl.read_parquet(output)
+    assert result["volume"].to_list() == [123.0]
+    assert result["amount"].to_list() == [123_000.0]
+
+
+def test_archive_coverage_uses_published_snapshot_timestamps() -> None:
+    coverage = parse_archive_coverage(
+        {
+            "first_timestamp": "2010-01-04 09:30:00",
+            "last_timestamp": "2026-08-07 10:21:00",
+            "built_at": "2026-08-21T14:31:54+08:00",
+        },
+        revision="abc123",
+    )
+
+    assert coverage.first_date == date(2010, 1, 4)
+    assert coverage.last_date == date(2026, 8, 7)
+    assert coverage.revision == "abc123"

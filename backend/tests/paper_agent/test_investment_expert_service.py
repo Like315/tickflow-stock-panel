@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import polars as pl
 
 from app.api.investment_expert import status as investment_expert_status
+from app.data_providers.huggingface_archive import ArchiveCoverage
 from app.market_time import CN_TZ
 from app.paper_agent.execution import StrictMinuteExecutor
 from app.paper_agent.models import ExecutionEvent, PositionLot
@@ -567,30 +568,7 @@ def test_runtime_uses_intraday_endpoint_when_batch_capability_exists(tmp_path: P
     assert provider.calls == []
 
 
-def test_three_year_dataset_is_blocked_for_tickflow_pro(tmp_path: Path, monkeypatch) -> None:
-    trade_date = date(2026, 8, 18)
-    capset = CapabilitySet({
-        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
-    })
-    monkeypatch.setattr(
-        "app.services.investment_expert.base_tier_name",
-        lambda: "pro",
-    )
-    service = InvestmentExpertService(_Repo(trade_date), tmp_path, capset=capset)
-    try:
-        result = service.submit_dataset_bootstrap(years=3)
-        status = service.status()
-    finally:
-        service.close()
-
-    assert result["status"] == "blocked"
-    assert "仅覆盖近 1 年" in result["reason"]
-    assert status["historical_minute_capable"] is True
-    assert status["historical_minute_three_year_capable"] is False
-    assert status["historical_minute_max_years"] == 1
-
-
-def test_three_year_dataset_falls_back_to_local_partitions_without_remote_permission(
+def test_three_year_dataset_uses_archive_fallback_for_tickflow_pro(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -602,20 +580,7 @@ def test_three_year_dataset_falls_back_to_local_partitions_without_remote_permis
         "app.services.investment_expert.base_tier_name",
         lambda: "pro",
     )
-
-    class LocalRepo(_Repo):
-        def __init__(self, value: date) -> None:
-            super().__init__(value)
-            self.bound_calls: list[str] = []
-
-        def minute_date_bounds(self, asset_type: str):
-            self.bound_calls.append(asset_type)
-            if asset_type == "etf":
-                return date(2020, 1, 1), date(2030, 1, 1)
-            return None, None
-
-    repo = LocalRepo(trade_date)
-    service = InvestmentExpertService(repo, tmp_path, capset=capset)
+    service = InvestmentExpertService(_Repo(trade_date), tmp_path, capset=capset)
     submitted = []
     monkeypatch.setattr(
         service._executor_pool,
@@ -632,14 +597,137 @@ def test_three_year_dataset_falls_back_to_local_partitions_without_remote_permis
         service.close()
 
     assert result["status"] == "started"
-    assert submitted[0][1][-1] is False
-    assert {"stock", "index", "etf"}.issubset(repo.bound_calls)
+    assert submitted[0][1] == (3, 50, True)
+    assert status["historical_minute_capable"] is True
     assert status["historical_minute_remote_three_year_capable"] is False
-    assert status["historical_minute_local_three_year_capable"] is True
+    assert status["historical_minute_archive_fallback_capable"] is True
     assert status["historical_minute_three_year_capable"] is True
+    assert status["historical_minute_max_years"] == 1
 
 
-def test_three_year_dataset_prefers_permitted_remote_source_over_local(
+def test_three_year_dataset_routes_old_dates_to_archive_and_recent_dates_to_tickflow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 8, 21, 17, 0, tzinfo=CN_TZ)
+    capset = CapabilitySet({
+        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
+    })
+    monkeypatch.setattr(
+        "app.services.investment_expert.base_tier_name",
+        lambda: "pro",
+    )
+    monkeypatch.setattr("app.services.investment_expert.cn_now", lambda: now)
+
+    class Archive:
+        name = "huggingface:test"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def coverage(self):
+            return ArchiveCoverage(date(2010, 1, 4), date(2026, 8, 7))
+
+        def backfill_candidates(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"source": self.name}
+
+    class Builder:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def build(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"manifest_hash": "test"}
+
+    archive = Archive()
+    service = InvestmentExpertService(
+        _Repo(now.date()),
+        tmp_path,
+        capset=capset,
+        historical_minute_archive=archive,
+    )
+    builder = Builder()
+    service.dataset_builder = builder
+    monkeypatch.setattr(service, "_ensure_daily_history", lambda *_args: None)
+    monkeypatch.setattr(
+        service,
+        "_train_model_locked",
+        lambda: {"status": "succeeded"},
+    )
+    try:
+        result = service._run_dataset_bootstrap(3, 50, True)
+    finally:
+        service.close()
+
+    assert result["status"] == "succeeded"
+    assert len(builder.calls) == 2
+    assert builder.calls[0]["download_minutes"] is False
+    assert archive.calls[0]["start_date"] == date(2023, 8, 21)
+    assert archive.calls[0]["end_date"] == date(2025, 8, 20)
+    assert builder.calls[1]["remote_minutes_enabled"] is True
+    assert builder.calls[1]["remote_minute_start_date"] == date(2025, 8, 21)
+    assert builder.calls[1]["fallback_minute_source"] == "huggingface:test"
+
+
+def test_dataset_without_tickflow_minute_capability_uses_archive_latest_date(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 8, 21, 17, 0, tzinfo=CN_TZ)
+    monkeypatch.setattr("app.services.investment_expert.cn_now", lambda: now)
+
+    class Archive:
+        name = "huggingface:test"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def coverage(self):
+            return ArchiveCoverage(date(2010, 1, 4), date(2026, 8, 7))
+
+        def backfill_candidates(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"source": self.name}
+
+    class Builder:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def build(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"manifest_hash": "test"}
+
+    archive = Archive()
+    builder = Builder()
+    service = InvestmentExpertService(
+        _Repo(now.date()),
+        tmp_path,
+        capset=CapabilitySet(),
+        historical_minute_archive=archive,
+    )
+    service.dataset_builder = builder
+    monkeypatch.setattr(service, "_ensure_daily_history", lambda *_args: None)
+    monkeypatch.setattr(
+        service,
+        "_train_model_locked",
+        lambda: {"status": "succeeded"},
+    )
+    try:
+        result = service._run_dataset_bootstrap(3, 50, True)
+    finally:
+        service.close()
+
+    assert result["status"] == "succeeded"
+    assert archive.calls[0]["start_date"] == date(2023, 8, 7)
+    assert archive.calls[0]["end_date"] == date(2026, 8, 7)
+    assert builder.calls[1]["start_date"] == date(2023, 8, 7)
+    assert builder.calls[1]["end_date"] == date(2026, 8, 7)
+    assert builder.calls[1]["remote_minutes_enabled"] is False
+    assert builder.calls[1]["remote_minute_start_date"] is None
+
+
+def test_three_year_dataset_prefers_permitted_tickflow_without_archive(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -652,11 +740,7 @@ def test_three_year_dataset_prefers_permitted_remote_source_over_local(
         lambda: "enterprise",
     )
 
-    class LocalRepo(_Repo):
-        def minute_date_bounds(self, _asset_type: str):
-            return date(2020, 1, 1), date(2030, 1, 1)
-
-    service = InvestmentExpertService(LocalRepo(trade_date), tmp_path, capset=capset)
+    service = InvestmentExpertService(_Repo(trade_date), tmp_path, capset=capset)
     submitted = []
     monkeypatch.setattr(
         service._executor_pool,
@@ -672,7 +756,7 @@ def test_three_year_dataset_prefers_permitted_remote_source_over_local(
         service.close()
 
     assert result["status"] == "started"
-    assert submitted[0][1][-1] is True
+    assert submitted[0][1] == (3, 50, True)
 
 
 def test_status_exposes_position_profit_and_execution_performance(tmp_path: Path) -> None:
