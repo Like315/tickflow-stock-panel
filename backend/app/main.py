@@ -20,6 +20,7 @@ from app.services.fund_portfolio import FundPortfolioService
 from app.services.fund_research import FundResearchService
 from app.services.fund_market_research import FundMarketResearchService
 from app.services.investment_expert import InvestmentExpertService
+from app.services.monitor_market_context import MonitorMarketContextService
 from app.services.news_sentiment import NewsSentimentService
 from app.services.quote_service import QuoteService
 from app.services.research_agent import ResearchAgentService
@@ -199,6 +200,8 @@ async def lifespan(app: FastAPI):
 
     # AI 投资专家仅运行模拟盘。服务启动时恢复已持久化的策略、组合与任务状态,
     # 是否自动盯盘由用户设置持久化控制, 默认关闭。
+    news_sentiment_service = NewsSentimentService()
+    app.state.news_sentiment_service = news_sentiment_service
     investment_expert_service = InvestmentExpertService(
         repo,
         store.data_dir,
@@ -206,7 +209,8 @@ async def lifespan(app: FastAPI):
         strategy_engine=strategy_engine,
         screener_service=_screener_svc,
         us_market_service=app.state.us_market_overview_service,
-        news_sentiment_service=NewsSentimentService(),
+        news_sentiment_service=news_sentiment_service,
+        stock_portfolio_service=app.state.stock_portfolio_service,
     )
     app.state.investment_expert_service = investment_expert_service
     investment_expert_service.boot_check()
@@ -276,6 +280,21 @@ async def lifespan(app: FastAPI):
     monitor_engine.set_history_loader(_screener_svc._load_enriched_history)
     # ETF 版历史加载器: asset_type=etf 的 strategy 型规则用 (读 kline_etf_enriched)。
     monitor_engine.set_history_loader_etf(_etf_screener_svc._load_enriched_history)
+    from app.services import watchlist as watchlist_service
+
+    monitor_engine.set_watchlist_symbols([
+        str(row.get("symbol"))
+        for row in watchlist_service.list_symbols()
+        if row.get("symbol")
+    ])
+    monitor_market_context_service = MonitorMarketContextService(
+        repo,
+        app.state.us_market_overview_service,
+        news_sentiment_service,
+    )
+    app.state.monitor_market_context_service = monitor_market_context_service
+    monitor_engine.set_market_context_service(monitor_market_context_service)
+    monitor_market_context_service.start()
 
     # 自动迁移: 把旧 strategy_monitor_ids 同步为 type=strategy 规则 (统一到监控页)
     try:
@@ -310,6 +329,9 @@ async def lifespan(app: FastAPI):
     qs = getattr(app.state, "quote_service", None)
     if qs:
         qs.stop()
+    monitor_context_service = getattr(app.state, "monitor_market_context_service", None)
+    if monitor_context_service:
+        monitor_context_service.stop()
     dsvc = getattr(app.state, "depth_service", None)
     if dsvc:
         dsvc.stop_polling()

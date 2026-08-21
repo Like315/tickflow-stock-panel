@@ -559,6 +559,11 @@ export function Screener() {
         direction: 'entry',
         notify_events: [...DEFAULT_STRATEGY_NOTIFY_EVENTS],
         conditions: [],
+        context_filters: {
+          overnight_us: { mode: 'off', threshold: -0.35 },
+          news: { mode: 'off', threshold: -0.35 },
+          unavailable_action: 'degrade',
+        },
         logic: 'or',
         cooldown_seconds: 3600,
         severity: 'info',

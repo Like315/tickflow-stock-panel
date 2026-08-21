@@ -25,7 +25,7 @@ function scoreColor(v: number) {
   // A 股惯例: 强势=红, 弱式=绿
   if (v >= 70) return '#F04438'
   if (v >= 55) return '#FB923C'
-  if (v >= 45) return '#F59E0B'
+  if (v >= 45) return 'hsl(var(--warning))'
   if (v >= 30) return '#84CC16'
   return '#12B76A'
 }

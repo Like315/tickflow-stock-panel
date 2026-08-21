@@ -671,6 +671,15 @@ export interface MonitorCondition {
 
 export type StrategyNotifyEvent = 'buy_signal' | 'sell_signal' | 'pool_entry' | 'pool_exit'
 
+export type OvernightUsContextMode = 'off' | 'risk_gate' | 'require_positive' | 'display_only'
+export type NewsContextMode = 'off' | 'negative_veto' | 'require_positive' | 'display_only'
+
+export interface MonitorContextFilters {
+  overnight_us: { mode: OvernightUsContextMode; threshold: number }
+  news: { mode: NewsContextMode; threshold: number }
+  unavailable_action: 'degrade' | 'pause'
+}
+
 export type SectorKind = 'index' | 'concept' | 'industry'
 
 export interface SectorMonitorTarget {
@@ -693,7 +702,7 @@ export interface MonitorRule {
   enabled: boolean
   type: 'strategy' | 'signal' | 'price' | 'market' | 'ladder' | 'sector'
   asset_type?: 'stock' | 'etf' | 'index'
-  scope: 'symbols' | 'all' | 'sector'
+  scope: 'symbols' | 'watchlist' | 'all' | 'sector'
   symbols: string[]
   sector?: string | null
   sector_kind?: SectorKind | null
@@ -705,6 +714,7 @@ export interface MonitorRule {
   direction: 'entry' | 'exit' | 'both' | 'up' | 'down'
   notify_events?: StrategyNotifyEvent[]
   conditions: MonitorCondition[]
+  context_filters: MonitorContextFilters
   logic: 'and' | 'or'
   cooldown_seconds: number
   severity: 'info' | 'warn' | 'critical'
@@ -754,6 +764,12 @@ export interface AlertEvent {
   strategy_id?: string
   conditions?: MonitorCondition[]
   logic?: 'and' | 'or'
+  market_context?: {
+    allowed?: boolean
+    summary?: string
+    overnight_us?: Record<string, unknown>
+    news?: Record<string, unknown>
+  } | null
   sector_kind?: SectorKind
   sector_key?: string
   sector_name?: string
@@ -1659,7 +1675,8 @@ export interface InvestmentExpertPolicy {
   min_breakout_pct: number
   entry_probability_threshold: number
   overnight_us_candidate_weight: number
-  min_overnight_us_score: number
+  overnight_us_entry_weight: number
+  overnight_us_exit_weight: number
   news_candidate_weight: number
   stop_loss_pct: number
 }
@@ -1712,6 +1729,46 @@ export interface InvestmentExpertPerformance {
   valuation_as_of: string | null
 }
 
+export interface InvestmentExpertPortfolioSyncPosition {
+  symbol: string
+  name: string
+  quantity: number
+  entry_price: number
+  current_price: number
+  acquired_date: string
+  cost_amount: number
+  market_value: number
+}
+
+export interface InvestmentExpertPortfolioSyncPreview {
+  can_sync: boolean
+  blocked_reason?: string | null
+  source?: string
+  source_updated_at?: string | null
+  positions: InvestmentExpertPortfolioSyncPosition[]
+  position_count?: number
+  source_total_cost_amount?: number
+  source_total_market_value?: number
+  replace_position_count?: number
+  current_available_cash?: number
+  errors: string[]
+  warnings: string[]
+}
+
+export interface InvestmentExpertPortfolioSyncResult {
+  status: string
+  sync: {
+    id: string
+    source: string
+    mode: string
+    created_at: string
+    position_count: number
+    cash: number
+    equity: number
+    payload_hash: string
+  }
+}
+
 export interface InvestmentExpertStatus {
   enabled: boolean
   running: boolean
@@ -1722,6 +1779,17 @@ export interface InvestmentExpertStatus {
   market_symbol_count: number
   cash?: number | null
   equity?: number | null
+  portfolio_baseline_equity?: number | null
+  portfolio_sync?: {
+    id: string
+    source: string
+    mode: string
+    created_at: string
+    source_updated_at?: string | null
+    position_count: number
+    cash: number
+    equity: number
+  } | null
   positions: Array<{
     lot_id: string
     symbol: string
@@ -1748,7 +1816,17 @@ export interface InvestmentExpertStatus {
     as_of?: number | null
     score: number
     tilt: number
+    market_background_available?: boolean
     benchmarks: Record<string, number>
+    modules?: Record<string, {
+      symbol: string
+      name: string
+      kind: 'sector' | 'theme'
+      change_pct: number
+      volatility_20d: number
+      normalized_signal: number
+      data_confidence: number
+    }>
     breadth?: { up_ratio: number; down_ratio: number }
   } | null
   news_sentiment?: {
@@ -1777,11 +1855,15 @@ export interface InvestmentExpertStatus {
   historical_minute_capable?: boolean
   historical_minute_error?: string | null
   historical_minute_max_years?: number | null
+  historical_minute_remote_three_year_capable?: boolean
+  historical_minute_archive_fallback_capable?: boolean
+  historical_minute_archive_fallback_source?: string | null
   historical_minute_three_year_capable?: boolean
   historical_minute_three_year_error?: string | null
   champion?: InvestmentExpertPolicy | null
   active_model?: InvestmentExpertModel | null
   latest_model?: InvestmentExpertModel | null
+  model_runtime_status?: 'active' | 'not_activated' | 'disabled' | 'baseline'
   latest_session?: InvestmentExpertSession | null
   dataset?: {
     id: string
@@ -3336,6 +3418,13 @@ export const api = {
     request<{ status: string; running: boolean }>('/api/investment-expert/runtime/start', { method: 'POST' }),
   investmentExpertStop: () =>
     request<{ status: string; running: boolean }>('/api/investment-expert/runtime/stop', { method: 'POST' }),
+  investmentExpertPortfolioSyncPreview: () =>
+    request<InvestmentExpertPortfolioSyncPreview>('/api/investment-expert/portfolio-sync/preview'),
+  investmentExpertPortfolioSync: (availableCash: number) =>
+    request<InvestmentExpertPortfolioSyncResult>('/api/investment-expert/portfolio-sync', {
+      method: 'POST',
+      body: JSON.stringify({ confirm_replace: true, available_cash: availableCash }),
+    }),
   investmentExpertBootstrap: (years = 3, candidateLimit = 50) =>
     request<{ status: string; task: string }>('/api/investment-expert/dataset/bootstrap', {
       method: 'POST',

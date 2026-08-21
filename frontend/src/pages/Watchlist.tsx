@@ -56,7 +56,7 @@ function getBoardType(symbol: string): BoardType | null {
 function turnoverColor(rate: number | null | undefined): string {
   if (rate == null || Number.isNaN(rate)) return 'text-[#888]'
   if (rate < 5)   return 'text-[#888]'
-  if (rate < 10)  return 'text-[#d4a800]'
+  if (rate < 10)  return 'text-blue-600 dark:text-[#d4a800]'
   if (rate < 20)  return 'text-[#f97316]'
   if (rate < 35)  return 'text-[#d94a3d]'
   return 'text-[#b84a8a]'

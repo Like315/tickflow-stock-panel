@@ -1,7 +1,8 @@
 const STATUS_LABELS: Record<string, string> = {
   promoted: '已晋升',
   rejected: '未通过',
-  shadow: '影子观察',
+  inconclusive: '未形成结论',
+  shadow: '未启用',
   champion: '冠军策略',
   candidate: '候选策略',
   retired: '已退役',
@@ -30,6 +31,13 @@ const STATUS_LABELS: Record<string, string> = {
   canceled: '已取消',
 }
 
+const EXPERIMENT_STATUS_LABELS: Record<string, string> = {
+  promoted: '已晋升',
+  rejected: '未通过',
+  inconclusive: '未形成结论',
+  shadow: '未形成结论',
+}
+
 const TASK_LABELS: Record<string, string> = {
   evolution: '策略进化评估',
   dataset_bootstrap: '构建训练样本',
@@ -39,6 +47,11 @@ const TASK_LABELS: Record<string, string> = {
 export function investmentExpertStatusLabel(status: string | null | undefined): string {
   if (!status) return '--'
   return STATUS_LABELS[status] ?? '未知状态'
+}
+
+export function investmentExpertExperimentStatusLabel(status: string | null | undefined): string {
+  if (!status) return '--'
+  return EXPERIMENT_STATUS_LABELS[status] ?? '未知实验结果'
 }
 
 export function investmentExpertTaskLabel(task: string | null | undefined): string {

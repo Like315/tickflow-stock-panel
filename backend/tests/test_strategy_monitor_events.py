@@ -50,6 +50,18 @@ class _SequenceStrategyEngine:
         return self.results.pop(0)
 
 
+class _MarketContext:
+    def __init__(self, snapshot: dict):
+        self.snapshot = snapshot
+        self.enabled = False
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+    def snapshot_for(self, symbols) -> dict:
+        return self.snapshot
+
+
 def _result(
     as_of: date,
     pool: tuple[str, ...] = (),
@@ -91,6 +103,16 @@ def test_strategy_rule_compatibility_and_validation(tmp_path):
     with pytest.raises(ValueError, match="非法事件"):
         monitor_rules.validate(_rule("unknown"))
     monitor_rules.validate(_rule("buy_signal", "pool_exit"))
+    monitor_rules.validate(_rule("pool_entry", scope="watchlist"))
+    with pytest.raises(ValueError, match=r"overnight_us\.mode"):
+        monitor_rules.validate(_rule(
+            "pool_entry",
+            context_filters={
+                "overnight_us": {"mode": "unknown", "threshold": -0.35},
+                "news": {"mode": "off", "threshold": -0.35},
+                "unavailable_action": "degrade",
+            },
+        ))
 
 
 def test_strategy_events_baseline_dedupe_and_next_day_replay():
@@ -136,6 +158,113 @@ def test_strategy_sell_and_pool_exit_are_independent_events():
     assert {(event["type"], event["symbol"]) for event in events} == {
         ("sell_signal", "B"),
         ("pool_exit", "B"),
+    }
+
+
+def test_watchlist_scope_tracks_engine_watchlist_snapshot():
+    engine = MonitorRuleEngine()
+    engine.set_watchlist_symbols(["A"])
+    engine.set_rules([monitor_rules.normalize({
+        "id": "watchlist_price",
+        "name": "自选股价格监控",
+        "type": "price",
+        "asset_type": "stock",
+        "scope": "watchlist",
+        "conditions": [{"field": "close", "op": ">", "value": 0}],
+    })])
+
+    events = engine.evaluate(_quotes())
+
+    assert [(event["symbol"], event["price"]) for event in events] == [("A", 10.0)]
+
+
+def test_market_context_blocks_then_releases_entry_events():
+    day = date(2026, 7, 24)
+    context = _MarketContext({
+        "overnight_us": {
+            "available": True, "status": "live", "tilt": 0.0, "score": 0.0,
+            "market_date": "2026-07-23",
+        },
+        "news": {"available": True, "status": "live"},
+        "candidate_news": {
+            "A": {"score": -1.0, "matched_count": 1, "headlines": ["负面新闻"]},
+        },
+    })
+    engine = MonitorRuleEngine()
+    engine.set_strategy_engine(_SequenceStrategyEngine([
+        _result(day, pool=("A",)),
+        _result(day, pool=("A",), buys=("A",)),
+        _result(day, pool=("A",), buys=("A",)),
+        _result(day, pool=("A",), buys=("A",)),
+        _result(day, pool=("A",), buys=("A",)),
+    ]))
+    engine.set_market_context_service(context)
+    engine.set_rules([_rule(
+        "buy_signal",
+        "pool_entry",
+        context_filters={
+            "overnight_us": {"mode": "risk_gate", "threshold": -0.35},
+            "news": {"mode": "negative_veto", "threshold": -0.35},
+            "unavailable_action": "degrade",
+        },
+    )])
+
+    with patch("app.strategy.monitor.time.time", side_effect=[100, 101, 102, 103, 104]):
+        assert engine.evaluate(_quotes()) == []
+        assert engine.evaluate(_quotes()) == []
+        context.snapshot["candidate_news"]["A"] = {
+            "score": 0.0, "matched_count": 0, "headlines": [],
+        }
+        events = engine.evaluate(_quotes())
+        context.snapshot["candidate_news"]["A"] = {
+            "score": -1.0, "matched_count": 1, "headlines": ["负面新闻"],
+        }
+        assert engine.evaluate(_quotes()) == []
+        context.snapshot["candidate_news"]["A"] = {
+            "score": 0.0, "matched_count": 0, "headlines": [],
+        }
+        assert engine.evaluate(_quotes()) == []
+
+    assert context.enabled is True
+    assert {(event["type"], event["symbol"]) for event in events} == {
+        ("buy_signal", "A"),
+        ("pool_entry", "A"),
+    }
+    assert all(event["market_context"]["allowed"] is True for event in events)
+    assert all("隔夜美股中性" in event["message"] for event in events)
+    assert all("无相关负面新闻" in event["message"] for event in events)
+
+
+def test_market_context_never_blocks_sell_or_pool_exit():
+    day = date(2026, 7, 24)
+    context = _MarketContext({
+        "overnight_us": {"available": True, "status": "live", "tilt": -1.0},
+        "news": {"available": False, "status": "no_data"},
+        "candidate_news": {},
+    })
+    engine = MonitorRuleEngine()
+    engine.set_strategy_engine(_SequenceStrategyEngine([
+        _result(day, pool=("A",)),
+        _result(day, sells=("A",)),
+    ]))
+    engine.set_market_context_service(context)
+    engine.set_rules([_rule(
+        "sell_signal",
+        "pool_exit",
+        context_filters={
+            "overnight_us": {"mode": "risk_gate", "threshold": -0.35},
+            "news": {"mode": "off", "threshold": -0.35},
+            "unavailable_action": "pause",
+        },
+    )])
+
+    with patch("app.strategy.monitor.time.time", side_effect=[100, 101]):
+        assert engine.evaluate(_quotes()) == []
+        events = engine.evaluate(_quotes())
+
+    assert {(event["type"], event["symbol"]) for event in events} == {
+        ("sell_signal", "A"),
+        ("pool_exit", "A"),
     }
 
 

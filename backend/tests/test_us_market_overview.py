@@ -119,6 +119,22 @@ class _SingleHistoryKlines:
         ]
 
 
+class _VolatilityHistoryKlines:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get(self, symbol: str, **kwargs) -> list[dict]:
+        self.calls += 1
+        assert symbol == "XSD.US"
+        assert kwargs["period"] == "1d"
+        assert kwargs["count"] == 21
+        closes = [100 + index + (2 if index % 2 else -1) for index in range(21)]
+        return [
+            {"date": f"2026-07-{index + 1:02d}", "close": close}
+            for index, close in enumerate(closes)
+        ]
+
+
 def test_normalize_quote_keeps_decimal_pct_and_estimates_amount() -> None:
     row = normalize_us_quote(
         {
@@ -328,3 +344,19 @@ def test_cached_response_is_isolated_from_caller_mutation(tmp_path: Path) -> Non
         (tmp_path / "us_market" / "overview_snapshot.json").read_text(encoding="utf-8")
     )
     assert persisted["benchmarks"][0]["name"] != "mutated"
+
+
+def test_proxy_volatility_uses_twenty_daily_returns_and_cache(tmp_path: Path) -> None:
+    klines = _VolatilityHistoryKlines()
+    service = UsMarketOverviewService(
+        tmp_path,
+        history_client_factory=lambda: SimpleNamespace(klines=klines),
+        monotonic=lambda: 10.0,
+    )
+
+    first = service.get_proxy_volatilities(["XSD.US"], window=20)
+    second = service.get_proxy_volatilities(["XSD.US"], window=20)
+
+    assert first["XSD.US"] > 0
+    assert second == first
+    assert klines.calls == 1

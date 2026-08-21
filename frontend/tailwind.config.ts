@@ -1,5 +1,33 @@
 import type { Config } from 'tailwindcss'
 import animate from 'tailwindcss-animate'
+import plugin from 'tailwindcss/plugin'
+import tailwindColors from 'tailwindcss/colors'
+
+const LIGHT_YELLOW_REPLACEMENT = {
+  text: '37 99 235',
+  background: '59 130 246',
+  border: '96 165 250',
+} as const
+
+const lightYellowVariables: Record<string, string> = {}
+const yellowScales: Record<'text' | 'background' | 'border', Record<'amber' | 'yellow', Record<string, string>>> = {
+  text: { amber: {}, yellow: {} },
+  background: { amber: {}, yellow: {} },
+  border: { amber: {}, yellow: {} },
+}
+
+for (const family of ['amber', 'yellow'] as const) {
+  const source = tailwindColors[family] as Record<string, string>
+  for (const [shade, hex] of Object.entries(source)) {
+    const value = hex.replace('#', '')
+    const fallback = [0, 2, 4].map(offset => Number.parseInt(value.slice(offset, offset + 2), 16)).join(' ')
+    for (const role of ['text', 'background', 'border'] as const) {
+      const variable = `--ui-${role}-${family}-${shade}`
+      yellowScales[role][family][shade] = `rgb(var(${variable}, ${fallback}) / <alpha-value>)`
+      lightYellowVariables[variable] = LIGHT_YELLOW_REPLACEMENT[role]
+    }
+  }
+}
 
 // 设计语言 §6.0:暗色为主 + 电光蓝强调 + 等宽数字
 export default {
@@ -24,6 +52,9 @@ export default {
         warning:    'hsl(var(--warning) / <alpha-value>)',
         danger:     'hsl(var(--danger) / <alpha-value>)',
       },
+      textColor: yellowScales.text,
+      backgroundColor: yellowScales.background,
+      borderColor: yellowScales.border,
       fontFamily: {
         sans: ['Inter', '"HarmonyOS Sans SC"', '"PingFang SC"', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', '"IBM Plex Mono"', 'ui-monospace', 'monospace'],
@@ -40,5 +71,10 @@ export default {
       },
     },
   },
-  plugins: [animate],
+  plugins: [
+    animate,
+    plugin(({ addBase }) => {
+      addBase({ 'html:not(.dark)': lightYellowVariables })
+    }),
+  ],
 } satisfies Config

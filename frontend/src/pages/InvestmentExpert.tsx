@@ -4,6 +4,7 @@ import {
   Activity,
   Bot,
   BrainCircuit,
+  BriefcaseBusiness,
   CircleDollarSign,
   ChevronDown,
   Database,
@@ -20,10 +21,15 @@ import {
   TrendingUp,
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { Modal } from '@/components/Modal'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { api, type InvestmentExpertTrade } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import { investmentExpertStatusLabel, investmentExpertTaskLabel } from '@/lib/investmentExpertLabels'
+import {
+  investmentExpertExperimentStatusLabel,
+  investmentExpertStatusLabel,
+  investmentExpertTaskLabel,
+} from '@/lib/investmentExpertLabels'
 import { QK } from '@/lib/queryKeys'
 
 function money(value: number | null | undefined): string {
@@ -189,7 +195,7 @@ function reasonLabel(reason: string): string {
     protected_evaluation_passed: '保护集评估通过，候选策略已晋升',
     anti_cheat_or_data_quality_violation: '存在防作弊或数据质量违规',
     no_protected_evaluation_data: '没有可用的保护集评估数据',
-    insufficient_closed_trades: '已平仓交易数量不足，进入影子观察',
+    insufficient_closed_trades: '有效平仓样本不足，无法完成晋升判定',
     expectancy_did_not_improve: '交易期望未优于原冠军策略',
     max_drawdown_regressed: '最大回撤明显退化',
     net_return_regressed: '净收益低于原冠军策略',
@@ -207,6 +213,14 @@ const EXPERIMENT_METRICS = [
   ['processed_dates', '评估交易日'],
 ] as const
 
+const PORTFOLIO_SYNC_BLOCKED_LABELS: Record<string, string> = {
+  runtime_running: '请先停止 AI 投资专家盯盘，再同步持仓。',
+  background_task_running: '后台任务进行中，请完成后再同步持仓。',
+  source_portfolio_empty: '股票持仓为空，请先在“持股”页面录入持仓。',
+  invalid_source_positions: '股票持仓包含无法同步的数据，请先修正。',
+  stock_portfolio_service_unavailable: '股票持仓服务尚未初始化。',
+}
+
 function experimentMetric(value: number | string | null | undefined, key: string): string {
   if (value == null) return '--'
   const number = Number(value)
@@ -222,6 +236,9 @@ export function InvestmentExpert() {
   const [previewStock, setPreviewStock] = useState<{ symbol: string; name: string } | null>(null)
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null)
   const [expandedExperimentId, setExpandedExperimentId] = useState<string | null>(null)
+  const [datasetYears, setDatasetYears] = useState(3)
+  const [portfolioSyncOpen, setPortfolioSyncOpen] = useState(false)
+  const [portfolioAvailableCash, setPortfolioAvailableCash] = useState('')
   const status = useQuery({
     queryKey: QK.investmentExpertStatus,
     queryFn: api.investmentExpertStatus,
@@ -246,11 +263,30 @@ export function InvestmentExpert() {
   const start = useMutation({ mutationFn: api.investmentExpertStart, onSuccess: invalidate })
   const stop = useMutation({ mutationFn: api.investmentExpertStop, onSuccess: invalidate })
   const bootstrap = useMutation({
-    mutationFn: () => api.investmentExpertBootstrap(3, 50),
+    mutationFn: () => api.investmentExpertBootstrap(datasetYears, 50),
     onSuccess: invalidate,
   })
   const train = useMutation({ mutationFn: api.investmentExpertTrain, onSuccess: invalidate })
   const evolve = useMutation({ mutationFn: api.investmentExpertEvolve, onSuccess: invalidate })
+  const portfolioSyncPreview = useMutation({
+    mutationFn: api.investmentExpertPortfolioSyncPreview,
+    onSuccess: () => setPortfolioAvailableCash(''),
+  })
+  const portfolioSync = useMutation({
+    mutationFn: (availableCash: number) => api.investmentExpertPortfolioSync(availableCash),
+    onSuccess: () => {
+      setPortfolioSyncOpen(false)
+      invalidate()
+    },
+  })
+
+  const openPortfolioSync = () => {
+    portfolioSyncPreview.reset()
+    portfolioSync.reset()
+    setPortfolioAvailableCash('')
+    setPortfolioSyncOpen(true)
+    portfolioSyncPreview.mutate()
+  }
 
   const data = status.data
   const performance = data?.performance
@@ -274,14 +310,38 @@ export function InvestmentExpert() {
   const activeModel = data?.active_model
   const latestModel = data?.latest_model
   const displayModel = activeModel ?? latestModel
+  const modelRuntimeStatus = data?.model_runtime_status
+    ?? (activeModel ? 'active' : displayModel ? 'not_activated' : 'baseline')
+  const modelStatusSuffix = modelRuntimeStatus === 'disabled'
+    ? ' 已停用'
+    : modelRuntimeStatus === 'not_activated' ? ' 未启用' : ''
+  const modelDetail = !displayModel
+    ? '尚无训练模型，当前使用规则基线'
+    : modelRuntimeStatus === 'active'
+      ? `已通过保护集门控，参与模拟决策 · ${displayModel.sample_count.toLocaleString()} 样本`
+      : modelRuntimeStatus === 'disabled'
+        ? `风险保护已停用，当前使用规则基线 · ${displayModel.sample_count.toLocaleString()} 样本`
+        : `未通过保护集门控，当前使用规则基线 · ${displayModel.sample_count.toLocaleString()} 样本`
   const protectedMetrics = displayModel?.metrics.protected_test
   const manifest = data?.dataset?.manifest
+  const overnightModules = Object.values(data?.overnight_us_market?.modules ?? {})
+    .sort((left, right) => right.change_pct - left.change_pct)
+  const strongestOvernightModule = overnightModules[0]
+  const weakestOvernightModule = overnightModules[overnightModules.length - 1]
   const datasetProgress = manifest?.progress as {
     current?: number
     total?: number
     label?: string | null
     pct?: number
   } | undefined
+  const availableCashNumber = portfolioAvailableCash.trim() === ''
+    ? 0
+    : Number(portfolioAvailableCash)
+  const availableCashValid = Number.isFinite(availableCashNumber)
+    && availableCashNumber >= 0
+  const projectedSyncEquity = availableCashValid
+    ? availableCashNumber + (portfolioSyncPreview.data?.source_total_market_value ?? 0)
+    : null
 
   return (
     <>
@@ -315,7 +375,7 @@ export function InvestmentExpert() {
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <h2 className="text-base font-semibold">自主模拟交易运行时</h2>
+                    <h2 className="text-base font-semibold text-foreground">自主模拟交易运行时</h2>
                     <span className={cn(
                       'rounded-full px-2 py-0.5 text-[10px] font-medium',
                       data?.running ? 'bg-emerald-400/10 text-emerald-400' : 'bg-zinc-400/10 text-muted',
@@ -334,7 +394,21 @@ export function InvestmentExpert() {
                 ) : (
                   <ActionButton label="启动盯盘" icon={Play} pending={start.isPending} disabled={data?.minute_capable === false} onClick={() => start.mutate()} primary />
                 )}
-                <ActionButton label="构建三年历史样本" icon={Database} pending={bootstrap.isPending || data?.active_task === 'dataset_bootstrap'} disabled={busy || data?.historical_minute_three_year_capable === false} onClick={() => bootstrap.mutate()} />
+                <ActionButton label="同步我的持仓" icon={BriefcaseBusiness} pending={portfolioSyncPreview.isPending || portfolioSync.isPending} disabled={busy} onClick={openPortfolioSync} />
+                <label className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2 py-1.5 text-xs text-muted">
+                  样本年限
+                  <select
+                    className="bg-transparent text-foreground outline-none"
+                    value={datasetYears}
+                    disabled={busy}
+                    onChange={event => setDatasetYears(Number(event.target.value))}
+                  >
+                    {[1, 2, 3, 4, 5].map(years => (
+                      <option key={years} value={years}>{years} 年</option>
+                    ))}
+                  </select>
+                </label>
+                <ActionButton label={`构建${datasetYears}年历史样本`} icon={Database} pending={bootstrap.isPending || data?.active_task === 'dataset_bootstrap'} disabled={busy} onClick={() => bootstrap.mutate()} />
                 <ActionButton label="重新训练" icon={BrainCircuit} pending={train.isPending || data?.active_task === 'model_training'} disabled={busy} onClick={() => train.mutate()} />
                 <ActionButton label="发起进化" icon={FlaskConical} pending={evolve.isPending || data?.active_task === 'evolution'} disabled={busy} onClick={() => evolve.mutate()} />
               </div>
@@ -360,7 +434,16 @@ export function InvestmentExpert() {
             )}
             {data?.historical_minute_error && (
               <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">
-                历史分钟源不可用：{data.historical_minute_error}
+                历史分钟主源不可用：{data.historical_minute_error}
+                {data.historical_minute_archive_fallback_capable
+                  ? `；构建样本时将自动使用 ${data.historical_minute_archive_fallback_source ?? 'Hugging Face 归档'}。`
+                  : ''}
+              </div>
+            )}
+            {data?.historical_minute_remote_three_year_capable === false
+              && data.historical_minute_archive_fallback_capable && (
+              <div className="mt-3 rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2 text-xs text-blue-200">
+                TickFlow 无法覆盖完整三年窗口时，较早区间会自动取自 Hugging Face A 股 1 分钟归档；TickFlow 可覆盖的近期区间仍优先使用 TickFlow。
               </div>
             )}
             {data?.historical_minute_three_year_error && (
@@ -373,15 +456,28 @@ export function InvestmentExpert() {
                 风险熔断已触发：{data.risk_trip_reason}。系统已禁止新买入并在盘后执行回滚。
               </div>
             )}
-            {data?.overnight_us_market && !data.overnight_us_market.available && (
-              <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">
-                昨夜美股数据缺失或已过期，当日会话仍会正常创建；候选按本地因子排序，隔夜阈值不参与新买入判断。
+            {data?.portfolio_sync && (
+              <div className="mt-3 rounded-lg border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-xs text-emerald-200">
+                已从“股票持仓”同步 {data.portfolio_sync.position_count} 只持仓 ·
+                同步时间 {timestamp(data.portfolio_sync.created_at)} ·
+                可用现金 {money(data.portfolio_sync.cash)}。后续启动盯盘后，AI 会继续管理这些持仓。
               </div>
             )}
-            {data?.overnight_us_market?.available && (
+            {data?.overnight_us_market && !data.overnight_us_market.available && (
+              <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">
+                昨夜美股行业数据缺失或已过期，当日会话仍会正常创建；行业因子按中性处理，不影响原策略交易。
+              </div>
+            )}
+            {data?.overnight_us_market?.available && overnightModules.length > 0 && (
               <div className="mt-3 rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2 text-xs text-blue-200">
-                隔夜美股因子：{data.overnight_us_market.market_date} · 综合涨跌 {percent(data.overnight_us_market.score)}。
-                已用于候选排序，低于策略阈值时禁止新买入。
+                隔夜美股行业因子：{data.overnight_us_market.market_date} · 已读取 {overnightModules.length} 个行业/主题。
+                候选按所属行业独立加减分，买入同向调整、卖出反向调整；
+                {data.overnight_us_market.market_background_available === false
+                  ? '大盘背景数据不完整，不参与评分。'
+                  : `大盘综合 ${percent(data.overnight_us_market.score)} 仅作背景。`}
+                {strongestOvernightModule && weakestOvernightModule && (
+                  <> 最强：{strongestOvernightModule.name} {percent(strongestOvernightModule.change_pct)}；最弱：{weakestOvernightModule.name} {percent(weakestOvernightModule.change_pct)}。</>
+                )}
               </div>
             )}
             {data?.news_sentiment?.available ? (
@@ -438,7 +534,7 @@ export function InvestmentExpert() {
                 : `现金 ${money(data?.cash)} · 浮盈 ${signedMoney(performance?.unrealized_pnl)}`}
             />
             <MetricCard icon={ShieldCheck} label="当前策略" value={data?.champion ? `v${data.champion.version}` : '--'} hint={data?.champion?.id ?? '尚未初始化'} />
-            <MetricCard icon={BrainCircuit} label="训练模型" value={displayModel ? `v${displayModel.version}${activeModel ? '' : ' 影子观察'}` : '规则基线'} hint={displayModel ? `${displayModel.sample_count.toLocaleString()} 样本` : '等待保护集门控'} />
+            <MetricCard icon={BrainCircuit} label="训练模型" value={displayModel ? `v${displayModel.version}${modelStatusSuffix}` : '规则基线'} hint={modelDetail} />
             <MetricCard icon={Database} label="训练数据" value={data?.dataset ? investmentExpertStatusLabel(data.dataset.status) : '未构建'} hint={data?.dataset ? `${data.dataset.start_date} 至 ${data.dataset.end_date}` : '默认拉取近三年'} />
           </section>
 
@@ -452,7 +548,8 @@ export function InvestmentExpert() {
                         <th className="px-2 py-2 font-medium">标的</th>
                         <th className="px-2 py-2 font-medium">买入日</th>
                         <th className="px-2 py-2 text-right font-medium">持仓股数</th>
-                        <th className="px-2 py-2 text-right font-medium">成本 / 最新</th>
+                        <th className="px-2 py-2 text-right font-medium">成本价</th>
+                        <th className="px-2 py-2 text-right font-medium">现价</th>
                         <th className="px-2 py-2 text-right font-medium">持仓市值</th>
                         <th className="px-2 py-2 text-right font-medium">浮动盈利</th>
                         <th className="px-2 py-2 text-right font-medium">收益率</th>
@@ -485,10 +582,8 @@ export function InvestmentExpert() {
                             <div className="mt-0.5 whitespace-nowrap text-[10px] text-muted">次交易日起可卖</div>
                           </td>
                           <td className="px-2 py-2.5 text-right tabular-nums">{position.remaining_shares}</td>
-                          <td className="px-2 py-2.5 text-right tabular-nums">
-                            <div>{price(position.entry_price)}</div>
-                            <div className="mt-0.5 text-[10px] text-muted">{price(position.market_price)}</div>
-                          </td>
+                          <td className="px-2 py-2.5 text-right tabular-nums">{price(position.entry_price)}</td>
+                          <td className="px-2 py-2.5 text-right tabular-nums">{price(position.market_price)}</td>
                           <td className="px-2 py-2.5 text-right tabular-nums">{money(position.market_value)}</td>
                           <td className={cn('px-2 py-2.5 text-right font-medium tabular-nums', pnlClass(position.unrealized_pnl))}>
                             {signedMoney(position.unrealized_pnl)}
@@ -701,7 +796,7 @@ export function InvestmentExpert() {
               </div>
             </Panel>
 
-            <Panel title="进化实验" subtitle="单变量变异 · 失败不替换冠军策略">
+            <Panel title="进化实验" subtitle="单变量变异 · 未晋升不替换冠军策略">
               <div className="space-y-2">
                 {(experiments.data?.experiments ?? []).slice(0, 8).map(experiment => {
                   const expanded = expandedExperimentId === experiment.id
@@ -718,7 +813,7 @@ export function InvestmentExpert() {
                           <div className="mt-1 text-[10px] text-muted">变异项：{mutationLabel(experiment.mutation_field)}</div>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
-                          <span className={cn('rounded-full px-2 py-0.5 text-[10px]', statusClass(experiment.status))}>{investmentExpertStatusLabel(experiment.status)}</span>
+                          <span className={cn('rounded-full px-2 py-0.5 text-[10px]', statusClass(experiment.status))}>{investmentExpertExperimentStatusLabel(experiment.status)}</span>
                           <ChevronDown className={cn('h-3.5 w-3.5 text-muted transition-transform', expanded && 'rotate-180')} />
                         </div>
                       </button>
@@ -769,6 +864,141 @@ export function InvestmentExpert() {
         </div>
       </main>
 
+      {portfolioSyncOpen && (
+        <Modal
+          onClose={() => !portfolioSync.isPending && setPortfolioSyncOpen(false)}
+          labelledBy="investment-expert-portfolio-sync-title"
+          panelClassName="w-[94vw] max-w-3xl rounded-2xl border border-border bg-surface shadow-2xl"
+          closeOnBackdrop={!portfolioSync.isPending}
+        >
+          <div className="border-b border-border px-5 py-4">
+            <h2 id="investment-expert-portfolio-sync-title" className="text-base font-semibold text-foreground">
+              同步股票持仓到 AI 投资专家
+            </h2>
+            <p className="mt-1 text-xs leading-5 text-muted">
+              股票持仓将覆盖 AI 当前持仓；可用现金留空时按 0 处理，表示全部资金都在当前持仓中。旧挂单会清空，并从“持仓市值 + 可用现金”建立新风控基线。
+            </p>
+          </div>
+
+          <div className="max-h-[65vh] space-y-4 overflow-y-auto px-5 py-4">
+            {portfolioSyncPreview.isPending && (
+              <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted">
+                <Loader2 className="h-4 w-4 animate-spin" />正在读取股票持仓…
+              </div>
+            )}
+
+            {portfolioSyncPreview.error && (
+              <div className="rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs text-rose-300">
+                读取失败：{portfolioSyncPreview.error instanceof Error ? portfolioSyncPreview.error.message : String(portfolioSyncPreview.error)}
+              </div>
+            )}
+
+            {portfolioSyncPreview.data && (
+              <>
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <SyncMetric label="来源持仓" value={`${portfolioSyncPreview.data.position_count ?? 0} 只`} />
+                  <SyncMetric label="将替换 AI 持仓" value={`${portfolioSyncPreview.data.replace_position_count ?? 0} 个持仓批次`} />
+                  <SyncMetric label="持仓市值" value={money(portfolioSyncPreview.data.source_total_market_value)} />
+                  <SyncMetric label="当前 AI 现金" value={money(portfolioSyncPreview.data.current_available_cash)} />
+                </div>
+
+                <label className="block rounded-xl border border-blue-400/20 bg-blue-400/5 px-4 py-3">
+                  <span className="text-xs font-medium text-blue-100">同步后的可用现金</span>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-sm text-muted">¥</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={portfolioAvailableCash}
+                      placeholder="留空表示 0"
+                      onChange={event => setPortfolioAvailableCash(event.target.value)}
+                      className="min-w-0 flex-1 rounded-lg border border-border bg-base px-3 py-2 text-sm tabular-nums text-foreground outline-none focus:border-blue-400/50"
+                    />
+                  </div>
+                  <span className="mt-2 block text-[11px] text-muted">
+                    留空表示无可用资金。同步后账户总权益：{projectedSyncEquity == null ? '--' : money(projectedSyncEquity)}（持仓市值 + 可用现金）
+                  </span>
+                </label>
+
+                {portfolioSyncPreview.data.blocked_reason && (
+                  <div className="rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">
+                    {PORTFOLIO_SYNC_BLOCKED_LABELS[portfolioSyncPreview.data.blocked_reason]
+                      ?? portfolioSyncPreview.data.blocked_reason}
+                  </div>
+                )}
+                {portfolioSyncPreview.data.errors.map(error => (
+                  <div key={error} className="rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs text-rose-300">{error}</div>
+                ))}
+                {portfolioSyncPreview.data.warnings.map(warning => (
+                  <div key={warning} className="rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">{warning}</div>
+                ))}
+
+                {portfolioSyncPreview.data.positions.length > 0 && (
+                  <div className="overflow-hidden rounded-xl border border-border">
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[620px] text-left text-xs">
+                        <thead className="bg-base/70 text-muted">
+                          <tr>
+                            <th className="px-3 py-2 font-medium">股票</th>
+                            <th className="px-3 py-2 text-right font-medium">数量</th>
+                            <th className="px-3 py-2 text-right font-medium">成本价</th>
+                            <th className="px-3 py-2 text-right font-medium">最新价</th>
+                            <th className="px-3 py-2 text-right font-medium">市值</th>
+                            <th className="px-3 py-2 text-right font-medium">持仓日期</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {portfolioSyncPreview.data.positions.map(position => (
+                            <tr key={position.symbol} className="border-t border-border/70">
+                              <td className="px-3 py-2">
+                                <div className="font-medium text-foreground">{position.name || position.symbol}</div>
+                                <div className="font-mono text-[10px] text-muted">{position.symbol}</div>
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums">{position.quantity.toLocaleString('zh-CN')}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{price(position.entry_price)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{price(position.current_price)}</td>
+                              <td className="px-3 py-2 text-right tabular-nums">{money(position.market_value)}</td>
+                              <td className="px-3 py-2 text-right text-muted">{position.acquired_date}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {portfolioSync.error && (
+              <div className="rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs text-rose-300">
+                同步失败：{portfolioSync.error instanceof Error ? portfolioSync.error.message : String(portfolioSync.error)}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-4">
+            <button
+              type="button"
+              onClick={() => setPortfolioSyncOpen(false)}
+              disabled={portfolioSync.isPending}
+              className="rounded-btn border border-border px-4 py-2 text-xs text-secondary hover:bg-elevated disabled:opacity-50"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => portfolioSync.mutate(availableCashNumber)}
+              disabled={!portfolioSyncPreview.data?.can_sync || !availableCashValid || portfolioSync.isPending}
+              className="inline-flex items-center gap-1.5 rounded-btn bg-blue-500 px-4 py-2 text-xs font-medium text-white hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {portfolioSync.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              确认覆盖并同步
+            </button>
+          </div>
+        </Modal>
+      )}
+
       <StockPreviewDialog
         symbol={previewStock?.symbol ?? null}
         name={previewStock?.name}
@@ -776,6 +1006,15 @@ export function InvestmentExpert() {
         onClose={() => setPreviewStock(null)}
       />
     </>
+  )
+}
+
+function SyncMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-base/50 px-3 py-2.5">
+      <div className="text-[10px] text-muted">{label}</div>
+      <div className="mt-1 text-sm font-medium tabular-nums text-foreground">{value}</div>
+    </div>
   )
 }
 
@@ -838,7 +1077,7 @@ function Panel({ title, subtitle, children }: { title: string; subtitle: string;
   return (
     <section className="rounded-xl border border-border bg-surface/80 p-4">
       <div className="mb-3">
-        <h3 className="text-sm font-semibold">{title}</h3>
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
         <p className="mt-0.5 text-[10px] text-muted">{subtitle}</p>
       </div>
       {children}

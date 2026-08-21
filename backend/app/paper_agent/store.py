@@ -99,6 +99,16 @@ class PaperAgentStore:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS portfolio_sync_events (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    mode TEXT NOT NULL CHECK(mode IN ('replace')),
+                    cash REAL NOT NULL,
+                    equity REAL NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    payload_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS daily_reflections (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL UNIQUE REFERENCES trading_sessions(id) ON DELETE RESTRICT,
@@ -449,9 +459,81 @@ class PaperAgentStore:
         result["payload"] = json.loads(result.pop("payload_json"))
         return result
 
-    def portfolio_peak_equity(self) -> float | None:
+    def save_portfolio_sync(
+        self,
+        *,
+        source: str,
+        mode: str,
+        cash: float,
+        equity: float,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if mode != "replace":
+            raise ValueError(f"unsupported portfolio sync mode: {mode}")
+        event_id = f"portfolio_sync_{uuid4().hex}"
+        created_at = self._now()
+        payload_hash = self._hash(payload)
         with self._lock, self._connect() as conn:
-            row = conn.execute("SELECT max(equity) AS peak FROM portfolio_snapshots").fetchone()
+            conn.execute(
+                """
+                INSERT INTO portfolio_sync_events(
+                    id, source, mode, cash, equity, payload_json, payload_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    source,
+                    mode,
+                    float(cash),
+                    float(equity),
+                    self._json(payload),
+                    payload_hash,
+                    created_at,
+                ),
+            )
+        return {
+            "id": event_id,
+            "source": source,
+            "mode": mode,
+            "cash": float(cash),
+            "equity": float(equity),
+            "payload": payload,
+            "payload_hash": payload_hash,
+            "created_at": created_at,
+        }
+
+    def latest_portfolio_sync(self) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM portfolio_sync_events ORDER BY created_at DESC, rowid DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["payload"] = json.loads(result.pop("payload_json"))
+        return result
+
+    def latest_portfolio_state(self) -> dict[str, Any] | None:
+        snapshot = self.latest_portfolio_snapshot()
+        synced = self.latest_portfolio_sync()
+        if synced is None:
+            return snapshot
+        if snapshot is not None and snapshot["created_at"] > synced["created_at"]:
+            return snapshot
+        return {
+            **synced,
+            "as_of": synced["created_at"],
+            "state_source": "stock_portfolio_sync",
+        }
+
+    def portfolio_peak_equity(self, *, since: str | None = None) -> float | None:
+        query = "SELECT max(equity) AS peak FROM portfolio_snapshots"
+        params: tuple[str, ...] = ()
+        if since is not None:
+            query += " WHERE created_at > ?"
+            params = (since,)
+        with self._lock, self._connect() as conn:
+            row = conn.execute(query, params).fetchone()
         return float(row["peak"]) if row and row["peak"] is not None else None
 
     def list_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -984,6 +1066,15 @@ class PaperAgentStore:
         active_model = self.get_active_model()
         models = self.list_models(limit=1)
         latest_model = models[0] if models else None
+        disabled_model_id = self.get_runtime_setting("disabled_model_id")
+        if active_model is not None:
+            model_runtime_status = "active"
+        elif latest_model is None:
+            model_runtime_status = "baseline"
+        elif disabled_model_id == latest_model.id:
+            model_runtime_status = "disabled"
+        else:
+            model_runtime_status = "not_activated"
         sessions = self.list_sessions(limit=1)
         with self._lock, self._connect() as conn:
             dataset = conn.execute(
@@ -1004,4 +1095,5 @@ class PaperAgentStore:
             "latest_model": (
                 latest_model.model_dump(mode="json") if latest_model is not None else None
             ),
+            "model_runtime_status": model_runtime_status,
         }

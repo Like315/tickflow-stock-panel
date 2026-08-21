@@ -46,6 +46,18 @@ const STRATEGY_SOURCE_META = {
   composite: { label: '叠加', className: 'border-teal-500/25 bg-teal-500/10 text-teal-400' },
 } as const
 
+const offContextFilters = (): MonitorRule['context_filters'] => ({
+  overnight_us: { mode: 'off', threshold: -0.35 },
+  news: { mode: 'off', threshold: -0.35 },
+  unavailable_action: 'degrade',
+})
+
+const recommendedContextFilters = (): MonitorRule['context_filters'] => ({
+  overnight_us: { mode: 'risk_gate', threshold: -0.35 },
+  news: { mode: 'negative_veto', threshold: -0.35 },
+  unavailable_action: 'degrade',
+})
+
 const emptyRule = (preset?: Partial<MonitorRule>): MonitorRule => ({
   id: genRuleId(),
   name: '',
@@ -63,6 +75,7 @@ const emptyRule = (preset?: Partial<MonitorRule>): MonitorRule => ({
   strategy_id: null,
   direction: 'entry',
   conditions: [],
+  context_filters: offContextFilters(),
   logic: 'or',
   cooldown_seconds: 3600,
   severity: 'info',
@@ -146,6 +159,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
         if (!d.sector_targets?.length) throw new Error('请选择至少一个监控对象')
         if ((d.threshold_pct ?? 0) <= 0 || (d.threshold_pct ?? 0) > 20) throw new Error('阈值必须大于 0 且不超过 20%')
       } else {
+        d.context_filters = offContextFilters()
         delete d.notify_events
         if (d.conditions.length === 0) throw new Error('至少选择一个触发条件')
         for (const c of d.conditions) {
@@ -396,6 +410,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
                     asset_type: t,
                     strategy_id: null,
                     symbols: [],
+                    context_filters: t === 'stock' ? d.context_filters : offContextFilters(),
                     type: t === 'index' && d.type !== 'signal' && d.type !== 'price' ? 'signal' : d.type,
                     scope: t === 'index' ? 'symbols' : d.scope,
                   }))
@@ -434,7 +449,10 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
                       : undefined,
                     scope: type === 'sector'
                       ? 'all'
-                      : type === 'strategy' && d.scope === 'symbols' && d.symbols.length === 0 ? 'all' : d.scope,
+                      : type === 'strategy' && d.scope === 'symbols' && d.symbols.length === 0 ? 'watchlist' : d.scope,
+                    context_filters: type === 'strategy' && d.type !== 'strategy' && assetType === 'stock'
+                      ? recommendedContextFilters()
+                      : d.context_filters,
                     direction: type === 'sector' ? 'up' : d.type === 'sector' ? 'entry' : d.direction,
                   }
                 })}
@@ -693,6 +711,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
             </div>
           )}
           {draft.scope === 'all' && <span className="text-[11px] text-muted">对全市场所有标的生效</span>}
+          {draft.scope === 'watchlist' && <span className="text-[11px] text-muted">自动跟随当前自选股增删</span>}
           {draft.scope === 'sector' && <span className="text-[11px] text-muted/60">板块精确过滤(开发中,当前等同全市场)</span>}
         </div>
       </div>}
@@ -874,6 +893,86 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
               <div className="mt-2 text-[10px] text-danger">至少选择一个通知事件</div>
             )}
           </div>
+
+          {assetType === 'stock' && (
+            <div className="space-y-3 border-t border-border/60 pt-3">
+              <div>
+                <div className="text-[11px] font-medium text-foreground">市场增强条件</div>
+                <div className="mt-1 text-[10px] leading-relaxed text-muted">
+                  只过滤新的入场提醒，不影响卖出信号和移出结果通知。
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1.5">
+                  <span className="text-[11px] text-muted">隔夜美股</span>
+                  <select
+                    value={draft.context_filters.overnight_us.mode}
+                    onChange={event => {
+                      const mode = event.target.value as MonitorRule['context_filters']['overnight_us']['mode']
+                      setDraft(d => ({
+                        ...d,
+                        context_filters: {
+                          ...d.context_filters,
+                          overnight_us: {
+                            mode,
+                            threshold: mode === 'require_positive' ? 0.15 : -0.35,
+                          },
+                        },
+                      }))
+                    }}
+                    className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground"
+                  >
+                    <option value="risk_gate">明显走弱时暂停新入场</option>
+                    <option value="require_positive">必须处于偏强环境</option>
+                    <option value="display_only">仅在通知中展示</option>
+                    <option value="off">不参与判断</option>
+                  </select>
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-[11px] text-muted">个股新闻</span>
+                  <select
+                    value={draft.context_filters.news.mode}
+                    onChange={event => {
+                      const mode = event.target.value as MonitorRule['context_filters']['news']['mode']
+                      setDraft(d => ({
+                        ...d,
+                        context_filters: {
+                          ...d.context_filters,
+                          news: {
+                            mode,
+                            threshold: mode === 'require_positive' ? 0.25 : -0.35,
+                          },
+                        },
+                      }))
+                    }}
+                    className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground"
+                  >
+                    <option value="negative_veto">明显负面新闻时拦截</option>
+                    <option value="require_positive">必须有正面新闻确认</option>
+                    <option value="display_only">仅在通知中展示</option>
+                    <option value="off">不参与判断</option>
+                  </select>
+                </label>
+              </div>
+              <label className="space-y-1.5">
+                <span className="text-[11px] text-muted">增强数据不可用时</span>
+                <select
+                  value={draft.context_filters.unavailable_action}
+                  onChange={event => setDraft(d => ({
+                    ...d,
+                    context_filters: {
+                      ...d.context_filters,
+                      unavailable_action: event.target.value as MonitorRule['context_filters']['unavailable_action'],
+                    },
+                  }))}
+                  className="h-9 w-full rounded-btn border border-border bg-base px-3 text-xs text-foreground"
+                >
+                  <option value="degrade">降级执行并显示警告</option>
+                  <option value="pause">暂停新的入场提醒</option>
+                </select>
+              </label>
+            </div>
+          )}
         </div>
       )}
 

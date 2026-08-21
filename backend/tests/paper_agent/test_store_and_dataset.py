@@ -81,6 +81,57 @@ def test_session_and_execution_events_are_append_only(tmp_path) -> None:
     assert len(store.list_execution_events(session_id=session["id"])) == 1
 
 
+def test_portfolio_sync_is_audited_and_replaces_the_restore_state(tmp_path) -> None:
+    store = PaperAgentStore(tmp_path)
+    policy = store.ensure_baseline_policy()
+    session = store.start_session(
+        date(2026, 8, 20),
+        policy.id,
+        mode="paper",
+        candidates=["600000.SH"],
+    )
+    store.save_portfolio_snapshot(
+        session["id"],
+        as_of=datetime(2026, 8, 20, 15, 1, tzinfo=UTC),
+        cash=900_000,
+        equity=1_000_000,
+        payload={"executor_state": {"cash": 900_000, "lots": [], "pending": []}},
+    )
+    payload = {
+        "source": "stock_portfolio",
+        "position_count": 1,
+        "executor_state": {
+            "cash": 123_456,
+            "lots": [{
+                "lot_id": "synced_1",
+                "symbol": "600000.SH",
+                "acquired_date": "2026-08-19",
+                "shares": 10_000,
+                "remaining_shares": 10_000,
+                "entry_price": 10.0,
+                "entry_cost": 0.0,
+            }],
+            "last_prices": {"600000.SH": 11.0},
+            "pending": [],
+        },
+    }
+
+    event = store.save_portfolio_sync(
+        source="stock_portfolio",
+        mode="replace",
+        cash=123_456,
+        equity=233_456,
+        payload=payload,
+    )
+
+    state = store.latest_portfolio_state()
+    assert state is not None
+    assert state["id"] == event["id"]
+    assert state["state_source"] == "stock_portfolio_sync"
+    assert state["payload"] == payload
+    assert store.portfolio_peak_equity(since=event["created_at"]) is None
+
+
 def test_trade_history_joins_fill_to_recorded_decision_reason(tmp_path) -> None:
     store = PaperAgentStore(tmp_path)
     policy = store.ensure_baseline_policy()
@@ -408,6 +459,9 @@ def test_dataset_fails_fast_when_historical_minute_day_is_empty(tmp_path) -> Non
         def get_daily_batch(self, _symbols, _start_date, _end_date, *, columns):
             return self.daily.select(column for column in columns if column in self.daily.columns)
 
+        def get_minute_batch(self, *_args, **_kwargs):
+            raise AssertionError("local partitions must not be used when remote is enabled")
+
     class EmptyHistoryProvider:
         name = "empty_history"
 
@@ -422,6 +476,124 @@ def test_dataset_fails_fast_when_historical_minute_day_is_empty(tmp_path) -> Non
             end_date=date(2024, 3, 15),
             candidate_limit=1,
         )
+
+
+def test_dataset_reuses_canonical_local_minute_partition_before_provider(tmp_path) -> None:
+    days = pl.date_range(date(2024, 1, 1), date(2024, 3, 15), interval="1d", eager=True)
+    trade_date = date(2024, 3, 1)
+
+    class Repo:
+        def __init__(self) -> None:
+            self.daily = pl.DataFrame({
+                "symbol": ["600000.SH"] * len(days),
+                "name": ["浦发银行"] * len(days),
+                "date": days,
+                "open": [10.0] * len(days),
+                "high": [10.2] * len(days),
+                "low": [9.8] * len(days),
+                "close": [10.0 + index * 0.01 for index in range(len(days))],
+                "raw_close": [10.0 + index * 0.01 for index in range(len(days))],
+                "volume": [100_000.0] * len(days),
+                "amount": [100_000_000.0] * len(days),
+            })
+            self.local_calls: list[tuple[list[str], date, str]] = []
+
+        def latest_daily_date(self):
+            return self.daily["date"].max()
+
+        def get_instruments(self):
+            return pl.DataFrame({"symbol": ["600000.SH"], "name": ["浦发银行"]})
+
+        def get_enriched_range(self, *_args, **_kwargs):
+            return self.daily
+
+        def get_daily_batch(self, _symbols, _start_date, _end_date, *, columns):
+            return self.daily.select(column for column in columns if column in self.daily.columns)
+
+        def get_minute_batch(self, symbols, requested_date, asset_type="stock"):
+            self.local_calls.append((symbols, requested_date, asset_type))
+            if asset_type != "etf":
+                return pl.DataFrame()
+            return pl.DataFrame({
+                "symbol": ["600000.SH"] * 3,
+                "datetime": [
+                    datetime(2024, 3, 1, 9, 30),
+                    datetime(2024, 3, 1, 9, 31),
+                    datetime(2024, 3, 1, 9, 32),
+                ],
+                "open": [10.5, 10.5, 10.5],
+                "high": [10.5, 10.6, 10.6],
+                "low": [10.4, 10.5, 10.5],
+                "close": [10.5, 10.6, 10.5],
+                "volume": [1_000.0, 1_200.0, 900.0],
+                "amount": [10_500.0, 12_720.0, 9_450.0],
+            })
+
+    class ForbiddenProvider:
+        name = "forbidden"
+
+        def get_minute(self, *_args, **_kwargs):
+            raise AssertionError("local canonical minute data should be reused")
+
+    repo = Repo()
+    builder = TrainingDatasetBuilder(repo, tmp_path, ForbiddenProvider())
+
+    manifest = builder.build(
+        start_date=trade_date,
+        end_date=trade_date,
+        candidate_limit=1,
+        remote_minutes_enabled=False,
+    )
+
+    assert repo.local_calls == [
+        (["600000.SH"], trade_date, "stock"),
+        (["600000.SH"], trade_date, "index"),
+        (["600000.SH"], trade_date, "etf"),
+    ]
+    assert manifest["minute_dates_local"] == 1
+    assert manifest["minute_rows_downloaded"] == 0
+    assert (
+        tmp_path
+        / "user_data"
+        / "investment_expert"
+        / "training"
+        / "minute"
+        / f"date={trade_date}"
+        / "part.parquet"
+    ).exists()
+
+
+def test_minute_frame_allows_only_audited_upstream_gaps() -> None:
+    trade_date = date(2024, 1, 2)
+    minute = pl.DataFrame({
+        "symbol": ["600000.SH"] * 3,
+        "datetime": [
+            datetime(2024, 1, 2, 9, 30),
+            datetime(2024, 1, 2, 9, 31),
+            datetime(2024, 1, 2, 9, 32),
+        ],
+        "raw_open": [10.0] * 3,
+        "raw_high": [10.1] * 3,
+        "raw_low": [9.9] * 3,
+        "raw_close": [10.0] * 3,
+        "previous_close": [9.9] * 3,
+        "is_suspended": [False] * 3,
+        "is_limit_up": [False] * 3,
+        "is_limit_down": [False] * 3,
+    })
+    required = ["600000.SH", "920123.BJ"]
+
+    assert not TrainingDatasetBuilder._minute_frame_valid(
+        minute,
+        required,
+        trade_date=trade_date,
+    )
+    assert TrainingDatasetBuilder._minute_frame_valid(
+        minute,
+        required,
+        trade_date=trade_date,
+        allowed_missing_symbols=["920123.BJ"],
+    )
 
 
 def test_partial_enriched_history_is_filled_from_raw_daily() -> None:

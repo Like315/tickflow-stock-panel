@@ -224,7 +224,7 @@ export function StockInfoBar({ symbol, name, stockInfo, rows, fields, onFieldsCh
           {onToggleWatchlist && (
             <button
               onClick={onToggleWatchlist}
-              className={`p-1 rounded-btn transition-colors cursor-pointer ${inWatchlist ? 'text-[#FACC15]' : 'text-muted hover:text-foreground hover:bg-elevated'}`}
+              className={`p-1 rounded-btn transition-colors cursor-pointer ${inWatchlist ? 'text-blue-500 dark:text-[#FACC15]' : 'text-muted hover:text-foreground hover:bg-elevated'}`}
               title={inWatchlist ? '移出自选' : '加自选'}
             >
               <Star className="h-3.5 w-3.5" />

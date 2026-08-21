@@ -185,7 +185,7 @@ class PolicyEvolutionEngine:
         if candidate.processed_dates == 0:
             return "rejected", "no_protected_evaluation_data"
         if candidate.closed_trades < min_closed_trades:
-            return "shadow", "insufficient_closed_trades"
+            return "inconclusive", "insufficient_closed_trades"
         champion_expectancy = champion.expectancy if champion.expectancy is not None else float("-inf")
         candidate_expectancy = candidate.expectancy if candidate.expectancy is not None else float("-inf")
         if candidate_expectancy <= champion_expectancy:

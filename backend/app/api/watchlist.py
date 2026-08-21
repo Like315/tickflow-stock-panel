@@ -57,6 +57,14 @@ def _with_names(rows: list[dict], request: Request) -> list[dict]:
         return rows
 
 
+def _sync_monitor_watchlist(request: Request, rows: list[dict]) -> None:
+    engine = getattr(request.app.state, "monitor_engine", None)
+    if engine is not None:
+        engine.set_watchlist_symbols([
+            str(row.get("symbol")) for row in rows if row.get("symbol")
+        ])
+
+
 @router.get("")
 def list_all(request: Request):
     return {"symbols": _with_names(watchlist.list_symbols(), request)}
@@ -65,6 +73,7 @@ def list_all(request: Request):
 @router.post("")
 def add_one(req: AddRequest, request: Request):
     rows = watchlist.add(req.symbol, req.note)
+    _sync_monitor_watchlist(request, rows)
     return {"symbols": _with_names(rows, request)}
 
 
@@ -77,7 +86,9 @@ def add_batch(req: BatchAddRequest, request: Request):
             added += 1
             existing.add(sym)
         watchlist.add(sym, req.note)
-    return {"symbols": _with_names(watchlist.list_symbols(), request), "added": added}
+    rows = watchlist.list_symbols()
+    _sync_monitor_watchlist(request, rows)
+    return {"symbols": _with_names(rows, request), "added": added}
 
 
 @router.get("/ocr-status")
@@ -134,13 +145,15 @@ def move_one_to_top(symbol: str, request: Request):
 @router.delete("/{symbol}")
 def remove_one(symbol: str, request: Request):
     rows = watchlist.remove(symbol)
+    _sync_monitor_watchlist(request, rows)
     return {"symbols": _with_names(rows, request)}
 
 
 @router.delete("")
-def clear_all():
+def clear_all(request: Request):
     """清空自选列表。"""
     count = watchlist.clear()
+    _sync_monitor_watchlist(request, [])
     return {"removed": count}
 
 

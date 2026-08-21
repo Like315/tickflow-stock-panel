@@ -48,7 +48,7 @@ function scoreColor(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return '#71717A'
   if (v >= 70) return '#F04438'
   if (v >= 55) return '#FB923C'
-  if (v >= 45) return '#F59E0B'
+  if (v >= 45) return 'hsl(var(--warning))'
   if (v >= 30) return '#84CC16'
   return '#12B76A'
 }

@@ -473,6 +473,11 @@ function MonitorMenu({ stock, direction, sealMode, monitorRule, anchorRect, hasD
         metric,
         threshold: thr,
         conditions: [],
+        context_filters: {
+          overnight_us: { mode: 'off', threshold: -0.35 },
+          news: { mode: 'off', threshold: -0.35 },
+          unavailable_action: 'degrade',
+        },
         logic: 'and',
         cooldown_seconds: existing?.cooldown_seconds ?? 600,
         severity: 'warn',

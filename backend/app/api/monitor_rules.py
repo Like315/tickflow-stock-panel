@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.strategy import monitor_rules
 from app.strategy.intraday_signals import INTRADAY_SIGNAL_LABELS, uses_intraday_signals
@@ -73,6 +73,19 @@ class SectorTargetModel(BaseModel):
     member_count: int = 0
 
 
+class ContextSourceFilterModel(BaseModel):
+    mode: str = "off"
+    threshold: float = -0.35
+
+
+class ContextFiltersModel(BaseModel):
+    overnight_us: ContextSourceFilterModel = Field(
+        default_factory=ContextSourceFilterModel
+    )
+    news: ContextSourceFilterModel = Field(default_factory=ContextSourceFilterModel)
+    unavailable_action: str = "degrade"
+
+
 class RuleModel(BaseModel):
     id: str
     name: str
@@ -91,6 +104,7 @@ class RuleModel(BaseModel):
     direction: str = "entry"  # entry | exit | both
     notify_events: list[str] | None = None
     conditions: list[ConditionModel] = []
+    context_filters: ContextFiltersModel = Field(default_factory=ContextFiltersModel)
     logic: str = "and"        # and | or
     cooldown_seconds: int = 3600
     severity: str = "info"    # info | warn | critical
@@ -156,6 +170,7 @@ def get_options(request: Request):
         ],
         "scopes": [
             {"key": "symbols", "label": "指定标的"},
+            {"key": "watchlist", "label": "当前自选股"},
             {"key": "all", "label": "全市场"},
             {"key": "sector", "label": "板块"},
         ],
@@ -211,6 +226,43 @@ def list_rules(request: Request):
     if runtime_warning:
         for rule in intraday_rules:
             rule["runtime_warning"] = runtime_warning
+    context_service = getattr(request.app.state, "monitor_market_context_service", None)
+    context_status = context_service.runtime_status() if context_service is not None else {}
+    for rule in rules:
+        if not rule.get("enabled", True) or rule.get("type") != "strategy":
+            continue
+        filters = rule.get("context_filters") or {}
+        missing: list[str] = []
+        if (
+            (filters.get("overnight_us") or {}).get("mode", "off") != "off"
+            and not (context_status.get("overnight_us") or {}).get("available")
+        ):
+            missing.append("隔夜美股")
+        if (filters.get("news") or {}).get("mode", "off") != "off":
+            news_status = context_status.get("news") or {}
+            if not news_status.get("available") and news_status.get("status") != "no_data":
+                missing.append("新闻")
+        if missing:
+            action = "已暂停入场" if filters.get("unavailable_action") == "pause" else "已降级执行"
+            rule["runtime_warning"] = f"{'、'.join(missing)}数据暂不可用 - {action}"
+    watchlist_rules = [
+        rule for rule in rules
+        if rule.get("enabled", True) and rule.get("scope") == "watchlist"
+    ]
+    if watchlist_rules:
+        try:
+            from app.services import watchlist
+
+            total = len(watchlist.list_symbols())
+            quote_status = request.app.state.quote_service.status()
+            covered = int(quote_status.get("watchlist_symbol_count") or 0)
+            if quote_status.get("mode") == "watchlist" and covered < total:
+                warning = f"当前实时行情覆盖自选股前 {covered}/{total} 只"
+                for rule in watchlist_rules:
+                    prior = str(rule.get("runtime_warning") or "")
+                    rule["runtime_warning"] = f"{prior}; {warning}" if prior else warning
+        except Exception:
+            pass
     sector_service = getattr(request.app.state, "sector_monitor_service", None)
     if sector_service is not None:
         for rule in rules:

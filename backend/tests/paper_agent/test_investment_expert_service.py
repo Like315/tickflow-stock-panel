@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import polars as pl
 
 from app.api.investment_expert import status as investment_expert_status
+from app.data_providers.huggingface_archive import ArchiveCoverage
 from app.market_time import CN_TZ
 from app.paper_agent.execution import StrictMinuteExecutor
 from app.paper_agent.models import ExecutionEvent, PositionLot
@@ -20,6 +21,7 @@ class _Repo:
         self.instruments = pl.DataFrame({
             "symbol": self.symbols,
             "name": [f"Company {index}" for index in range(10)],
+            "industry": ["半导体"] * 5 + ["银行"] * 5,
         })
         rows = []
         for symbol_index, symbol in enumerate(self.symbols):
@@ -118,11 +120,24 @@ class _UsMarketService:
             ],
             "breadth": {"up_ratio": 0.68 if direction > 0 else 0.25,
                         "down_ratio": 0.25 if direction > 0 else 0.68},
+            "sectors": [
+                {"symbol": "XLK.US", "name": "信息技术", "change_pct": 0.02 * direction},
+                {"symbol": "XLF.US", "name": "金融", "change_pct": -0.015 * direction},
+            ],
+            "themes": [
+                {"symbol": "XSD.US", "name": "半导体", "change_pct": 0.03 * direction},
+                {"symbol": "KBE.US", "name": "银行", "change_pct": -0.02 * direction},
+            ],
         }
 
     def get_overview(self) -> dict:
         self.calls += 1
         return self.overview
+
+    @staticmethod
+    def get_proxy_volatilities(symbols: list[str], *, window: int = 20) -> dict[str, float]:
+        assert window == 20
+        return {symbol: 0.02 for symbol in symbols}
 
 
 class _UnavailableUsMarketService:
@@ -284,34 +299,142 @@ def test_session_preparation_records_previous_us_session_factor(tmp_path: Path) 
     assert us_market.calls == 1
     assert context["market_date"] == "2026-08-19"
     assert context["score"] < 0
-    assert all(
-        row["overnight_us_score"] == context["score"]
-        for row in service._candidate_context.values()
-    )
+    assert set(context["modules"]) == {"XLK.US", "XLF.US", "XSD.US", "KBE.US"}
+    semiconductor = service._candidate_context[service.repo.symbols[0]]
+    bank = service._candidate_context[service.repo.symbols[-1]]
+    assert semiconductor["overnight_us_module_symbol"] == "XSD.US"
+    assert semiconductor["overnight_us_factor"] < 0
+    assert bank["overnight_us_module_symbol"] == "KBE.US"
+    assert bank["overnight_us_factor"] > 0
 
 
-def test_overnight_us_direction_changes_candidate_ranking(tmp_path: Path) -> None:
+def test_overnight_us_modules_adjust_only_matching_candidate_ranking(tmp_path: Path) -> None:
     trade_date = date(2026, 8, 20)
     service = InvestmentExpertService(_Repo(trade_date), tmp_path)
+    positive_semiconductors = {
+        "available": True,
+        "score": -0.01,
+        "modules": {
+            "XSD.US": {
+                "symbol": "XSD.US",
+                "name": "半导体",
+                "change_pct": 0.03,
+                "normalized_signal": 1.0,
+                "data_confidence": 1.0,
+            },
+            "KBE.US": {
+                "symbol": "KBE.US",
+                "name": "银行",
+                "change_pct": -0.03,
+                "normalized_signal": -1.0,
+                "data_confidence": 1.0,
+            },
+        },
+    }
+    negative_semiconductors = {
+        **positive_semiconductors,
+        "score": 0.01,
+        "modules": {
+            "XSD.US": {
+                **positive_semiconductors["modules"]["XSD.US"],
+                "change_pct": -0.03,
+                "normalized_signal": -1.0,
+            },
+            "KBE.US": {
+                **positive_semiconductors["modules"]["KBE.US"],
+                "change_pct": 0.03,
+                "normalized_signal": 1.0,
+            },
+        },
+    }
     try:
         risk_on, _ = service._select_candidates(
             trade_date,
             5,
-            overnight_context={"score": 0.02, "tilt": 1.0},
+            overnight_context=positive_semiconductors,
             overnight_weight=0.5,
         )
         risk_off, _ = service._select_candidates(
             trade_date,
             5,
-            overnight_context={"score": -0.02, "tilt": -1.0},
+            overnight_context=negative_semiconductors,
             overnight_weight=0.5,
         )
     finally:
         service.close()
 
     assert risk_on != risk_off
-    assert risk_on[0] == service.repo.symbols[0]
-    assert risk_off[0] == service.repo.symbols[-1]
+    assert set(risk_on) == set(service.repo.symbols[:5])
+    assert set(risk_off) == set(service.repo.symbols[5:])
+
+
+def test_overnight_us_market_background_does_not_change_candidate_ranking(
+    tmp_path: Path,
+) -> None:
+    trade_date = date(2026, 8, 20)
+    service = InvestmentExpertService(_Repo(trade_date), tmp_path)
+    try:
+        positive, _ = service._select_candidates(
+            trade_date,
+            10,
+            overnight_context={"score": 0.04, "tilt": 1.0, "modules": {}},
+            overnight_weight=0.5,
+        )
+        negative, _ = service._select_candidates(
+            trade_date,
+            10,
+            overnight_context={"score": -0.04, "tilt": -1.0, "modules": {}},
+            overnight_weight=0.5,
+        )
+    finally:
+        service.close()
+
+    assert positive == negative
+
+
+def test_overnight_us_module_mapping_uses_a_share_industry_snapshot(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 20)
+    repo = _Repo(trade_date)
+    repo.instruments = repo.instruments.drop("industry")
+    industry_path = tmp_path / "ext_data" / "ext_hy_ths" / "part.parquet"
+    industry_path.parent.mkdir(parents=True)
+    pl.DataFrame({
+        "symbol": repo.symbols,
+        "所属同花顺行业": ["电子-半导体"] * 5 + ["金融-银行"] * 5,
+    }).write_parquet(industry_path)
+    service = InvestmentExpertService(repo, tmp_path)
+    try:
+        factors = service._score_candidate_overnight_modules(
+            {
+                str(row["symbol"]): row
+                for row in repo.instruments.iter_rows(named=True)
+            },
+            {
+                "modules": {
+                    "XSD.US": {
+                        "symbol": "XSD.US",
+                        "name": "半导体",
+                        "change_pct": -0.03,
+                        "normalized_signal": -1.0,
+                        "data_confidence": 1.0,
+                    },
+                    "KBE.US": {
+                        "symbol": "KBE.US",
+                        "name": "银行",
+                        "change_pct": 0.02,
+                        "normalized_signal": 1.0,
+                        "data_confidence": 1.0,
+                    },
+                }
+            },
+        )
+    finally:
+        service.close()
+
+    assert factors[repo.symbols[0]]["symbol"] == "XSD.US"
+    assert factors[repo.symbols[0]]["factor"] == -1.0
+    assert factors[repo.symbols[-1]]["symbol"] == "KBE.US"
+    assert factors[repo.symbols[-1]]["factor"] == 1.0
 
 
 def test_news_sentiment_adds_high_weight_candidate_factor(tmp_path: Path) -> None:
@@ -383,7 +506,9 @@ def test_session_preparation_degrades_without_us_overnight_data(tmp_path: Path) 
         "market_date": None,
         "score": 0.0,
         "tilt": 0.0,
+        "market_background_available": False,
         "benchmarks": {},
+        "modules": {},
     }
     assert all(
         row["overnight_us_available"] is False
@@ -443,7 +568,10 @@ def test_runtime_uses_intraday_endpoint_when_batch_capability_exists(tmp_path: P
     assert provider.calls == []
 
 
-def test_three_year_dataset_is_blocked_for_tickflow_pro(tmp_path: Path, monkeypatch) -> None:
+def test_three_year_dataset_uses_archive_fallback_for_tickflow_pro(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     trade_date = date(2026, 8, 18)
     capset = CapabilitySet({
         Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
@@ -453,17 +581,182 @@ def test_three_year_dataset_is_blocked_for_tickflow_pro(tmp_path: Path, monkeypa
         lambda: "pro",
     )
     service = InvestmentExpertService(_Repo(trade_date), tmp_path, capset=capset)
+    submitted = []
+    monkeypatch.setattr(
+        service._executor_pool,
+        "submit",
+        lambda function, *args: (
+            submitted.append((function, args))
+            or SimpleNamespace(done=lambda: True)
+        ),
+    )
     try:
         result = service.submit_dataset_bootstrap(years=3)
         status = service.status()
     finally:
         service.close()
 
-    assert result["status"] == "blocked"
-    assert "仅覆盖近 1 年" in result["reason"]
+    assert result["status"] == "started"
+    assert submitted[0][1] == (3, 50, True)
     assert status["historical_minute_capable"] is True
-    assert status["historical_minute_three_year_capable"] is False
+    assert status["historical_minute_remote_three_year_capable"] is False
+    assert status["historical_minute_archive_fallback_capable"] is True
+    assert status["historical_minute_three_year_capable"] is True
     assert status["historical_minute_max_years"] == 1
+
+
+def test_three_year_dataset_routes_old_dates_to_archive_and_recent_dates_to_tickflow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 8, 21, 17, 0, tzinfo=CN_TZ)
+    capset = CapabilitySet({
+        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
+    })
+    monkeypatch.setattr(
+        "app.services.investment_expert.base_tier_name",
+        lambda: "pro",
+    )
+    monkeypatch.setattr("app.services.investment_expert.cn_now", lambda: now)
+
+    class Archive:
+        name = "huggingface:test"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def coverage(self):
+            return ArchiveCoverage(date(2010, 1, 4), date(2026, 8, 7))
+
+        def backfill_candidates(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"source": self.name}
+
+    class Builder:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def build(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"manifest_hash": "test"}
+
+    archive = Archive()
+    service = InvestmentExpertService(
+        _Repo(now.date()),
+        tmp_path,
+        capset=capset,
+        historical_minute_archive=archive,
+    )
+    builder = Builder()
+    service.dataset_builder = builder
+    monkeypatch.setattr(service, "_ensure_daily_history", lambda *_args: None)
+    monkeypatch.setattr(
+        service,
+        "_train_model_locked",
+        lambda: {"status": "succeeded"},
+    )
+    try:
+        result = service._run_dataset_bootstrap(3, 50, True)
+    finally:
+        service.close()
+
+    assert result["status"] == "succeeded"
+    assert len(builder.calls) == 2
+    assert builder.calls[0]["download_minutes"] is False
+    assert archive.calls[0]["start_date"] == date(2023, 8, 21)
+    assert archive.calls[0]["end_date"] == date(2025, 8, 20)
+    assert builder.calls[1]["remote_minutes_enabled"] is True
+    assert builder.calls[1]["remote_minute_start_date"] == date(2025, 8, 21)
+    assert builder.calls[1]["fallback_minute_source"] == "huggingface:test"
+
+
+def test_dataset_without_tickflow_minute_capability_uses_archive_latest_date(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 8, 21, 17, 0, tzinfo=CN_TZ)
+    monkeypatch.setattr("app.services.investment_expert.cn_now", lambda: now)
+
+    class Archive:
+        name = "huggingface:test"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def coverage(self):
+            return ArchiveCoverage(date(2010, 1, 4), date(2026, 8, 7))
+
+        def backfill_candidates(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"source": self.name}
+
+    class Builder:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def build(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"manifest_hash": "test"}
+
+    archive = Archive()
+    builder = Builder()
+    service = InvestmentExpertService(
+        _Repo(now.date()),
+        tmp_path,
+        capset=CapabilitySet(),
+        historical_minute_archive=archive,
+    )
+    service.dataset_builder = builder
+    monkeypatch.setattr(service, "_ensure_daily_history", lambda *_args: None)
+    monkeypatch.setattr(
+        service,
+        "_train_model_locked",
+        lambda: {"status": "succeeded"},
+    )
+    try:
+        result = service._run_dataset_bootstrap(3, 50, True)
+    finally:
+        service.close()
+
+    assert result["status"] == "succeeded"
+    assert archive.calls[0]["start_date"] == date(2023, 8, 7)
+    assert archive.calls[0]["end_date"] == date(2026, 8, 7)
+    assert builder.calls[1]["start_date"] == date(2023, 8, 7)
+    assert builder.calls[1]["end_date"] == date(2026, 8, 7)
+    assert builder.calls[1]["remote_minutes_enabled"] is False
+    assert builder.calls[1]["remote_minute_start_date"] is None
+
+
+def test_three_year_dataset_prefers_permitted_tickflow_without_archive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    trade_date = date(2026, 8, 18)
+    capset = CapabilitySet({
+        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
+    })
+    monkeypatch.setattr(
+        "app.services.investment_expert.base_tier_name",
+        lambda: "enterprise",
+    )
+
+    service = InvestmentExpertService(_Repo(trade_date), tmp_path, capset=capset)
+    submitted = []
+    monkeypatch.setattr(
+        service._executor_pool,
+        "submit",
+        lambda function, *args: (
+            submitted.append((function, args))
+            or SimpleNamespace(done=lambda: True)
+        ),
+    )
+    try:
+        result = service.submit_dataset_bootstrap(years=3)
+    finally:
+        service.close()
+
+    assert result["status"] == "started"
+    assert submitted[0][1] == (3, 50, True)
 
 
 def test_status_exposes_position_profit_and_execution_performance(tmp_path: Path) -> None:
@@ -581,3 +874,150 @@ def test_status_uses_live_app_capabilities_after_key_refresh(tmp_path: Path) -> 
 
     assert result["minute_capable"] is True
     assert service.capset is live_capset
+
+
+def test_status_includes_latest_price_for_current_positions(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 18)
+    repo = _Repo(trade_date)
+    service = InvestmentExpertService(repo, tmp_path)
+    lot = PositionLot(
+        lot_id="lot_test",
+        symbol=repo.symbols[0],
+        acquired_date=trade_date,
+        shares=100,
+        remaining_shares=100,
+        entry_price=10.0,
+        entry_cost=5.0,
+    )
+    try:
+        assert service._prepare_session(datetime(2026, 8, 18, 9, 15, tzinfo=CN_TZ))
+        service._executor.lots = [lot]
+        service._executor.last_prices[repo.symbols[0]] = 10.25
+
+        live_result = service.status()
+        service.store.save_portfolio_snapshot(
+            service._session["id"],
+            as_of=datetime(2026, 8, 18, 9, 16, tzinfo=CN_TZ),
+            cash=service._executor.cash,
+            equity=service._executor.equity(),
+            payload={
+                "lots": [lot.model_dump(mode="json")],
+                "last_prices": {repo.symbols[0]: 10.25},
+                "executor_state": {"pending": []},
+            },
+        )
+        service._executor = None
+        snapshot_result = service.status()
+    finally:
+        service.close()
+
+    assert live_result["positions"][0]["market_price"] == 10.25
+    assert snapshot_result["positions"][0]["market_price"] == 10.25
+
+
+def test_stock_portfolio_sync_replaces_positions_and_rebases_account(
+    tmp_path: Path,
+) -> None:
+    trade_date = date(2026, 8, 21)
+
+    class StockPortfolio:
+        @staticmethod
+        def get_portfolio() -> dict:
+            return {
+                "updated_at": "2026-08-20T01:00:00+00:00",
+                "positions": [{
+                    "symbol": "600000.SH",
+                    "name": "浦发银行",
+                    "buy_price": 10.0,
+                    "quantity": 10_000.0,
+                    "current_price": 11.0,
+                    "created_at": "2026-08-19T01:00:00+00:00",
+                }],
+            }
+
+    service = InvestmentExpertService(
+        _Repo(trade_date),
+        tmp_path,
+        stock_portfolio_service=StockPortfolio(),
+    )
+    previous = StrictMinuteExecutor(service.constitution)
+    previous.cash = 123_456.0
+    previous.lots = [PositionLot(
+        lot_id="old_lot",
+        symbol="000001.SZ",
+        acquired_date=date(2026, 8, 18),
+        shares=1_000,
+        remaining_shares=1_000,
+        entry_price=9.0,
+        entry_cost=0.0,
+    )]
+    service._executor = previous
+    try:
+        preview = service.stock_portfolio_sync_preview()
+        result = service.sync_stock_portfolio(
+            confirm_replace=True,
+        )
+        restored = service._restore_executor()
+        prepared = service._prepare_session(
+            datetime(2026, 8, 21, 9, 15, tzinfo=CN_TZ)
+        )
+        status = service.status()
+    finally:
+        service.close()
+
+    assert preview["can_sync"] is True
+    assert preview["replace_position_count"] == 1
+    assert preview["current_available_cash"] == 123_456.0
+    assert result["status"] == "succeeded"
+    assert result["sync"]["position_count"] == 1
+    assert restored.cash == 0.0
+    assert restored.pending == {}
+    assert restored.last_prices == {"600000.SH": 11.0}
+    assert [lot.symbol for lot in restored.lots] == ["600000.SH"]
+    assert prepared is True
+    assert "600000.SH" in service._market_symbols
+    assert service._equity_peak == 110_000.0
+    assert status["portfolio_sync"]["source"] == "stock_portfolio"
+    assert status["portfolio_baseline_equity"] == 110_000.0
+    assert status["performance"]["total_pnl"] == 0.0
+    assert [position["symbol"] for position in status["positions"]] == ["600000.SH"]
+
+
+def test_stock_portfolio_sync_requires_stopped_runtime(tmp_path: Path) -> None:
+    class StockPortfolio:
+        @staticmethod
+        def get_portfolio() -> dict:
+            return {
+                "updated_at": None,
+                "positions": [{
+                    "symbol": "600000.SH",
+                    "name": "浦发银行",
+                    "buy_price": 10.0,
+                    "quantity": 1_000.0,
+                    "current_price": 10.0,
+                    "created_at": "2026-08-19T01:00:00+00:00",
+                }],
+            }
+
+    service = InvestmentExpertService(
+        _Repo(date(2026, 8, 21)),
+        tmp_path,
+        stock_portfolio_service=StockPortfolio(),
+    )
+    original_thread = service._poll_thread
+    service._poll_thread = SimpleNamespace(is_alive=lambda: True)
+    try:
+        preview = service.stock_portfolio_sync_preview()
+        try:
+            service.sync_stock_portfolio(confirm_replace=True)
+        except RuntimeError as exc:
+            error = str(exc)
+        else:
+            raise AssertionError("running portfolio sync should be rejected")
+    finally:
+        service._poll_thread = original_thread
+        service.close()
+
+    assert preview["can_sync"] is False
+    assert preview["blocked_reason"] == "runtime_running"
+    assert "停止" in error
