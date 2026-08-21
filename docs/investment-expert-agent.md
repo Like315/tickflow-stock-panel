@@ -131,11 +131,14 @@ Tushare 历史分钟数据仅限策略研究和学习使用。长区间按 20 �
 | POST | `/api/investment-expert/evolution/run` | 发起一次单变量策略进化实验 |
 | GET | `/api/investment-expert/sessions` | 查询模拟盘会话 |
 | GET | `/api/investment-expert/events` | 查询撮合与风控审计事件 |
+| GET | `/api/investment-expert/trades` | 查询历史成交；卖出记录按标的和 T+1 规则 FIFO 配对买入记录 |
 | GET | `/api/investment-expert/policies` | 查询不可变策略版本 |
 | GET | `/api/investment-expert/models` | 查询不可变模型版本 |
 | GET | `/api/investment-expert/experiments` | 查询进化实验与门控结果 |
 
 这些接口沿用项目现有认证；普通成员默认不能访问新增的管理路径。
+
+历史成交接口保留逐笔成交字段，并为卖出记录补充 `entry_price`、`exit_price`、买卖费用、扣费前后盈亏与收益率。`pnl_reason` 区分价格上涨覆盖成本、上涨但不足以覆盖成本、价格下跌并叠加成本、价格持平但被成本拖累等情况；买入和卖出的决策理由也会分别返回，供控制台解释为什么选股以及为什么退出。
 
 ## 运维注意事项
 

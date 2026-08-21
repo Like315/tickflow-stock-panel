@@ -36,11 +36,11 @@ def test_start_dev_delegates_to_supported_launcher() -> None:
     assert 'exec "$REPOSITORY_ROOT/dev.sh"' in content
 
 
-def test_generated_output_directory_is_ignored() -> None:
-    """本地生成的研究产物目录不得继续进入 Git。"""
+def test_output_directory_remains_versioned() -> None:
+    """用户要求保留的 output 目录不得被仓库级忽略规则排除。"""
     patterns = (REPOSITORY_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
 
-    assert "/output/" in patterns
+    assert "/output/" not in patterns
 
 
 def test_ruff_allows_chinese_documentation_punctuation() -> None:

@@ -608,7 +608,7 @@ class PaperAgentStore:
         return [json.loads(row["payload_json"]) for row in rows]
 
     def list_trade_history(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        """Return persisted fills with the decision snapshot that created each order."""
+        """Return fills enriched with FIFO entry cost and after-cost P&L attribution."""
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
@@ -631,40 +631,133 @@ class PaperAgentStore:
                     ON e.order_id = 'order_' || d.id
                     AND d.session_id = e.session_id
                 WHERE e.event_type IN ('order_filled', 'order_partially_filled')
-                ORDER BY e.occurred_at DESC, e.rowid DESC
-                LIMIT ?
+                ORDER BY e.occurred_at ASC, e.rowid ASC
                 """,
-                (min(max(limit, 1), 500),),
             ).fetchall()
 
+        open_fills: dict[str, list[dict[str, Any]]] = {}
         history: list[dict[str, Any]] = []
         for row in rows:
             payload = json.loads(row["payload_json"])
-            history.append(
-                {
-                    "id": payload.get("id"),
-                    "session_id": row["session_id"],
-                    "trade_date": row["trade_date"],
-                    "order_id": row["order_id"],
-                    "symbol": row["symbol"],
-                    "side": payload.get("side"),
-                    "occurred_at": row["occurred_at"],
-                    "fill_status": row["event_type"],
-                    "shares": int(payload.get("shares") or 0),
-                    "price": payload.get("price"),
-                    "fees": float(payload.get("fees") or 0.0),
-                    "realized_pnl": payload.get("realized_pnl"),
-                    "execution_reason": payload.get("reason"),
-                    "decision_id": row["decision_id"],
-                    "decision_time": row["decision_time"],
-                    "decision_action": row["decision_action"],
-                    "decision_reason": row["decision_reason"],
-                    "decision_features": (
-                        json.loads(row["feature_json"]) if row["feature_json"] else None
-                    ),
-                }
+            decision_features = json.loads(row["feature_json"]) if row["feature_json"] else None
+            side = payload.get("side")
+            symbol = str(row["symbol"] or payload.get("symbol") or "")
+            shares = int(payload.get("shares") or 0)
+            fill_price = float(payload["price"]) if payload.get("price") is not None else None
+            fees = float(payload.get("fees") or 0.0)
+            realized_pnl = (
+                float(payload["realized_pnl"]) if payload.get("realized_pnl") is not None else None
             )
-        return history
+            item = {
+                "id": payload.get("id"),
+                "session_id": row["session_id"],
+                "trade_date": row["trade_date"],
+                "order_id": row["order_id"],
+                "symbol": symbol,
+                "side": side,
+                "occurred_at": row["occurred_at"],
+                "fill_status": row["event_type"],
+                "shares": shares,
+                "price": fill_price,
+                "fees": fees,
+                "realized_pnl": realized_pnl,
+                "execution_reason": payload.get("reason"),
+                "decision_id": row["decision_id"],
+                "decision_time": row["decision_time"],
+                "decision_action": row["decision_action"],
+                "decision_reason": row["decision_reason"],
+                "decision_features": decision_features,
+                "entry_time": row["occurred_at"] if side == "buy" else None,
+                "entry_price": fill_price if side == "buy" else None,
+                "exit_price": fill_price if side == "sell" else None,
+                "entry_fees": fees if side == "buy" else None,
+                "exit_fees": fees if side == "sell" else None,
+                "total_fees": fees if side == "buy" else None,
+                "gross_pnl": None,
+                "price_change_pct": None,
+                "realized_pnl_pct": None,
+                "pnl_reason": None,
+                "entry_decision_reason": row["decision_reason"] if side == "buy" else None,
+                "entry_decision_features": decision_features if side == "buy" else None,
+                "exit_decision_reason": row["decision_reason"] if side == "sell" else None,
+            }
+
+            if side == "buy" and shares > 0 and fill_price is not None:
+                open_fills.setdefault(symbol, []).append(
+                    {
+                        "remaining_shares": shares,
+                        "shares": shares,
+                        "price": fill_price,
+                        "fees": fees,
+                        "occurred_at": row["occurred_at"],
+                        "acquired_date": datetime.fromisoformat(row["occurred_at"]).date(),
+                        "decision_reason": row["decision_reason"],
+                        "decision_features": decision_features,
+                    }
+                )
+            elif side == "sell" and shares > 0 and fill_price is not None:
+                remaining = shares
+                matched_shares = 0
+                entry_notional = 0.0
+                entry_fees = 0.0
+                first_entry: dict[str, Any] | None = None
+                sell_date = datetime.fromisoformat(row["occurred_at"]).date()
+                queue = open_fills.setdefault(symbol, [])
+                for entry in queue:
+                    if remaining <= 0:
+                        break
+                    if entry["remaining_shares"] <= 0 or entry["acquired_date"] >= sell_date:
+                        continue
+                    taken = min(int(entry["remaining_shares"]), remaining)
+                    if first_entry is None:
+                        first_entry = entry
+                    entry_notional += taken * float(entry["price"])
+                    entry_fees += float(entry["fees"]) * taken / int(entry["shares"])
+                    entry["remaining_shares"] -= taken
+                    matched_shares += taken
+                    remaining -= taken
+                open_fills[symbol] = [entry for entry in queue if entry["remaining_shares"] > 0]
+
+                if matched_shares == shares and first_entry is not None:
+                    entry_price = entry_notional / shares
+                    cost_basis = entry_notional + entry_fees
+                    gross_pnl = (fill_price - entry_price) * shares
+                    net_pnl = realized_pnl
+                    if net_pnl is None:
+                        net_pnl = gross_pnl - entry_fees - fees
+                        item["realized_pnl"] = round(net_pnl, 2)
+                    item.update(
+                        {
+                            "entry_time": first_entry["occurred_at"],
+                            "entry_price": round(entry_price, 4),
+                            "entry_fees": round(entry_fees, 2),
+                            "total_fees": round(entry_fees + fees, 2),
+                            "gross_pnl": round(gross_pnl, 2),
+                            "price_change_pct": round(fill_price / entry_price - 1, 6),
+                            "realized_pnl_pct": (
+                                round(net_pnl / cost_basis, 6) if cost_basis > 0 else None
+                            ),
+                            "pnl_reason": self._pnl_reason(entry_price, fill_price, net_pnl),
+                            "entry_decision_reason": first_entry["decision_reason"],
+                            "entry_decision_features": first_entry["decision_features"],
+                        }
+                    )
+                else:
+                    item["pnl_reason"] = "missing_entry_match"
+            history.append(item)
+        return list(reversed(history))[: min(max(limit, 1), 500)]
+
+    @staticmethod
+    def _pnl_reason(entry_price: float, exit_price: float, net_pnl: float) -> str:
+        if abs(net_pnl) < 0.005:
+            return "breakeven_after_costs"
+        if net_pnl > 0:
+            return "price_gain_after_costs"
+        if exit_price > entry_price:
+            return "costs_exceeded_price_gain"
+        if exit_price < entry_price:
+            return "price_loss_and_costs"
+        return "costs_caused_loss"
 
     def execution_statistics(self) -> dict[str, Any]:
         """Aggregate persisted fills without rescanning them on every status poll."""
