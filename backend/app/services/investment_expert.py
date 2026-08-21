@@ -9,6 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import polars as pl
 
@@ -75,6 +76,7 @@ class InvestmentExpertService:
         screener_service=None,
         us_market_service=None,
         news_sentiment_service=None,
+        stock_portfolio_service=None,
         historical_minute_archive=None,
         trading_day_checker: Callable[[date], bool] = is_cn_trading_day,
     ) -> None:
@@ -85,6 +87,7 @@ class InvestmentExpertService:
         self.screener_service = screener_service
         self.us_market_service = us_market_service
         self.news_sentiment_service = news_sentiment_service
+        self.stock_portfolio_service = stock_portfolio_service
         self.historical_minute_archive = (
             historical_minute_archive
             or HuggingFaceAshareMinuteArchive(data_dir)
@@ -432,9 +435,13 @@ class InvestmentExpertService:
         self._last_processed_bar = None
         self._finalized_date = None
         self._session_start_equity = executor.equity()
+        latest_sync = self.store.latest_portfolio_sync()
+        sync_created_at = latest_sync["created_at"] if latest_sync else None
+        synced_equity = float(latest_sync["equity"]) if latest_sync else executor.equity()
         self._equity_peak = max(
             executor.equity(),
-            self.store.portfolio_peak_equity() or executor.equity(),
+            synced_equity,
+            self.store.portfolio_peak_equity(since=sync_created_at) or executor.equity(),
         )
         self._risk_trip_reason = None
         return True
@@ -674,7 +681,7 @@ class InvestmentExpertService:
 
     def _restore_executor(self) -> StrictMinuteExecutor:
         executor = StrictMinuteExecutor(self.constitution)
-        snapshot = self.store.latest_portfolio_snapshot()
+        snapshot = self.store.latest_portfolio_state()
         if not snapshot:
             return executor
         executor.cash = float(snapshot["cash"])
@@ -688,6 +695,215 @@ class InvestmentExpertService:
             for symbol, value in (payload.get("last_prices") or {}).items()
         }
         return executor
+
+    @staticmethod
+    def _synced_acquired_date(position: dict[str, Any], today: date) -> date:
+        value = position.get("created_at") or position.get("updated_at")
+        if not value:
+            return today
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return today
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(CN_TZ)
+        return min(parsed.date(), today)
+
+    def stock_portfolio_sync_preview(self) -> dict[str, Any]:
+        if self.stock_portfolio_service is None:
+            return {
+                "can_sync": False,
+                "blocked_reason": "stock_portfolio_service_unavailable",
+                "positions": [],
+                "errors": ["股票持仓服务尚未初始化"],
+                "warnings": [],
+            }
+        source = self.stock_portfolio_service.get_portfolio()
+        today = cn_now().date()
+        positions: list[dict[str, Any]] = []
+        errors: list[str] = []
+        warnings: list[str] = []
+        for raw in source.get("positions") or []:
+            symbol = str(raw.get("symbol") or "").strip().upper()
+            name = str(raw.get("name") or "").strip()
+            try:
+                quantity_value = float(raw.get("quantity"))
+                entry_price = float(raw.get("buy_price"))
+            except (TypeError, ValueError):
+                errors.append(f"{name or symbol or '未知股票'} 的数量或成本价无效")
+                continue
+            quantity = round(quantity_value)
+            if (
+                not symbol
+                or quantity <= 0
+                or not math.isclose(quantity_value, quantity, abs_tol=1e-6)
+                or entry_price <= 0
+            ):
+                errors.append(f"{name or symbol or '未知股票'} 的持仓数据不完整")
+                continue
+            if quantity % self.constitution.lot_size != 0:
+                errors.append(
+                    f"{name or symbol} 的数量不是 {self.constitution.lot_size} 股整数倍"
+                )
+                continue
+            current_price_value = raw.get("current_price")
+            try:
+                current_price = (
+                    float(current_price_value)
+                    if current_price_value is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                current_price = None
+            if current_price is None or current_price <= 0:
+                current_price = entry_price
+                warnings.append(f"{name or symbol} 缺少最新价, 暂以成本价建立同步基线")
+            positions.append({
+                "symbol": symbol,
+                "name": name,
+                "quantity": quantity,
+                "entry_price": entry_price,
+                "current_price": current_price,
+                "acquired_date": self._synced_acquired_date(raw, today).isoformat(),
+                "cost_amount": round(entry_price * quantity, 2),
+                "market_value": round(current_price * quantity, 2),
+            })
+
+        executor = self._executor or self._restore_executor()
+        future = self._active_future
+        running = bool(self._poll_thread and self._poll_thread.is_alive())
+        busy = bool(future is not None and not future.done())
+        blocked_reason = None
+        if running:
+            blocked_reason = "runtime_running"
+        elif busy:
+            blocked_reason = "background_task_running"
+        elif errors:
+            blocked_reason = "invalid_source_positions"
+        elif not positions:
+            blocked_reason = "source_portfolio_empty"
+        return {
+            "can_sync": blocked_reason is None,
+            "blocked_reason": blocked_reason,
+            "source": "stock_portfolio",
+            "source_updated_at": source.get("updated_at"),
+            "positions": positions,
+            "position_count": len(positions),
+            "source_total_cost_amount": round(
+                sum(item["cost_amount"] for item in positions),
+                2,
+            ),
+            "source_total_market_value": round(
+                sum(item["market_value"] for item in positions),
+                2,
+            ),
+            "replace_position_count": len([
+                lot for lot in executor.lots if lot.remaining_shares > 0
+            ]),
+            "current_available_cash": round(float(executor.cash), 2),
+            "errors": errors,
+            "warnings": warnings,
+        }
+
+    def sync_stock_portfolio(
+        self,
+        *,
+        confirm_replace: bool,
+        available_cash: float | None = None,
+    ) -> dict[str, Any]:
+        if not confirm_replace:
+            raise ValueError("同步会覆盖 AI 当前持仓, 必须明确确认")
+        if available_cash is not None and (
+            not math.isfinite(available_cash) or available_cash < 0
+        ):
+            raise ValueError("可用现金必须是大于或等于 0 的有效数字")
+        if not self._operation_lock.acquire(blocking=False):
+            raise RuntimeError("AI 投资专家正在执行其他任务, 请稍后重试")
+        try:
+            preview = self.stock_portfolio_sync_preview()
+            if not preview.get("can_sync"):
+                reason = preview.get("blocked_reason")
+                messages = {
+                    "runtime_running": "请先停止 AI 投资专家盯盘, 再同步持仓",
+                    "background_task_running": "后台任务进行中, 请完成后再同步持仓",
+                    "source_portfolio_empty": "股票持仓为空, 无法同步",
+                    "invalid_source_positions": "股票持仓包含无法同步的数据",
+                    "stock_portfolio_service_unavailable": "股票持仓服务尚未初始化",
+                }
+                detail = messages.get(str(reason), "当前无法同步股票持仓")
+                if preview.get("errors"):
+                    detail += f": {'; '.join(preview['errors'])}"
+                raise RuntimeError(detail)
+
+            cash = (
+                0.0 if available_cash is None else float(available_cash)
+            )
+            lots = [
+                PositionLot(
+                    lot_id=f"synced_{uuid4().hex}",
+                    symbol=str(item["symbol"]),
+                    acquired_date=date.fromisoformat(str(item["acquired_date"])),
+                    shares=int(item["quantity"]),
+                    remaining_shares=int(item["quantity"]),
+                    entry_price=float(item["entry_price"]),
+                    entry_cost=0.0,
+                )
+                for item in preview["positions"]
+            ]
+            last_prices = {
+                str(item["symbol"]): float(item["current_price"])
+                for item in preview["positions"]
+            }
+            executor = StrictMinuteExecutor(self.constitution)
+            executor.cash = cash
+            executor.lots = lots
+            executor.last_prices = last_prices
+            equity = executor.equity()
+            payload = {
+                "source": "stock_portfolio",
+                "source_updated_at": preview.get("source_updated_at"),
+                "position_count": len(lots),
+                "replaced_position_count": preview["replace_position_count"],
+                "cash_source": (
+                    "not_provided" if available_cash is None else "user_input"
+                ),
+                "baseline_equity": equity,
+                "lots": [lot.model_dump(mode="json") for lot in lots],
+                "last_prices": last_prices,
+                "executor_state": executor.export_state(),
+            }
+            event = self.store.save_portfolio_sync(
+                source="stock_portfolio",
+                mode="replace",
+                cash=cash,
+                equity=equity,
+                payload=payload,
+            )
+            self._executor = None
+            self._runtime = None
+            self._session = None
+            self._candidates = []
+            self._market_symbols = []
+            self._candidate_context = {}
+            self._last_processed_bar = None
+            self._next_fetch_at = None
+            self._risk_trip_reason = None
+            self._last_error = None
+            return {
+                "status": "succeeded",
+                "sync": {
+                    "id": event["id"],
+                    "source": event["source"],
+                    "mode": event["mode"],
+                    "created_at": event["created_at"],
+                    "position_count": len(lots),
+                    "cash": round(cash, 2),
+                    "equity": round(equity, 2),
+                    "payload_hash": event["payload_hash"],
+                },
+            }
+        finally:
+            self._operation_lock.release()
 
     @staticmethod
     def _canonical_cn_symbol(symbol: str) -> str:
@@ -1792,7 +2008,8 @@ class InvestmentExpertService:
             self._refresh_historical_minute_provider()
         base = self.store.status()
         executor = self._executor
-        snapshot = self.store.latest_portfolio_snapshot()
+        snapshot = self.store.latest_portfolio_state()
+        latest_portfolio_sync = self.store.latest_portfolio_sync()
         snapshot_payload = (snapshot or {}).get("payload") or {}
         snapshot_executor_state = snapshot_payload.get("executor_state") or {}
         if executor is not None:
@@ -1826,8 +2043,17 @@ class InvestmentExpertService:
             last_prices,
         )
         execution_statistics = self.store.execution_statistics()
-        total_pnl = round(equity - self.constitution.initial_capital, 2)
-        total_return = total_pnl / self.constitution.initial_capital
+        portfolio_baseline_equity = (
+            float(latest_portfolio_sync["equity"])
+            if latest_portfolio_sync is not None
+            else self.constitution.initial_capital
+        )
+        total_pnl = round(equity - portfolio_baseline_equity, 2)
+        total_return = (
+            total_pnl / portfolio_baseline_equity
+            if portfolio_baseline_equity > 0
+            else 0.0
+        )
         valuation_as_of = (
             snapshot.get("as_of") if snapshot
             else self._last_processed_bar.isoformat() if self._last_processed_bar else None
@@ -1873,6 +2099,28 @@ class InvestmentExpertService:
             "equity": equity,
             "positions": positions,
             "performance": performance,
+            "portfolio_baseline_equity": round(portfolio_baseline_equity, 2),
+            "portfolio_sync": (
+                {
+                    "id": latest_portfolio_sync["id"],
+                    "source": latest_portfolio_sync["source"],
+                    "mode": latest_portfolio_sync["mode"],
+                    "created_at": latest_portfolio_sync["created_at"],
+                    "source_updated_at": (
+                        latest_portfolio_sync.get("payload") or {}
+                    ).get("source_updated_at"),
+                    "position_count": int(
+                        (latest_portfolio_sync.get("payload") or {}).get(
+                            "position_count",
+                            0,
+                        )
+                    ),
+                    "cash": round(float(latest_portfolio_sync["cash"]), 2),
+                    "equity": round(float(latest_portfolio_sync["equity"]), 2),
+                }
+                if latest_portfolio_sync is not None
+                else None
+            ),
             "pending_order_count": pending_order_count,
             "entries_enabled": bool(
                 self._runtime is None or self._runtime.entries_enabled

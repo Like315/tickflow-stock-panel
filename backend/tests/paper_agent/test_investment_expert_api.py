@@ -35,3 +35,62 @@ def test_trade_history_api_forwards_validated_limit() -> None:
     }
     assert store.limits == [25]
     assert client.get("/api/investment-expert/trades?limit=0").status_code == 422
+
+
+def test_portfolio_sync_preview_and_confirmation_api() -> None:
+    class Service:
+        def __init__(self) -> None:
+            self.calls = []
+
+        @staticmethod
+        def stock_portfolio_sync_preview() -> dict:
+            return {
+                "can_sync": True,
+                "positions": [{"symbol": "600000.SH", "quantity": 1_000}],
+            }
+
+        def sync_stock_portfolio(self, **kwargs) -> dict:
+            self.calls.append(kwargs)
+            return {"status": "succeeded", "sync": {"position_count": 1}}
+
+    service = Service()
+    app = FastAPI()
+    app.state.investment_expert_service = service
+    app.include_router(router)
+    client = TestClient(app)
+
+    preview = client.get("/api/investment-expert/portfolio-sync/preview")
+    response = client.post(
+        "/api/investment-expert/portfolio-sync",
+        json={"confirm_replace": True, "available_cash": 88_888.0},
+    )
+
+    assert preview.status_code == 200
+    assert preview.json()["positions"][0]["symbol"] == "600000.SH"
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert service.calls == [{"confirm_replace": True, "available_cash": 88_888.0}]
+    assert client.post(
+        "/api/investment-expert/portfolio-sync",
+        json={"confirm_replace": True, "available_cash": -1},
+    ).status_code == 422
+
+
+def test_portfolio_sync_api_maps_conflicts() -> None:
+    class Service:
+        @staticmethod
+        def sync_stock_portfolio(**_kwargs) -> dict:
+            raise RuntimeError("请先停止 AI 投资专家盯盘")
+
+    app = FastAPI()
+    app.state.investment_expert_service = Service()
+    app.include_router(router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/investment-expert/portfolio-sync",
+        json={"confirm_replace": True},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "请先停止 AI 投资专家盯盘"

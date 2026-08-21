@@ -81,6 +81,57 @@ def test_session_and_execution_events_are_append_only(tmp_path) -> None:
     assert len(store.list_execution_events(session_id=session["id"])) == 1
 
 
+def test_portfolio_sync_is_audited_and_replaces_the_restore_state(tmp_path) -> None:
+    store = PaperAgentStore(tmp_path)
+    policy = store.ensure_baseline_policy()
+    session = store.start_session(
+        date(2026, 8, 20),
+        policy.id,
+        mode="paper",
+        candidates=["600000.SH"],
+    )
+    store.save_portfolio_snapshot(
+        session["id"],
+        as_of=datetime(2026, 8, 20, 15, 1, tzinfo=UTC),
+        cash=900_000,
+        equity=1_000_000,
+        payload={"executor_state": {"cash": 900_000, "lots": [], "pending": []}},
+    )
+    payload = {
+        "source": "stock_portfolio",
+        "position_count": 1,
+        "executor_state": {
+            "cash": 123_456,
+            "lots": [{
+                "lot_id": "synced_1",
+                "symbol": "600000.SH",
+                "acquired_date": "2026-08-19",
+                "shares": 10_000,
+                "remaining_shares": 10_000,
+                "entry_price": 10.0,
+                "entry_cost": 0.0,
+            }],
+            "last_prices": {"600000.SH": 11.0},
+            "pending": [],
+        },
+    }
+
+    event = store.save_portfolio_sync(
+        source="stock_portfolio",
+        mode="replace",
+        cash=123_456,
+        equity=233_456,
+        payload=payload,
+    )
+
+    state = store.latest_portfolio_state()
+    assert state is not None
+    assert state["id"] == event["id"]
+    assert state["state_source"] == "stock_portfolio_sync"
+    assert state["payload"] == payload
+    assert store.portfolio_peak_equity(since=event["created_at"]) is None
+
+
 def test_trade_history_joins_fill_to_recorded_decision_reason(tmp_path) -> None:
     store = PaperAgentStore(tmp_path)
     policy = store.ensure_baseline_policy()

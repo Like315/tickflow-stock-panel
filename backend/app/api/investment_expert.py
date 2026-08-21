@@ -1,7 +1,7 @@
 """Investment expert paper-agent API."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/investment-expert", tags=["investment-expert"])
@@ -19,6 +19,11 @@ class DatasetBootstrapRequest(BaseModel):
     years: int = Field(default=3, ge=1, le=5)
     candidate_limit: int = Field(default=50, ge=5, le=200)
     download_minutes: bool = True
+
+
+class PortfolioSyncRequest(BaseModel):
+    confirm_replace: bool = False
+    available_cash: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 @router.get("/status")
@@ -39,6 +44,24 @@ def stop_runtime(request: Request) -> dict:
 @router.post("/runtime/tick")
 def run_runtime_once(request: Request) -> dict:
     return _service(request).run_paper_cycle_once()
+
+
+@router.get("/portfolio-sync/preview")
+def portfolio_sync_preview(request: Request) -> dict:
+    return _service(request).stock_portfolio_sync_preview()
+
+
+@router.post("/portfolio-sync")
+def sync_portfolio(request: Request, payload: PortfolioSyncRequest) -> dict:
+    try:
+        return _service(request).sync_stock_portfolio(
+            confirm_replace=payload.confirm_replace,
+            available_cash=payload.available_cash,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/dataset/bootstrap")

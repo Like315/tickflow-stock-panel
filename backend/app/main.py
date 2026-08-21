@@ -207,6 +207,7 @@ async def lifespan(app: FastAPI):
         screener_service=_screener_svc,
         us_market_service=app.state.us_market_overview_service,
         news_sentiment_service=NewsSentimentService(),
+        stock_portfolio_service=app.state.stock_portfolio_service,
     )
     app.state.investment_expert_service = investment_expert_service
     investment_expert_service.boot_check()

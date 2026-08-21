@@ -913,3 +913,111 @@ def test_status_includes_latest_price_for_current_positions(tmp_path: Path) -> N
 
     assert live_result["positions"][0]["market_price"] == 10.25
     assert snapshot_result["positions"][0]["market_price"] == 10.25
+
+
+def test_stock_portfolio_sync_replaces_positions_and_rebases_account(
+    tmp_path: Path,
+) -> None:
+    trade_date = date(2026, 8, 21)
+
+    class StockPortfolio:
+        @staticmethod
+        def get_portfolio() -> dict:
+            return {
+                "updated_at": "2026-08-20T01:00:00+00:00",
+                "positions": [{
+                    "symbol": "600000.SH",
+                    "name": "浦发银行",
+                    "buy_price": 10.0,
+                    "quantity": 10_000.0,
+                    "current_price": 11.0,
+                    "created_at": "2026-08-19T01:00:00+00:00",
+                }],
+            }
+
+    service = InvestmentExpertService(
+        _Repo(trade_date),
+        tmp_path,
+        stock_portfolio_service=StockPortfolio(),
+    )
+    previous = StrictMinuteExecutor(service.constitution)
+    previous.cash = 123_456.0
+    previous.lots = [PositionLot(
+        lot_id="old_lot",
+        symbol="000001.SZ",
+        acquired_date=date(2026, 8, 18),
+        shares=1_000,
+        remaining_shares=1_000,
+        entry_price=9.0,
+        entry_cost=0.0,
+    )]
+    service._executor = previous
+    try:
+        preview = service.stock_portfolio_sync_preview()
+        result = service.sync_stock_portfolio(
+            confirm_replace=True,
+        )
+        restored = service._restore_executor()
+        prepared = service._prepare_session(
+            datetime(2026, 8, 21, 9, 15, tzinfo=CN_TZ)
+        )
+        status = service.status()
+    finally:
+        service.close()
+
+    assert preview["can_sync"] is True
+    assert preview["replace_position_count"] == 1
+    assert preview["current_available_cash"] == 123_456.0
+    assert result["status"] == "succeeded"
+    assert result["sync"]["position_count"] == 1
+    assert restored.cash == 0.0
+    assert restored.pending == {}
+    assert restored.last_prices == {"600000.SH": 11.0}
+    assert [lot.symbol for lot in restored.lots] == ["600000.SH"]
+    assert prepared is True
+    assert "600000.SH" in service._market_symbols
+    assert service._equity_peak == 110_000.0
+    assert status["portfolio_sync"]["source"] == "stock_portfolio"
+    assert status["portfolio_baseline_equity"] == 110_000.0
+    assert status["performance"]["total_pnl"] == 0.0
+    assert [position["symbol"] for position in status["positions"]] == ["600000.SH"]
+
+
+def test_stock_portfolio_sync_requires_stopped_runtime(tmp_path: Path) -> None:
+    class StockPortfolio:
+        @staticmethod
+        def get_portfolio() -> dict:
+            return {
+                "updated_at": None,
+                "positions": [{
+                    "symbol": "600000.SH",
+                    "name": "浦发银行",
+                    "buy_price": 10.0,
+                    "quantity": 1_000.0,
+                    "current_price": 10.0,
+                    "created_at": "2026-08-19T01:00:00+00:00",
+                }],
+            }
+
+    service = InvestmentExpertService(
+        _Repo(date(2026, 8, 21)),
+        tmp_path,
+        stock_portfolio_service=StockPortfolio(),
+    )
+    original_thread = service._poll_thread
+    service._poll_thread = SimpleNamespace(is_alive=lambda: True)
+    try:
+        preview = service.stock_portfolio_sync_preview()
+        try:
+            service.sync_stock_portfolio(confirm_replace=True)
+        except RuntimeError as exc:
+            error = str(exc)
+        else:
+            raise AssertionError("running portfolio sync should be rejected")
+    finally:
+        service._poll_thread = original_thread
+        service.close()
+
+    assert preview["can_sync"] is False
+    assert preview["blocked_reason"] == "runtime_running"
+    assert "停止" in error
