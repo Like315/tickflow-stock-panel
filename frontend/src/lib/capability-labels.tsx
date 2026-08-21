@@ -64,9 +64,9 @@ const TIER_STYLE: Record<string, TierStyle> = {
   },
   expert: {
     desc: 'WebSocket · 财务数据',
-    tagBg: { background: 'linear-gradient(135deg, rgba(59,130,246,0.2), rgba(168,85,247,0.2), rgba(245,158,11,0.2))' },
-    dotStyle: { background: 'linear-gradient(135deg, #3b82f6, #a855f7, #f59e0b)' },
-    labelTextStyle: { background: 'linear-gradient(135deg, #60a5fa, #c084fc, #fbbf24)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' },
+    tagBg: { background: 'linear-gradient(135deg, rgba(59,130,246,0.2), rgba(168,85,247,0.2), hsl(var(--warning) / 0.2))' },
+    dotStyle: { background: 'linear-gradient(135deg, #3b82f6, #a855f7, hsl(var(--warning)))' },
+    labelTextStyle: { background: 'linear-gradient(135deg, #60a5fa, #c084fc, hsl(var(--warning)))', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' },
   },
 }
 
