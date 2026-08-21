@@ -87,11 +87,15 @@ def test_chronological_model_training_and_immutable_promotion(tmp_path: Path) ->
 
     store = PaperAgentStore(tmp_path)
     store.save_model(model)
+    assert store.status()["model_runtime_status"] == "not_activated"
     store.promote_model(model.id, reason="test gate", metrics=model.metrics)
     assert store.get_active_model() == model
+    assert store.status()["model_runtime_status"] == "active"
     assert store.rollback_last_model_promotion(reason="first model loss", metrics={}) is not None
     assert store.get_active_model() is None
+    assert store.status()["model_runtime_status"] == "disabled"
     store.promote_model(model.id, reason="revalidated", metrics=model.metrics)
+    assert store.status()["model_runtime_status"] == "active"
     second = model.model_copy(update={"id": "model_v2", "version": 2})
     store.save_model(second)
     store.promote_model(second.id, reason="better", metrics=second.metrics)

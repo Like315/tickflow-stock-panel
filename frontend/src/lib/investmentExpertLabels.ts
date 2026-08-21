@@ -2,7 +2,7 @@ const STATUS_LABELS: Record<string, string> = {
   promoted: '已晋升',
   rejected: '未通过',
   inconclusive: '未形成结论',
-  shadow: '影子观察',
+  shadow: '未启用',
   champion: '冠军策略',
   candidate: '候选策略',
   retired: '已退役',

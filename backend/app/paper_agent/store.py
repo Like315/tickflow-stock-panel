@@ -739,6 +739,15 @@ class PaperAgentStore:
         active_model = self.get_active_model()
         models = self.list_models(limit=1)
         latest_model = models[0] if models else None
+        disabled_model_id = self.get_runtime_setting("disabled_model_id")
+        if active_model is not None:
+            model_runtime_status = "active"
+        elif latest_model is None:
+            model_runtime_status = "baseline"
+        elif disabled_model_id == latest_model.id:
+            model_runtime_status = "disabled"
+        else:
+            model_runtime_status = "not_activated"
         sessions = self.list_sessions(limit=1)
         with self._lock, self._connect() as conn:
             dataset = conn.execute(
@@ -759,4 +768,5 @@ class PaperAgentStore:
             "latest_model": (
                 latest_model.model_dump(mode="json") if latest_model is not None else None
             ),
+            "model_runtime_status": model_runtime_status,
         }

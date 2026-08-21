@@ -120,6 +120,18 @@ export function InvestmentExpert() {
   const activeModel = data?.active_model
   const latestModel = data?.latest_model
   const displayModel = activeModel ?? latestModel
+  const modelRuntimeStatus = data?.model_runtime_status
+    ?? (activeModel ? 'active' : displayModel ? 'not_activated' : 'baseline')
+  const modelStatusSuffix = modelRuntimeStatus === 'disabled'
+    ? ' 已停用'
+    : modelRuntimeStatus === 'not_activated' ? ' 未启用' : ''
+  const modelDetail = !displayModel
+    ? '尚无训练模型，当前使用规则基线'
+    : modelRuntimeStatus === 'active'
+      ? `已通过保护集门控，参与模拟决策 · ${displayModel.sample_count.toLocaleString()} 样本`
+      : modelRuntimeStatus === 'disabled'
+        ? `风险保护已停用，当前使用规则基线 · ${displayModel.sample_count.toLocaleString()} 样本`
+        : `未通过保护集门控，当前使用规则基线 · ${displayModel.sample_count.toLocaleString()} 样本`
   const protectedMetrics = displayModel?.metrics.protected_test
   const manifest = data?.dataset?.manifest
   const overnightModules = Object.values(data?.overnight_us_market?.modules ?? {})
@@ -238,7 +250,7 @@ export function InvestmentExpert() {
             <MetricCard icon={TrendingUp} label="模拟权益" value={money(data?.equity)} hint={`现金 ${money(data?.cash)}`} />
             <MetricCard icon={Activity} label="持仓批次" value={String(data?.positions.length ?? 0)} hint={`${data?.pending_order_count ?? 0} 个待成交订单`} />
             <MetricCard icon={ShieldCheck} label="当前策略" value={data?.champion ? `v${data.champion.version}` : '--'} hint={data?.champion?.id ?? '尚未初始化'} />
-            <MetricCard icon={BrainCircuit} label="训练模型" value={displayModel ? `v${displayModel.version}${activeModel ? '' : ' 影子观察'}` : '规则基线'} hint={displayModel ? `${displayModel.sample_count.toLocaleString()} 样本` : '等待保护集门控'} />
+            <MetricCard icon={BrainCircuit} label="训练模型" value={displayModel ? `v${displayModel.version}${modelStatusSuffix}` : '规则基线'} hint={modelDetail} />
             <MetricCard icon={Database} label="训练数据" value={data?.dataset ? investmentExpertStatusLabel(data.dataset.status) : '未构建'} hint={data?.dataset ? `${data.dataset.start_date} 至 ${data.dataset.end_date}` : '默认拉取近三年'} />
           </section>
 

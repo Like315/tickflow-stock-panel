@@ -1733,6 +1733,7 @@ export interface InvestmentExpertStatus {
   champion?: InvestmentExpertPolicy | null
   active_model?: InvestmentExpertModel | null
   latest_model?: InvestmentExpertModel | null
+  model_runtime_status?: 'active' | 'not_activated' | 'disabled' | 'baseline'
   latest_session?: InvestmentExpertSession | null
   dataset?: {
     id: string
