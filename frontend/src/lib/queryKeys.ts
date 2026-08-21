@@ -34,6 +34,7 @@ export const QK = {
   researchAgentRecommendations: ['research-agent', 'recommendations'] as const,
   researchAgentReviews: (batchId?: string) => ['research-agent', 'reviews', batchId ?? 'all'] as const,
   investmentExpertStatus: ['investment-expert', 'status'] as const,
+  investmentExpertTrades: ['investment-expert', 'trades'] as const,
   investmentExpertSessions: ['investment-expert', 'sessions'] as const,
   investmentExpertExperiments: ['investment-expert', 'experiments'] as const,
   indexQuotes:    ['index-quotes'] as const,
@@ -48,6 +49,7 @@ export const QK = {
   // 导致每次都拉 TickFlow 触限流。分时图用固定 refetchInterval 刷新即可。
   minuteBatch:          (symbols: string) => ['minute-batch', symbols] as const,
   instrumentSearch:     (q: string, assetTypes?: string) => ['instrument-search', q, assetTypes ?? 'stock'] as const,
+  instrumentNames:      (symbols: string) => ['instrument-names', symbols] as const,
 
   // Screener
   screener:             ['screener'] as const,

@@ -9,6 +9,7 @@ from app.backtest.matrix import (
     SignalMatrix,
     make_signal_matrix,
     matrix_feature,
+    valid_rolling_max,
     valid_shift,
 )
 
@@ -36,6 +37,8 @@ META = {
         {"id": "max_ma5_bias", "label": "距离5日线最大乖离", "type": "float", "default": 0.20, "min": 0.02, "max": 0.50, "step": 0.01},
         {"id": "entry_on_momentum_breakout", "label": "动量突破入场", "type": "bool", "default": True},
         {"id": "entry_on_ma5_reclaim", "label": "回踩收复5日线入场", "type": "bool", "default": True},
+        {"id": "entry_on_20d_high_breakout", "label": "20日新高入场", "type": "bool", "default": False},
+        {"id": "entry_once_per_trend", "label": "每轮趋势只首次入场", "type": "bool", "default": False},
         {"id": "exit_on_weekly_breakdown", "label": "跌破4周线出场", "type": "bool", "default": True},
         {"id": "exit_on_monthly_breakdown", "label": "跌破3月线出场", "type": "bool", "default": True},
     ],
@@ -46,11 +49,24 @@ META = {
 }
 
 EXECUTION_BACKEND = "matrix_native"
-ENTRY_SIGNALS = ["momentum_breakout", "ma5_reclaim"]
+ENTRY_SIGNALS = ["momentum_breakout", "ma5_reclaim", "high_20d_breakout"]
 EXIT_SIGNALS = ["ma5_breakdown", "weekly_fast_breakdown", "monthly_fast_breakdown"]
 STOP_LOSS = -0.10
 TRAILING_STOP = -0.10
 ALERTS = []
+
+
+def _first_entry_per_trend(entry: np.ndarray, trend: np.ndarray) -> np.ndarray:
+    """Keep the first trigger until the trend context fully resets."""
+    out = np.zeros(entry.shape, dtype=bool)
+    armed = np.ones(entry.shape[1], dtype=bool)
+    for time_id in range(entry.shape[0]):
+        active = trend[time_id]
+        armed[~active] = True
+        selected = active & entry[time_id] & armed
+        out[time_id, selected] = True
+        armed[selected] = False
+    return out
 
 
 def _weekly_averages(market: MarketDataMatrix, fast: int, slow: int) -> tuple[np.ndarray, np.ndarray]:
@@ -148,7 +164,20 @@ class ConceptLeaderWeeklyStrategy:
             & (previous_close < previous_ma5)
             & bool(params.get("entry_on_ma5_reclaim", True))
         )
-        entry = momentum_breakout | ma5_reclaim
+        close_valid = np.isfinite(market.close)
+        previous_20d_high = valid_shift(
+            valid_rolling_max(market.close, close_valid, 20),
+            1,
+            close_valid,
+        )
+        high_20d_breakout = (
+            trend_context
+            & (market.close > previous_20d_high)
+            & bool(params.get("entry_on_20d_high_breakout", False))
+        )
+        entry = momentum_breakout | ma5_reclaim | high_20d_breakout
+        if params.get("entry_once_per_trend", False):
+            entry = _first_entry_per_trend(entry, trend_context)
 
         ma5_breakdown = (market.close < ma5) & (previous_close >= previous_ma5)
         previous_weekly_fast = valid_shift(weekly_fast, 1, np.isfinite(weekly_fast))
@@ -164,7 +193,11 @@ class ConceptLeaderWeeklyStrategy:
             & bool(params.get("exit_on_monthly_breakdown", True))
         )
         exit_ = ma5_breakdown | weekly_breakdown | monthly_breakdown
-        entry_code = np.where(momentum_breakout, 0, np.where(ma5_reclaim, 1, -1)).astype(np.int16)
+        entry_code = np.where(
+            entry,
+            np.where(momentum_breakout, 0, np.where(ma5_reclaim, 1, 2)),
+            -1,
+        ).astype(np.int16)
         exit_code = np.where(
             ma5_breakdown,
             0,
@@ -176,7 +209,7 @@ class ConceptLeaderWeeklyStrategy:
             exit=exit_.astype(np.uint8),
             entry_signal_code=entry_code,
             exit_signal_code=exit_code,
-            entry_signal_ids=("momentum_breakout", "ma5_reclaim"),
+            entry_signal_ids=("momentum_breakout", "ma5_reclaim", "high_20d_breakout"),
             exit_signal_ids=("ma5_breakdown", "weekly_fast_breakdown", "monthly_fast_breakdown"),
         )
 

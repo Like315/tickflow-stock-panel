@@ -19,6 +19,7 @@ class PaperAgentStore:
         self.path = data_dir / "user_data" / "investment_expert_agent.db"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._execution_statistics_cache: dict[str, Any] | None = None
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -413,6 +414,7 @@ class PaperAgentStore:
                     for event in events
                 ],
             )
+            self._execution_statistics_cache = None
         return len(events)
 
     def save_portfolio_snapshot(
@@ -477,6 +479,151 @@ class PaperAgentStore:
         with self._lock, self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
+
+    def list_trade_history(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Return persisted fills with the decision snapshot that created each order."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    e.session_id,
+                    s.trade_date,
+                    e.event_type,
+                    e.occurred_at,
+                    e.order_id,
+                    e.symbol,
+                    e.payload_json,
+                    d.id AS decision_id,
+                    d.decision_time,
+                    d.action AS decision_action,
+                    d.reason AS decision_reason,
+                    d.feature_json
+                FROM execution_events AS e
+                JOIN trading_sessions AS s ON s.id = e.session_id
+                LEFT JOIN decision_snapshots AS d
+                    ON e.order_id = 'order_' || d.id
+                    AND d.session_id = e.session_id
+                WHERE e.event_type IN ('order_filled', 'order_partially_filled')
+                ORDER BY e.occurred_at DESC, e.rowid DESC
+                LIMIT ?
+                """,
+                (min(max(limit, 1), 500),),
+            ).fetchall()
+
+        history: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            history.append({
+                "id": payload.get("id"),
+                "session_id": row["session_id"],
+                "trade_date": row["trade_date"],
+                "order_id": row["order_id"],
+                "symbol": row["symbol"],
+                "side": payload.get("side"),
+                "occurred_at": row["occurred_at"],
+                "fill_status": row["event_type"],
+                "shares": int(payload.get("shares") or 0),
+                "price": payload.get("price"),
+                "fees": float(payload.get("fees") or 0.0),
+                "realized_pnl": payload.get("realized_pnl"),
+                "execution_reason": payload.get("reason"),
+                "decision_id": row["decision_id"],
+                "decision_time": row["decision_time"],
+                "decision_action": row["decision_action"],
+                "decision_reason": row["decision_reason"],
+                "decision_features": (
+                    json.loads(row["feature_json"]) if row["feature_json"] else None
+                ),
+            })
+        return history
+
+    def execution_statistics(self) -> dict[str, Any]:
+        """Aggregate persisted fills without rescanning them on every status poll."""
+        with self._lock:
+            if self._execution_statistics_cache is not None:
+                return dict(self._execution_statistics_cache)
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    WITH fills AS (
+                        SELECT
+                            coalesce(order_id, id) AS trade_key,
+                            occurred_at,
+                            json_extract(payload_json, '$.side') AS side,
+                            CAST(json_extract(payload_json, '$.realized_pnl') AS REAL)
+                                AS realized_pnl
+                        FROM execution_events
+                        WHERE event_type IN ('order_filled', 'order_partially_filled')
+                    ), orders AS (
+                        SELECT
+                            trade_key,
+                            max(occurred_at) AS occurred_at,
+                            max(side) AS side,
+                            CASE
+                                WHEN count(realized_pnl) > 0
+                                THEN sum(coalesce(realized_pnl, 0.0))
+                                ELSE NULL
+                            END AS realized_pnl
+                        FROM fills
+                        GROUP BY trade_key
+                    )
+                    SELECT
+                        count(*) AS filled_order_count,
+                        sum(CASE WHEN side = 'buy' THEN 1 ELSE 0 END) AS buy_order_count,
+                        sum(CASE WHEN side = 'sell' THEN 1 ELSE 0 END) AS sell_order_count,
+                        sum(CASE WHEN realized_pnl IS NOT NULL THEN 1 ELSE 0 END)
+                            AS closed_trade_count,
+                        sum(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END)
+                            AS winning_trade_count,
+                        sum(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END)
+                            AS losing_trade_count,
+                        sum(CASE WHEN realized_pnl = 0 THEN 1 ELSE 0 END)
+                            AS breakeven_trade_count,
+                        sum(coalesce(realized_pnl, 0.0)) AS realized_pnl,
+                        avg(CASE WHEN realized_pnl > 0 THEN realized_pnl END)
+                            AS average_win_pnl,
+                        avg(CASE WHEN realized_pnl < 0 THEN -realized_pnl END)
+                            AS average_loss_pnl,
+                        max(occurred_at) AS latest_fill_at
+                    FROM orders
+                    """
+                ).fetchone()
+
+            closed = int(row["closed_trade_count"] or 0)
+            wins = int(row["winning_trade_count"] or 0)
+            average_win = (
+                float(row["average_win_pnl"])
+                if row["average_win_pnl"] is not None else None
+            )
+            average_loss = (
+                float(row["average_loss_pnl"])
+                if row["average_loss_pnl"] is not None else None
+            )
+            result = {
+                "filled_order_count": int(row["filled_order_count"] or 0),
+                "buy_order_count": int(row["buy_order_count"] or 0),
+                "sell_order_count": int(row["sell_order_count"] or 0),
+                "closed_trade_count": closed,
+                "winning_trade_count": wins,
+                "losing_trade_count": int(row["losing_trade_count"] or 0),
+                "breakeven_trade_count": int(row["breakeven_trade_count"] or 0),
+                "realized_pnl": round(float(row["realized_pnl"] or 0.0), 2),
+                "win_rate": round(wins / closed, 6) if closed else None,
+                "average_win_pnl": (
+                    round(average_win, 2) if average_win is not None else None
+                ),
+                "average_loss_pnl": (
+                    round(average_loss, 2) if average_loss is not None else None
+                ),
+                "profit_loss_ratio": (
+                    round(average_win / average_loss, 6)
+                    if average_win is not None and average_loss not in (None, 0)
+                    else None
+                ),
+                "latest_fill_at": row["latest_fill_at"],
+            }
+            self._execution_statistics_cache = result
+            return dict(result)
 
     def record_dataset_run(
         self,

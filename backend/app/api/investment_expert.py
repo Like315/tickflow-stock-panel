@@ -81,6 +81,16 @@ def events(
     }
 
 
+@router.get("/trades")
+def trades(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return {
+        "trades": _service(request).store.list_trade_history(limit=limit)
+    }
+
+
 @router.get("/policies")
 def policies(request: Request) -> dict:
     service = _service(request)

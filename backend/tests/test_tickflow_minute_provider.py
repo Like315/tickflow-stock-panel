@@ -7,6 +7,7 @@ import polars as pl
 
 from app.data_providers.normalizer import MINUTE_COLS, normalize_minute
 from app.data_providers.tickflow_provider import TickFlowProvider
+from app.market_time import CN_TZ
 
 
 def test_normalize_minute_keeps_raw_execution_prices() -> None:
@@ -111,6 +112,63 @@ def test_normalize_minute_converts_aware_datetime_to_beijing_wall_time() -> None
     }))
 
     assert result["datetime"][0] == datetime(2026, 8, 18, 9, 31)
+
+
+def test_normalize_minute_accepts_tickflow_trade_date_and_trade_time_columns() -> None:
+    result = normalize_minute(pl.DataFrame({
+        "symbol": ["300404.SZ"],
+        "timestamp": [1787016660000],
+        "trade_date": ["2026-08-18"],
+        "trade_time": ["2026-08-18 09:31:00"],
+        "open": [16.92],
+        "high": [17.60],
+        "low": [16.92],
+        "close": [17.25],
+        "volume": [49_871],
+        "amount": [86_210_226.66],
+    }))
+
+    assert result.height == 1
+    assert result["datetime"][0] == datetime(2026, 8, 18, 9, 31)
+
+
+def test_tickflow_intraday_provider_uses_intraday_batch_and_filters_range(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class Klines:
+        def intraday_batch(self, symbols: list[str], **kwargs: Any) -> dict[str, pl.DataFrame]:
+            calls.append({"symbols": symbols, **kwargs})
+            return {
+                symbols[0]: pl.DataFrame({
+                    "timestamp": [
+                        int(datetime(2026, 8, 18, 1, 30, tzinfo=UTC).timestamp() * 1000),
+                        int(datetime(2026, 8, 18, 1, 31, tzinfo=UTC).timestamp() * 1000),
+                    ],
+                    "open": [10.0, 10.1],
+                    "high": [10.1, 10.2],
+                    "low": [9.9, 10.0],
+                    "close": [10.0, 10.1],
+                    "volume": [100.0, 120.0],
+                    "amount": [100_000.0, 121_200.0],
+                })
+            }
+
+    class Client:
+        klines = Klines()
+
+    monkeypatch.setattr("app.data_providers.tickflow_provider.get_client", lambda: Client())
+    provider = TickFlowProvider()
+
+    result = provider.get_intraday_minute(
+        ["000001.SZ"],
+        datetime(2026, 8, 18, 9, 31, tzinfo=CN_TZ),
+        datetime(2026, 8, 18, 9, 32, tzinfo=CN_TZ),
+    )
+
+    assert result.height == 1
+    assert result["datetime"][0] == datetime(2026, 8, 18, 9, 31)
+    assert calls[0]["period"] == "1m"
+    assert "start_time" not in calls[0]
 
 
 def test_normalize_minute_prefers_canonical_columns_over_aliases() -> None:

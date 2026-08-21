@@ -41,6 +41,17 @@ function formatPct(value: number | null | undefined): string {
   return `${number >= 0 ? '+' : ''}${(number * 100).toFixed(2)}%`
 }
 
+function formatUnsignedPct(value: number | null | undefined): string {
+  const number = validNumber(value)
+  if (number == null) return '—'
+  return `${(number * 100).toFixed(2)}%`
+}
+
+function formatAdvanceDecline(value: number | null | undefined): string {
+  const number = validNumber(value)
+  return number == null ? '—' : `${number.toFixed(2)} : 1`
+}
+
 function formatCompact(value: number | null | undefined): string {
   const number = validNumber(value)
   if (number == null) return '—'
@@ -82,7 +93,15 @@ function SectionTitle({ icon: Icon, title, hint }: { icon: typeof Activity; titl
 }
 
 function BenchmarkCard({ quote }: { quote: UsMarketQuote }) {
-  const positive = (quote.change_pct ?? 0) > 0
+  const change = validNumber(quote.change_pct)
+  const positive = change != null && change > 0
+  const negative = change != null && change < 0
+  const high = validNumber(quote.high)
+  const low = validNumber(quote.low)
+  const last = validNumber(quote.last_price)
+  const rangePosition = high != null && low != null && last != null && high > low
+    ? Math.min(100, Math.max(0, (last - low) / (high - low) * 100))
+    : null
   return (
     <div className="rounded-card border border-border bg-surface/85 p-4 shadow-sm transition-colors hover:border-sky-400/30">
       <div className="flex items-start justify-between gap-2">
@@ -90,10 +109,10 @@ function BenchmarkCard({ quote }: { quote: UsMarketQuote }) {
           <div className="font-mono text-xs font-semibold text-sky-300">{quote.symbol.replace('.US', '')}</div>
           <div className="mt-1 text-[11px] text-muted">{quote.name}</div>
         </div>
-        <span className={`rounded-full p-1.5 ${positive ? 'bg-emerald-400/10' : 'bg-rose-400/10'}`}>
+        <span className={`rounded-full p-1.5 ${positive ? 'bg-emerald-400/10' : negative ? 'bg-rose-400/10' : 'bg-elevated'}`}>
           {positive
             ? <ArrowUpRight className="h-3.5 w-3.5 text-emerald-400" />
-            : <ArrowDownRight className="h-3.5 w-3.5 text-rose-400" />}
+            : <ArrowDownRight className={`h-3.5 w-3.5 ${negative ? 'text-rose-400' : 'text-muted'}`} />}
         </span>
       </div>
       <div className="mt-4 flex items-end justify-between gap-2">
@@ -102,10 +121,37 @@ function BenchmarkCard({ quote }: { quote: UsMarketQuote }) {
           {formatPct(quote.change_pct)}
         </span>
       </div>
+      <div className="mt-3">
+        <div className="h-1.5 overflow-hidden rounded-full bg-elevated">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-sky-500 to-emerald-400"
+            style={{ width: rangePosition == null ? '0%' : `${Math.max(3, rangePosition)}%` }}
+          />
+        </div>
+        <div className="mt-1.5 flex items-center justify-between font-mono text-[9px] text-muted">
+          <span>低 {formatPrice(low)}</span>
+          <span>高 {formatPrice(high)}</span>
+        </div>
+        <div className="mt-2 flex items-center justify-between text-[10px] text-muted">
+          <span>成交量</span>
+          <span className="font-mono text-secondary">{formatCompact(quote.volume)}</span>
+        </div>
+      </div>
     </div>
   )
 }
 
+const SAMPLE_REALTIME_META = {
+  label: '核心样本实时',
+  className: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-400',
+}
+
+const PATH_STATUS_CLASS: Record<string, string> = {
+  ok: 'bg-emerald-400',
+  unavailable: 'bg-rose-400',
+  limited: 'bg-amber-400',
+  cached: 'bg-sky-400',
+}
 function RankingTable({
   title,
   rows,
@@ -116,8 +162,8 @@ function RankingTable({
 }: {
   title: string
   rows: UsMarketQuote[]
-  mode: 'change' | 'amount'
-  onSelect: (symbol: string) => void
+  mode: 'change' | 'amount' | 'amplitude'
+  onSelect?: (symbol: string) => void
   pending?: boolean
   emptyMessage?: string
 }) {
@@ -141,7 +187,7 @@ function RankingTable({
             <button
               type="button"
               key={row.symbol}
-              onClick={() => onSelect(row.symbol)}
+              onClick={() => onSelect?.(row.symbol)}
               aria-label={`查看 ${row.symbol.replace('.US', '')} 详情`}
               className="grid w-full grid-cols-[20px_minmax(0,1fr)_80px_82px] items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-[11px] hover:bg-elevated/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/60"
             >
@@ -151,10 +197,12 @@ function RankingTable({
                 <div className="truncate text-[9px] text-muted">{row.name}</div>
               </div>
               <span className="text-right font-mono text-secondary">{formatPrice(row.last_price)}</span>
-              <span className={`text-right font-mono font-semibold ${mode === 'change' ? changeClass(row.change_pct) : 'text-sky-300'}`}>
-                {mode === 'change'
-                  ? formatPct(row.change_pct)
-                  : `${row.amount_estimated ? '≈' : ''}${formatCompact(row.amount)}`}
+              <span className={`text-right font-mono font-semibold ${
+                mode === 'change' ? changeClass(row.change_pct) : mode === 'amount' ? 'text-sky-300' : 'text-amber-300'
+              }`}>
+                {mode === 'change' && formatPct(row.change_pct)}
+                {mode === 'amount' && `${row.amount_estimated ? '≈' : ''}${formatCompact(row.amount)}`}
+                {mode === 'amplitude' && formatUnsignedPct(row.amplitude)}
               </span>
             </button>
           ))}
@@ -386,7 +434,8 @@ export function UsMarketDashboard() {
   }
 
   const data = overview.data
-  const status = STATUS_META[data.status]
+  const realtime = data.realtime ?? data.status === 'live'
+  const status = realtime && data.status === 'partial' ? SAMPLE_REALTIME_META : STATUS_META[data.status]
   const breadth = data.breadth ?? rankingFallback.data?.breadth ?? null
   const distribution = data.distribution.length > 0
     ? data.distribution
@@ -397,9 +446,19 @@ export function UsMarketDashboard() {
     : null
   const rankings = hasOverviewRankings
     ? data.rankings
-    : rankingFallback.data?.rankings ?? { gainers: [], losers: [], active: [] }
+    : rankingFallback.data?.rankings ?? { gainers: [], losers: [], active: [], volatile: [] }
   const rankingPending = !hasOverviewRankings && rankingFallback.isLoading
   const maxDistribution = Math.max(...distribution.map(item => item.count), 1)
+  const dataPath = data.data_path?.length
+    ? data.data_path
+    : [
+        {
+          label: data.source,
+          detail: realtime ? '实时行情' : data.status === 'snapshot' ? '历史快照' : 'ETF 代理',
+          status: realtime ? 'ok' : 'limited',
+        },
+        { label: '看板', detail: '聚合展示', status: 'ok' },
+      ]
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-4 p-4 md:p-5">
@@ -415,9 +474,20 @@ export function UsMarketDashboard() {
                 <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${status.className}`}>
                   {status.label}
                 </span>
+                {realtime && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/25 bg-emerald-400/8 px-2 py-0.5 text-[10px] text-emerald-300">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+                    实时链路
+                  </span>
+                )}
                 <span className="rounded-full border border-border bg-elevated/60 px-2 py-0.5 text-[10px] text-secondary">
                   {SESSION_LABELS[data.session] ?? data.session}
                 </span>
+                {data.stale && (
+                  <span className="rounded-full border border-amber-400/25 bg-amber-400/8 px-2 py-0.5 text-[10px] text-amber-300">
+                    非实时数据
+                  </span>
+                )}
               </div>
               <p className="mt-1.5 text-xs text-secondary">{data.message}</p>
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] text-muted">
@@ -428,13 +498,40 @@ export function UsMarketDashboard() {
             </div>
           </div>
           <button
+            type="button"
             onClick={() => refresh.mutate()}
-            disabled={refresh.isPending}
+            disabled={refresh.isPending || overview.isFetching}
+            aria-label="刷新美股市场数据"
             className="inline-flex items-center gap-1.5 rounded-btn border border-border bg-elevated/70 px-3 py-1.5 text-xs text-secondary transition-colors hover:border-sky-400/40 hover:text-foreground disabled:opacity-50"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${refresh.isPending ? 'animate-spin' : ''}`} />
-            {refresh.isPending ? '刷新中' : '立即刷新'}
+            <RefreshCw className={`h-3.5 w-3.5 ${refresh.isPending || overview.isFetching ? 'animate-spin' : ''}`} />
+            {refresh.isPending || overview.isFetching ? '刷新中' : '立即刷新'}
           </button>
+        </div>
+        {refresh.isError && (
+          <div className="mt-3 rounded-md border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs text-rose-300">
+            刷新失败，当前有效数据已保留。{refresh.error instanceof Error ? refresh.error.message : ''}
+          </div>
+        )}
+        <div className="mt-3 overflow-x-auto rounded-lg border border-border/70 bg-base/35 px-3 py-2.5">
+          <div className="flex min-w-max items-center gap-2">
+            <span className="mr-1 text-[10px] font-medium text-muted">数据路径</span>
+            {dataPath.map((step, index) => (
+              <div key={`${step.label}-${index}`} className="flex items-center gap-2">
+                {index > 0 && <span className="text-[10px] text-muted/60">→</span>}
+                <div className="flex items-center gap-2 rounded-md border border-border/60 bg-surface/70 px-2.5 py-1.5">
+                  <span className={`h-1.5 w-1.5 rounded-full ${PATH_STATUS_CLASS[step.status] ?? 'bg-muted'}`} />
+                  <span className="text-[10px] font-medium text-foreground">{step.label}</span>
+                  <span className="text-[9px] text-muted">{step.detail}</span>
+                </div>
+              </div>
+            ))}
+            {data.coverage_label && (
+              <span className="ml-1 rounded-full bg-sky-400/8 px-2 py-1 font-mono text-[9px] text-sky-300">
+                {data.coverage_label}
+              </span>
+            )}
+          </div>
         </div>
       </header>
 
@@ -451,11 +548,21 @@ export function UsMarketDashboard() {
 
       <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
         <section className="rounded-card border border-border bg-surface/85 p-4">
-          <SectionTitle icon={Activity} title="市场宽度" hint={breadth ? `${breadth.total.toLocaleString()} 只有效样本${statisticsSource ? ` · ${statisticsSource}` : ''}` : '正在准备全市场快照'} />
+          <SectionTitle icon={Activity} title="市场宽度" hint={breadth ? `${data.coverage_label ?? `${breadth.total.toLocaleString()} 只有效样本`}${statisticsSource ? ` · ${statisticsSource}` : ''}` : '全市场或核心样本实时路径下可用'} />
           {statisticsPending ? (
             <div className="flex items-center justify-center gap-2 py-10 text-xs text-muted"><Loader2 className="h-4 w-4 animate-spin text-sky-400" />正在生成全市场宽度快照…</div>
           ) : breadth ? (
             <>
+              {data.coverage === 'sample' && (
+                <div className="mb-3 rounded-md border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[10px] leading-4 text-amber-200/80">
+                  当前账户没有美股全市场池权限，宽度和排行榜基于核心样本，不代表全部上市公司。
+                </div>
+              )}
+              <div className="mb-3 flex h-2 overflow-hidden rounded-full bg-elevated" aria-label="市场涨跌家数比例">
+                <div className="bg-emerald-400/80" style={{ width: `${breadth.up_ratio * 100}%` }} />
+                <div className="bg-slate-400/55" style={{ width: `${breadth.total ? breadth.flat / breadth.total * 100 : 0}%` }} />
+                <div className="bg-rose-400/80" style={{ width: `${breadth.down_ratio * 100}%` }} />
+              </div>
               <div className="grid grid-cols-3 gap-2">
                 <div className="rounded-lg bg-emerald-400/8 p-3">
                   <div className="text-[10px] text-muted">上涨</div>
@@ -481,6 +588,32 @@ export function UsMarketDashboard() {
                   <span>弱势下跌 ≤ -2%</span><span className="font-mono text-rose-400">{breadth.weak}</span>
                 </div>
               </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="rounded-md border border-border/70 bg-elevated/30 px-3 py-2">
+                  <div className="text-[9px] text-muted">平均涨跌</div>
+                  <div className={`mt-1 font-mono text-xs font-semibold ${changeClass(breadth.average_change_pct)}`}>
+                    {formatPct(breadth.average_change_pct)}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/70 bg-elevated/30 px-3 py-2">
+                  <div className="text-[9px] text-muted">中位涨跌</div>
+                  <div className={`mt-1 font-mono text-xs font-semibold ${changeClass(breadth.median_change_pct)}`}>
+                    {formatPct(breadth.median_change_pct)}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/70 bg-elevated/30 px-3 py-2">
+                  <div className="text-[9px] text-muted">涨跌家数比</div>
+                  <div className="mt-1 font-mono text-xs font-semibold text-foreground">
+                    {formatAdvanceDecline(breadth.advance_decline_ratio)}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border/70 bg-elevated/30 px-3 py-2">
+                  <div className="text-[9px] text-muted">净上涨占比</div>
+                  <div className={`mt-1 font-mono text-xs font-semibold ${changeClass(breadth.net_advance_ratio)}`}>
+                    {formatPct(breadth.net_advance_ratio)}
+                  </div>
+                </div>
+              </div>
             </>
           ) : (
             <div className="rounded-lg border border-dashed border-sky-400/20 bg-sky-400/5 px-4 py-10 text-center text-xs leading-5 text-muted">
@@ -501,7 +634,7 @@ export function UsMarketDashboard() {
                   <div className="h-2 overflow-hidden rounded-full bg-elevated">
                     <div
                       className={`h-full rounded-full ${index < 3 ? 'bg-rose-400/75' : 'bg-emerald-400/75'}`}
-                      style={{ width: `${Math.max(2, item.count / maxDistribution * 100)}%` }}
+                      style={{ width: item.count === 0 ? '0%' : `${Math.max(2, item.count / maxDistribution * 100)}%` }}
                     />
                   </div>
                   <span className="text-right font-mono text-secondary">{item.count.toLocaleString()}</span>
@@ -582,10 +715,11 @@ export function UsMarketDashboard() {
                 : '正在准备降级快照'}
           </span>
         </div>
-        <div className="grid gap-4 xl:grid-cols-3">
+        <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-4">
           <RankingTable title="涨幅榜" rows={rankings.gainers} mode="change" onSelect={setSelectedRankingSymbol} pending={rankingPending} emptyMessage={rankingFallback.isError ? 'Nasdaq 排行榜快照暂时不可用' : undefined} />
           <RankingTable title="跌幅榜" rows={rankings.losers} mode="change" onSelect={setSelectedRankingSymbol} pending={rankingPending} emptyMessage={rankingFallback.isError ? 'Nasdaq 排行榜快照暂时不可用' : undefined} />
           <RankingTable title="成交活跃" rows={rankings.active} mode="amount" onSelect={setSelectedRankingSymbol} pending={rankingPending} emptyMessage={rankingFallback.isError ? 'Nasdaq 排行榜快照暂时不可用' : undefined} />
+          <RankingTable title="高振幅" rows={rankings.volatile ?? []} mode="amplitude" onSelect={setSelectedRankingSymbol} pending={rankingPending} emptyMessage={rankingFallback.isError ? 'Nasdaq 排行榜快照暂时不可用' : undefined} />
         </div>
         {selectedRankingSymbol && (
           <UsMarketInstrumentDetail
@@ -596,7 +730,8 @@ export function UsMarketDashboard() {
       </section>
 
       <footer className="pb-2 text-center text-[10px] leading-5 text-muted">
-        SPY、QQQ、DIA、IWM 及行业基金用于代理主要指数和板块表现，不代表指数本身。行情仅供信息展示。
+        SPY、QQQ、DIA、IWM 及行业基金用于代理主要指数和板块表现，不代表指数本身。
+        {data.coverage === 'sample' && ' 核心样本统计不代表全市场。'} 行情仅供信息展示。
       </footer>
     </div>
   )

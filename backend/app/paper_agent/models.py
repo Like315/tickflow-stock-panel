@@ -135,6 +135,8 @@ class MinuteBar(BaseModel):
     def validate_ohlc(self) -> MinuteBar:
         highest = max(self.raw_open, self.raw_close, self.raw_low)
         lowest = min(self.raw_open, self.raw_close, self.raw_high)
+        # Provider floats can carry machine-scale residue around the exchange
+        # tick price; tolerate only that residue, not materially invalid OHLC.
         if self.raw_high < highest and not math.isclose(
             self.raw_high, highest, rel_tol=1e-12, abs_tol=1e-9
         ):

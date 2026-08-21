@@ -227,8 +227,9 @@ export function Review() {
         title="AI 复盘"
         titleExtra={<Sparkles className="h-4 w-4 text-accent" />}
         subtitle={`${displayDate}${data?.emotion ? ` · 情绪 ${data.emotion.label}` : ''}`}
+        className="flex-wrap"
         right={
-          <div className="flex items-center gap-1">
+          <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
             <button
               onClick={() => { marketQuery.refetch() }}
               disabled={marketQuery.isFetching}

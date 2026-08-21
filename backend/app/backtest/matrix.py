@@ -532,6 +532,7 @@ class MarketMatrix:
     limit_up_locked: np.ndarray
     limit_down_locked: np.ndarray
     reference_price: np.ndarray
+    entry_price_override: np.ndarray
 
     entry_signal_time: np.ndarray
     exit_signal_time: np.ndarray
@@ -710,10 +711,12 @@ def load_market_data_matrix_from_parquet(
         pa.schema([("date", pa.date32())]),
         flavor="hive",
     )
+    parquet_files = sorted(str(path) for path in root.rglob("*.parquet"))
     dataset = pads.dataset(
-        str(root),
+        parquet_files,
         format="parquet",
         partitioning=partitioning,
+        partition_base_dir=str(root),
     )
     _validate_matrix_dataset_schema(dataset)
 
@@ -2260,6 +2263,7 @@ def build_market_matrix_from_signals(
     entry_delay_bars: int = 0,
     exit_delay_bars: int = 0,
     reference_price: np.ndarray | None = None,
+    entry_price_override: np.ndarray | None = None,
     minute_exit_trigger: bool = False,
 ) -> MarketMatrix:
     """Combine base data and strategy signals into the matcher input matrix."""
@@ -2294,6 +2298,21 @@ def build_market_matrix_from_signals(
             use = ~np.isfinite(resolved_reference_price) & np.isfinite(values) & (values > 0)
             resolved_reference_price[use] = values[use]
 
+    if entry_price_override is not None:
+        if entry_price_override.shape != market.shape:
+            raise ValueError("entry_price_override shape does not match MarketDataMatrix")
+        resolved_entry_price_override = np.array(
+            entry_price_override,
+            dtype=np.float32,
+            copy=True,
+        )
+    else:
+        resolved_entry_price_override = np.full(
+            market.shape,
+            np.nan,
+            dtype=np.float32,
+        )
+
     if minute_exit_trigger:
         trigger_reference = build_minute_exit_reference(
             market.close,
@@ -2308,6 +2327,7 @@ def build_market_matrix_from_signals(
         entry,
         exit_,
         resolved_reference_price,
+        resolved_entry_price_override,
         entry_signal_time,
         exit_signal_time,
         entry_signal_code,
@@ -2332,6 +2352,7 @@ def build_market_matrix_from_signals(
         limit_up_locked=market.limit_up_locked,
         limit_down_locked=market.limit_down_locked,
         reference_price=resolved_reference_price,
+        entry_price_override=resolved_entry_price_override,
         entry_signal_time=entry_signal_time,
         exit_signal_time=exit_signal_time,
         entry_signal_code=entry_signal_code,
@@ -3398,6 +3419,9 @@ class MatrixPipelineConfig:
     order_by: str | None
     descending: bool
     asset_mask: np.ndarray | None = None
+    entry_context_mask: np.ndarray | None = None
+    entry_context_score: np.ndarray | None = None
+    entry_context_weight: float = 0.0
     protect_strategy_cache: bool = False
 
 
@@ -3463,6 +3487,20 @@ class MatrixStrategyPipeline:
                 config.descending,
                 fallback=signals.score,
             )
+            if config.entry_context_score is not None:
+                context_score = np.asarray(config.entry_context_score, dtype=np.float32)
+                if context_score.shape != market.shape:
+                    raise ValueError(
+                        "matrix strategy entry context score shape does not match market"
+                    )
+                if not np.isfinite(context_score).all():
+                    raise ValueError("matrix strategy entry context score must be finite")
+                context_weight = min(max(float(config.entry_context_weight), 0.0), 1.0)
+                score = (
+                    score * np.float32(1.0 - context_weight)
+                    + context_score * np.float32(context_weight)
+                )
+                score[entry == 0] = 0.0
             entry_codes = np.where(entry != 0, signals.entry_signal_code, -1).astype(np.int16)
             exit_codes = np.where(signals.exit != 0, signals.exit_signal_code, -1).astype(np.int16)
         if timing_ms is not None:
@@ -3491,6 +3529,10 @@ def _estimate_pipeline_cache_bytes(
     estimated = bool_bytes
     if config.asset_mask is not None:
         estimated += bool_bytes
+    if config.entry_context_mask is not None:
+        estimated += bool_bytes
+    if config.entry_context_score is not None:
+        estimated += float_bytes
 
     feature_names = {
         name
@@ -3518,17 +3560,24 @@ def build_pipeline_filter_mask(
     config: MatrixPipelineConfig,
 ) -> np.ndarray:
     basic_mask = build_basic_filter_mask(market, config.basic_filter)
-    if config.asset_mask is None:
+    masks: list[np.ndarray] = [basic_mask]
+    if config.asset_mask is not None:
+        asset_mask = np.asarray(config.asset_mask, dtype=bool)
+        if asset_mask.shape != (market.shape[1],):
+            raise ValueError("matrix strategy asset mask length does not match market")
+        masks.append(np.broadcast_to(asset_mask.reshape(1, -1), market.shape))
+    if config.entry_context_mask is not None:
+        entry_context_mask = np.asarray(config.entry_context_mask, dtype=bool)
+        if entry_context_mask.shape != market.shape:
+            raise ValueError("matrix strategy entry context mask shape does not match market")
+        masks.append(entry_context_mask)
+    if len(masks) == 1:
         return basic_mask
-
-    asset_mask = np.asarray(config.asset_mask, dtype=bool)
-    if asset_mask.shape != (market.shape[1],):
-        raise ValueError("matrix strategy asset mask length does not match market")
     return _cached_matrix_operation(
         "pipeline_filter_mask",
-        (basic_mask, asset_mask),
+        tuple(masks),
         {},
-        lambda: basic_mask & asset_mask[None, :],
+        lambda: np.logical_and.reduce(masks),
     )
 
 

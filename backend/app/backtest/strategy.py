@@ -218,6 +218,11 @@ class StrategyDependencyResolver:
         required_features = set(strategy.required_features)
         required_features.update(strategy.matrix_strategy.required_fields())
         required_features.update(_basic_filter_dependencies(basic_filter))
+        sector_context_filter = overrides.get("sector_context_filter")
+        if isinstance(sector_context_filter, dict) and sector_context_filter.get(
+            "enabled", True
+        ):
+            required_features.update({"amount", "consecutive_limit_ups"})
         scoring = dict(strategy.meta.get("scoring", {}) or {})
         scoring.update(overrides.get("scoring") or {})
         required_features.update(scoring_dependencies(scoring))
@@ -543,6 +548,7 @@ class BacktestResultPolicy:
             "timing_ms",
             "execution",
             "selection",
+            "sector_context_filter",
             "execution_backend",
             "shared_market_data",
             "shared_market_data_bytes",
@@ -575,6 +581,10 @@ class PreparedMatrixBacktest:
     start_id: int
     stop_id: int
     reference_price: np.ndarray | None
+    entry_context_mask: np.ndarray | None
+    entry_context_score: np.ndarray | None
+    entry_context_weight: float
+    sector_context_metadata: dict[str, int | float | str] | None
     prepare_timing_ms: dict[str, float]
     compute_cache: MatrixComputeCache
 
@@ -877,6 +887,19 @@ class StrategyBacktestService:
             if first.minute_fill
             else None
         )
+        sector_context_started = time.perf_counter()
+        (
+            entry_context_mask,
+            entry_context_score,
+            entry_context_weight,
+            sector_context_metadata,
+        ) = self._build_sector_context_mask(
+            market_data, overrides.get("sector_context_filter")
+        )
+        timing_ms["sector_context"] = round(
+            (time.perf_counter() - sector_context_started) * 1000,
+            1,
+        )
         timing_ms["total"] = round((time.perf_counter() - prepare_started) * 1000, 1)
         compute_cache = MatrixComputeCache(max_bytes=matrix_cache_max_bytes)
         return PreparedMatrixBacktest(
@@ -891,6 +914,10 @@ class StrategyBacktestService:
             start_id=start_id,
             stop_id=stop_id,
             reference_price=reference_price,
+            entry_context_mask=entry_context_mask,
+            entry_context_score=entry_context_score,
+            entry_context_weight=entry_context_weight,
+            sector_context_metadata=sector_context_metadata,
             prepare_timing_ms=timing_ms,
             compute_cache=compute_cache,
         )
@@ -1125,6 +1152,7 @@ class StrategyBacktestService:
         )
         t_signal = time.perf_counter()
         selection_stats: dict[str, int | bool]
+        sector_context_metadata: dict[str, int | float | str] | None = None
 
         if s.execution_backend == "composite":
             # composite 回测信号生成: 复用 matrix 数据加载, 逐子策略算信号后合并。
@@ -1228,6 +1256,10 @@ class StrategyBacktestService:
                 start_id = prepared.start_id
                 stop_id = prepared.stop_id
                 reference_price = prepared.reference_price
+                entry_context_mask = prepared.entry_context_mask
+                entry_context_score = prepared.entry_context_score
+                entry_context_weight = prepared.entry_context_weight
+                sector_context_metadata = prepared.sector_context_metadata
                 panel_rows = int(np.isfinite(market_data.close[start_id:stop_id]).sum())
                 panel_columns = len(feature_plan.matrix_columns)
             else:
@@ -1266,6 +1298,22 @@ class StrategyBacktestService:
                     if matcher_config.minute_fill
                     else None
                 )
+                sector_context_started = time.perf_counter()
+                try:
+                    (
+                        entry_context_mask,
+                        entry_context_score,
+                        entry_context_weight,
+                        sector_context_metadata,
+                    ) = self._build_sector_context_mask(
+                        market_data, overrides.get("sector_context_filter")
+                    )
+                except ValueError as e:
+                    return _err(f"板块上下文过滤失败: {e}")
+                timing_ms["sector_context"] = round(
+                    (time.perf_counter() - sector_context_started) * 1000,
+                    1,
+                )
 
             scoring = dict(s.meta.get("scoring", {}) or {})
             scoring.update(overrides.get("scoring") or {})
@@ -1275,6 +1323,9 @@ class StrategyBacktestService:
                     scoring=scoring,
                     order_by=s.meta.get("order_by"),
                     descending=bool(s.meta.get("descending", True)),
+                    entry_context_mask=entry_context_mask,
+                    entry_context_score=entry_context_score,
+                    entry_context_weight=entry_context_weight,
                     protect_strategy_cache=prepared is not None,
                 )
                 if prepared is None:
@@ -1430,6 +1481,8 @@ class StrategyBacktestService:
         result.stats["full_feature_fallback"] = feature_plan.full_feature_fallback
         result.stats["execution_backend"] = s.execution_backend
         result.stats["selection"] = selection_stats
+        if sector_context_metadata is not None:
+            result.stats["sector_context_filter"] = sector_context_metadata
         result.stats["shared_market_data"] = prepared is not None
         result.stats["matrix_data_cache_hit"] = matrix_data_cache_hit
         result.stats["matrix_data_cache_status"] = matrix_data_cache_status
@@ -1643,6 +1696,34 @@ class StrategyBacktestService:
             dtype=bool,
             count=len(timestamp_labels),
         )
+
+    def _build_sector_context_mask(
+        self,
+        market: MarketDataMatrix,
+        filter_config: object,
+    ) -> tuple[
+        np.ndarray | None,
+        np.ndarray | None,
+        float,
+        dict[str, int | float | str] | None,
+    ]:
+        """Build a provider-neutral T-1 sector overlay for matrix entries."""
+        if not isinstance(filter_config, dict) or not filter_config.get("enabled", True):
+            return None, None, 0.0, None
+
+        from app.backtest.sector_context import build_sector_context_filter
+        from app.services.rps_rotation import _load_concept_map_df
+
+        kind = str(filter_config.get("kind", "industry"))
+        mapping, _ = _load_concept_map_df(self.engine.repo, kind)
+        if mapping.is_empty():
+            raise ValueError(f"没有可用的{kind}板块映射, 请先同步扩展数据")
+        result = build_sector_context_filter(market, mapping, filter_config)
+        metadata = dict(result.metadata)
+        metadata["membership_point_in_time"] = "snapshot"
+        score_weight = float(filter_config.get("score_weight", 0.0))
+        metadata["score_weight"] = score_weight
+        return result.entry_mask, result.score, score_weight, metadata
 
     @staticmethod
     def _build_regime_mask(

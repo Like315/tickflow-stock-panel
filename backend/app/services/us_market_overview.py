@@ -15,6 +15,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
+from statistics import fmean, median
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -49,6 +50,38 @@ SECTORS: dict[str, str] = {
 }
 
 PROXY_SYMBOLS = [*BENCHMARKS, *SECTORS, *THEME_PROXIES]
+
+# 全市场池不可用时,用一次有限的按标的实时请求保留可观察的美股实时路径。
+# 该样本只用于实时市场温度和排行,响应会明确标记为样本,不冒充全市场统计。
+REALTIME_SAMPLE: dict[str, str] = {
+    "AAPL.US": "苹果",
+    "MSFT.US": "微软",
+    "NVDA.US": "英伟达",
+    "AMZN.US": "亚马逊",
+    "GOOGL.US": "谷歌",
+    "META.US": "Meta",
+    "TSLA.US": "特斯拉",
+    "AVGO.US": "博通",
+    "AMD.US": "AMD",
+    "NFLX.US": "奈飞",
+    "JPM.US": "摩根大通",
+    "BAC.US": "美国银行",
+    "WMT.US": "沃尔玛",
+    "COST.US": "开市客",
+    "LLY.US": "礼来",
+    "UNH.US": "联合健康",
+    "XOM.US": "埃克森美孚",
+    "CVX.US": "雪佛龙",
+    "CAT.US": "卡特彼勒",
+    "GE.US": "GE 航空",
+}
+
+
+def _data_path(*steps: tuple[str, str, str]) -> list[dict[str, str]]:
+    return [
+        {"label": label, "detail": detail, "status": status}
+        for label, detail, status in steps
+    ]
 
 
 class UsMarketUnavailableError(RuntimeError):
@@ -106,13 +139,34 @@ def normalize_us_quote(quote: Mapping[str, Any]) -> dict[str, Any] | None:
     ext = ext if isinstance(ext, Mapping) else {}
     last_price = _finite(quote.get("last_price"))
     prev_close = _finite(quote.get("prev_close"))
+    open_price = _finite(quote.get("open"))
+    high = _finite(quote.get("high"))
+    low = _finite(quote.get("low"))
     change_amount = _finite(ext.get("change_amount"))
     change_pct = _finite(ext.get("change_pct"))
+    amplitude = _finite(quote.get("amplitude"))
+
+    if change_amount is None:
+        change_amount = _finite(quote.get("change_amount"))
+    if change_pct is None:
+        change_pct = _finite(quote.get("change_pct"))
+    if amplitude is None:
+        amplitude = _finite(ext.get("amplitude"))
+    if amplitude is not None and amplitude < 0:
+        amplitude = None
 
     if change_amount is None and last_price is not None and prev_close is not None:
         change_amount = last_price - prev_close
     if change_pct is None and change_amount is not None and prev_close not in (None, 0):
         change_pct = change_amount / prev_close
+    if (
+        amplitude is None
+        and high is not None
+        and low is not None
+        and high >= low
+        and (prev_close or 0) > 0
+    ):
+        amplitude = (high - low) / prev_close
 
     volume = _finite(quote.get("volume"))
     amount = _finite(quote.get("amount"))
@@ -126,8 +180,12 @@ def normalize_us_quote(quote: Mapping[str, Any]) -> dict[str, Any] | None:
         "name": str(quote.get("name") or ext.get("name") or symbol),
         "last_price": last_price,
         "prev_close": prev_close,
+        "open": open_price,
+        "high": high,
+        "low": low,
         "change_amount": change_amount,
         "change_pct": change_pct,
+        "amplitude": amplitude,
         "volume": volume,
         "amount": amount,
         "amount_estimated": amount_estimated,
@@ -151,8 +209,13 @@ def _public_quote(row: Mapping[str, Any], *, label: str | None = None) -> dict[s
         "symbol": row["symbol"],
         "name": label or row["name"],
         "last_price": row["last_price"],
+        "prev_close": row["prev_close"],
+        "open": row["open"],
+        "high": row["high"],
+        "low": row["low"],
         "change_amount": row["change_amount"],
         "change_pct": row["change_pct"],
+        "amplitude": row["amplitude"],
         "volume": row["volume"],
         "amount": row["amount"],
         "amount_estimated": row["amount_estimated"],
@@ -228,11 +291,21 @@ def build_live_overview(
         raise UsMarketUnavailableError("TickFlow 未返回有效的美股全市场行情")
 
     breadth, distribution = build_market_statistics(market_rows)
+    changes = [row["change_pct"] for row in market_rows]
+    breadth.update({
+        "average_change_pct": fmean(changes),
+        "median_change_pct": median(changes),
+        "advance_decline_ratio": breadth["up"] / breadth["down"] if breadth["down"] else None,
+        "net_advance_ratio": (breadth["up"] - breadth["down"]) / breadth["total"],
+    })
 
     ranking_rows = [
         row
         for row in market_rows
-        if row["last_price"] >= 1 and row["name"] and row["symbol"]
+        if row["last_price"] >= 1
+        and (row["volume"] or 0) > 0
+        and row["name"]
+        and row["symbol"]
     ]
     active_rows = [row for row in market_rows if (row["volume"] or 0) > 0]
 
@@ -258,9 +331,19 @@ def build_live_overview(
         "source": "TickFlow",
         "message": "TickFlow 美股全市场实时聚合",
         "as_of": latest_ms,
+        "market_timezone": str(NEW_YORK_TZ),
         "market_time": _iso_time(latest_ms, NEW_YORK_TZ),
         "beijing_time": _iso_time(latest_ms, BEIJING_TZ),
         "session": session,
+        "stale": False,
+        "realtime": True,
+        "coverage": "full_market",
+        "coverage_label": f"全市场 {breadth['total']:,} 只有效样本",
+        "data_path": _data_path(
+            ("TickFlow", "实时行情", "ok"),
+            ("US_Equity", "全市场池", "ok"),
+            ("看板", "实时聚合", "ok"),
+        ),
         "breadth": breadth,
         "distribution": distribution,
         "benchmarks": proxies(BENCHMARKS),
@@ -286,6 +369,14 @@ def build_live_overview(
             "active": [
                 _public_quote(row)
                 for row in sorted(active_rows, key=lambda item: item["amount"] or 0, reverse=True)[:10]
+            ],
+            "volatile": [
+                _public_quote(row)
+                for row in sorted(
+                    (item for item in ranking_rows if item["amplitude"] is not None),
+                    key=lambda item: item["amplitude"],
+                    reverse=True,
+                )[:10]
             ],
         },
     }
@@ -331,6 +422,9 @@ def _daily_proxy_quote(symbol: str, frame: Any) -> dict[str, Any] | None:
         "name": BENCHMARKS.get(symbol) or SECTORS.get(symbol) or THEME_PROXIES.get(symbol) or symbol,
         "last_price": last_price,
         "prev_close": prev_close,
+        "open": _finite(latest.get("open")),
+        "high": _finite(latest.get("high")),
+        "low": _finite(latest.get("low")),
         "volume": _finite(latest.get("volume")),
         "amount": _finite(latest.get("amount")),
         "timestamp": timestamp,
@@ -344,6 +438,8 @@ def build_proxy_overview(
     *,
     message: str,
     now_ms: int | None = None,
+    stale: bool = False,
+    realtime: bool = True,
 ) -> dict[str, Any]:
     """从有限的 ETF 报价构建不含全市场统计的降级响应。"""
     normalized: dict[str, dict[str, Any]] = {}
@@ -376,9 +472,19 @@ def build_proxy_overview(
         "source": "TickFlow",
         "message": message,
         "as_of": latest_ms,
+        "market_timezone": str(NEW_YORK_TZ),
         "market_time": _iso_time(latest_ms, NEW_YORK_TZ),
         "beijing_time": _iso_time(latest_ms, BEIJING_TZ),
         "session": session,
+        "stale": stale,
+        "realtime": realtime,
+        "coverage": "etf_realtime" if realtime else "etf_daily",
+        "coverage_label": "指数与行业 ETF 实时行情" if realtime else "指数与行业 ETF 最新日线",
+        "data_path": _data_path(
+            ("TickFlow", "实时行情" if realtime else "历史日线", "ok"),
+            ("ETF", "指数与行业代理", "ok"),
+            ("看板", "有限展示", "limited"),
+        ),
         "breadth": None,
         "distribution": [],
         "benchmarks": proxies(BENCHMARKS),
@@ -392,7 +498,7 @@ def build_proxy_overview(
             key=lambda row: row["change_pct"],
             reverse=True,
         ),
-        "rankings": {"gainers": [], "losers": [], "active": []},
+        "rankings": {"gainers": [], "losers": [], "active": [], "volatile": []},
     }
 
 
@@ -408,11 +514,14 @@ def build_partial_overview(raw: Any, *, now_ms: int | None = None) -> dict[str, 
         proxy_quotes,
         message="当前无美股实时行情权限。显示 ETF 最新日线代理行情",
         now_ms=now_ms,
+        stale=True,
+        realtime=False,
     )
 
 
 class UsMarketOverviewService:
     LIVE_TTL_SECONDS = 15.0
+    SAMPLE_TTL_SECONDS = 60.0
     FALLBACK_TTL_SECONDS = 300.0
 
     def __init__(
@@ -467,11 +576,13 @@ class UsMarketOverviewService:
     def _cache_is_fresh(self) -> bool:
         if self._cache is None:
             return False
-        ttl = (
-            self.LIVE_TTL_SECONDS
-            if self._cache.get("status") == "live"
-            else self.FALLBACK_TTL_SECONDS
-        )
+        coverage = self._cache.get("coverage")
+        if coverage == "full_market":
+            ttl = self.LIVE_TTL_SECONDS
+        elif coverage == "sample":
+            ttl = self.SAMPLE_TTL_SECONDS
+        else:
+            ttl = self.FALLBACK_TTL_SECONDS
         return self._monotonic() - self._cache_at < ttl
 
     def _refresh(self) -> dict[str, Any]:
@@ -483,16 +594,29 @@ class UsMarketOverviewService:
             self._write_snapshot(realtime)
             return realtime
 
-        snapshot = self._read_snapshot()
-        if snapshot is not None:
-            snapshot["status"] = "snapshot"
-            snapshot["message"] = "实时行情不可用。显示最近一次美股聚合快照"
-            return snapshot
+        try:
+            return self._fetch_realtime_sample()
+        except Exception as exc:
+            logger.info("美股核心样本实时行情不可用,尝试 ETF: %s", exc)
 
         try:
             return self._fetch_realtime_proxies()
         except Exception as exc:
-            logger.info("美股 ETF 实时报价不可用,尝试日线降级: %s", exc)
+            logger.info("美股 ETF 实时报价不可用,尝试快照: %s", exc)
+
+        snapshot = self._read_snapshot()
+        if snapshot is not None:
+            snapshot["status"] = "snapshot"
+            snapshot["message"] = "实时行情不可用。显示最近一次美股聚合快照"
+            snapshot["stale"] = True
+            snapshot["realtime"] = False
+            snapshot["coverage"] = "snapshot"
+            snapshot["coverage_label"] = "最近一次全市场聚合快照"
+            snapshot["data_path"] = _data_path(
+                ("本地快照", "历史聚合", "cached"),
+                ("看板", "只读展示", "limited"),
+            )
+            return snapshot
 
         try:
             return self._fetch_daily_proxies()
@@ -647,15 +771,70 @@ class UsMarketOverviewService:
             message="当前无美股全市场实时权限。显示 ETF 实时行情",
         )
 
+    def _fetch_realtime_sample(self) -> dict[str, Any]:
+        client = self._realtime_client_factory()
+        if client is None:
+            raise UsMarketUnavailableError("未配置 TickFlow 实时行情客户端")
+        rows = self._fetch_quote_rows(client, [*PROXY_SYMBOLS, *REALTIME_SAMPLE])
+        market_quotes: list[Mapping[str, Any]] = []
+        proxy_quotes: list[Mapping[str, Any]] = []
+        for row in rows:
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if symbol in REALTIME_SAMPLE:
+                labeled = dict(row)
+                labeled["name"] = REALTIME_SAMPLE[symbol]
+                market_quotes.append(labeled)
+            elif symbol in PROXY_SYMBOLS:
+                proxy_quotes.append(row)
+
+        result = build_live_overview(market_quotes, proxy_quotes)
+        sample_total = result["breadth"]["total"]
+        result.update(
+            status="partial",
+            message="全市场池权限不可用。显示核心样本与 ETF 实时行情",
+            coverage="sample",
+            coverage_label=f"核心样本 {sample_total}/{len(REALTIME_SAMPLE)} 只",
+            data_path=_data_path(
+                ("TickFlow", "实时行情", "ok"),
+                ("全市场池", "当前权限不可用", "unavailable"),
+                ("核心样本", f"{sample_total} 只实时", "ok"),
+                ("看板", "样本聚合", "limited"),
+            ),
+        )
+        return result
+
     @staticmethod
     def _fetch_proxy_quote_rows(client: Any) -> list[Mapping[str, Any]]:
+        return UsMarketOverviewService._fetch_quote_rows(client, PROXY_SYMBOLS)
+
+    @staticmethod
+    def _fetch_quote_rows(client: Any, requested: list[str]) -> list[Mapping[str, Any]]:
         rows: list[Mapping[str, Any]] = []
-        for start in range(0, len(PROXY_SYMBOLS), 5):
-            symbols = PROXY_SYMBOLS[start : start + 5]
+        batch_get = getattr(client.quotes, "get_by_symbols", None)
+        for start in range(0, len(requested), 5):
+            symbols = requested[start : start + 5]
             try:
-                rows.extend(client.quotes.get(symbols=symbols) or [])
-            except Exception as exc:
-                logger.info("美股 ETF 实时报价读取失败 (%s): %s", ",".join(symbols), exc)
+                if callable(batch_get):
+                    rows.extend(batch_get(symbols, as_dataframe=False) or [])
+                else:
+                    rows.extend(client.quotes.get(symbols=symbols) or [])
+            except Exception as batch_exc:
+                if not callable(batch_get):
+                    logger.info(
+                        "美股按标的实时报价读取失败 (%s): %s",
+                        ",".join(symbols),
+                        batch_exc,
+                    )
+                    continue
+                try:
+                    rows.extend(client.quotes.get(symbols=symbols) or [])
+                except Exception as symbol_exc:
+                    logger.info(
+                        "美股批量与按标的实时报价均失败 (%s): %s; %s",
+                        ",".join(symbols),
+                        batch_exc,
+                        symbol_exc,
+                    )
         return rows
 
     def _fetch_daily_proxies(self) -> dict[str, Any]:
@@ -685,6 +864,21 @@ class UsMarketOverviewService:
         if not isinstance(payload, dict) or payload.get("schema_version") != 1:
             logger.warning("美股聚合快照格式无效")
             return None
+        payload.setdefault("market_timezone", str(NEW_YORK_TZ))
+        payload.setdefault("stale", True)
+        payload.setdefault("realtime", False)
+        payload.setdefault("coverage", "snapshot")
+        payload.setdefault("coverage_label", "最近一次全市场聚合快照")
+        payload.setdefault(
+            "data_path",
+            _data_path(
+                ("本地快照", "历史聚合", "cached"),
+                ("看板", "只读展示", "limited"),
+            ),
+        )
+        rankings = payload.get("rankings")
+        if isinstance(rankings, dict):
+            rankings.setdefault("volatile", [])
         return payload
 
     def _write_snapshot(self, payload: Mapping[str, Any]) -> None:

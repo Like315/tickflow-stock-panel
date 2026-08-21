@@ -156,6 +156,10 @@ def normalize_minute(
                 .dt.replace_time_zone(None)
                 .cast(pl.Datetime("us"))
             )
+        elif dtype == pl.String:
+            df = df.with_columns(
+                pl.col("datetime").str.to_datetime(time_unit="us", strict=False)
+            )
         else:
             df = df.with_columns(pl.col("datetime").cast(pl.Datetime("us"), strict=False))
     if "symbol" not in df.columns or "datetime" not in df.columns:
