@@ -2,10 +2,14 @@
 
 只做胶水: 校验 → 持久化 → 失效引擎内存态。不含评估逻辑。
 """
+
 from __future__ import annotations
 
+import time as _time
+from contextlib import suppress
 from datetime import date
 from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -35,7 +39,7 @@ def _reconcile_index_asset_type(rule: dict, repo) -> dict:
     try:
         if all(repo.resolve_asset_type(s) == "index" for s in symbols):
             rule["asset_type"] = "index"
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return rule
 
@@ -46,8 +50,7 @@ def _sync_engine(request: Request) -> None:
     if engine is not None:
         repo = request.app.state.repo
         rules = [
-            _reconcile_index_asset_type(r, repo)
-            for r in monitor_rules.load_all(_data_dir(request))
+            _reconcile_index_asset_type(r, repo) for r in monitor_rules.load_all(_data_dir(request))
         ]
         engine.set_rules(rules)
 
@@ -55,8 +58,8 @@ def _sync_engine(request: Request) -> None:
 # ── Pydantic 模型 ───────────────────────────────────────
 class ConditionModel(BaseModel):
     field: str
-    op: str            # truth | > >= < <= == !=
-    value: float | None = None   # op 非 truth 时必填
+    op: str  # truth | > >= < <= == !=
+    value: float | None = None  # op 非 truth 时必填
 
 
 class SectorTargetModel(BaseModel):
@@ -73,48 +76,63 @@ class SectorTargetModel(BaseModel):
     member_count: int = 0
 
 
-class ContextSourceFilterModel(BaseModel):
-    mode: str = "off"
-    threshold: float = -0.35
+class OvernightUsContextFilterModel(BaseModel):
+    """隔夜美股环境过滤配置。"""
+
+    mode: Literal["off", "risk_gate", "require_positive", "display_only"] = "off"
+    threshold: float = Field(default=-0.35, ge=-1, le=1)
+
+
+class NewsContextFilterModel(BaseModel):
+    """个股新闻环境过滤配置。"""
+
+    mode: Literal["off", "negative_veto", "require_positive", "display_only"] = "off"
+    threshold: float = Field(default=-0.35, ge=-1, le=1)
 
 
 class ContextFiltersModel(BaseModel):
-    overnight_us: ContextSourceFilterModel = Field(
-        default_factory=ContextSourceFilterModel
+    """策略入场提醒使用的外部市场上下文配置。"""
+
+    overnight_us: OvernightUsContextFilterModel = Field(
+        default_factory=OvernightUsContextFilterModel
     )
-    news: ContextSourceFilterModel = Field(default_factory=ContextSourceFilterModel)
-    unavailable_action: str = "degrade"
+    news: NewsContextFilterModel = Field(default_factory=NewsContextFilterModel)
+    unavailable_action: Literal["degrade", "pause"] = "degrade"
 
 
 class RuleModel(BaseModel):
+    """监控规则写入模型。"""
+
     id: str
     name: str
     enabled: bool = True
-    type: str          # strategy | signal | price | market | sector
-    asset_type: str = "stock"   # stock | etf (etf: strategy 型走 ETF 历史加载器)
-    scope: str = "symbols"   # symbols | all | sector
-    symbols: list[str] = []
+    type: str  # strategy | signal | price | market | sector
+    asset_type: str = "stock"  # stock | etf (etf: strategy 型走 ETF 历史加载器)
+    scope: str = "symbols"  # symbols | all | sector
+    symbols: list[str] = Field(default_factory=list)
     sector: str | None = None
     sector_kind: str | None = None  # index | concept | industry
-    sector_targets: list[SectorTargetModel] = []
+    sector_targets: list[SectorTargetModel] = Field(default_factory=list)
     sector_trigger: str = "change_pct"  # change_pct | momentum
     threshold_pct: float = 1.0
     window_minutes: int = 5
     strategy_id: str | None = None
     direction: str = "entry"  # entry | exit | both
     notify_events: list[str] | None = None
-    conditions: list[ConditionModel] = []
+    conditions: list[ConditionModel] = Field(default_factory=list)
     context_filters: ContextFiltersModel = Field(default_factory=ContextFiltersModel)
-    logic: str = "and"        # and | or
+    logic: str = "and"  # and | or
     cooldown_seconds: int = 3600
-    severity: str = "info"    # info | warn | critical
-    webhook_url: str = ""     # Webhook 推送地址 (推送到 QMT 等外部软件, 待定)
+    severity: str = "info"  # info | warn | critical
+    webhook_url: str = ""  # Webhook 推送地址 (推送到 QMT 等外部软件, 待定)
     webhook_enabled: bool = False  # 兼容老规则 (已由 webhook_channels 取代, 仅做向后兼容读)
-    webhook_channels: list[str] = []  # 命中时推送的外部渠道 (合法值 'feishu' | 'wecom')
+    webhook_channels: list[str] = Field(
+        default_factory=list
+    )  # 命中时推送的外部渠道 (合法值 'feishu' | 'wecom')
     message: str = ""
     # ladder 专属 (连板梯队封单监控)
-    metric: str = "sealed_vol"   # sealed_vol=封单量(手) | sealed_amount=封单额(元)
-    threshold: float = 0         # 封单 <= 此值时报警 (原始单位: 量=手, 额=元)
+    metric: str = "sealed_vol"  # sealed_vol=封单量(手) | sealed_amount=封单额(元)
+    threshold: float = 0  # 封单 <= 此值时报警 (原始单位: 量=手, 额=元)
 
 
 # ── 字段选项 ─────────────────────────────────────────────
@@ -123,39 +141,44 @@ def get_options(request: Request):
     """返回可选字段、信号列、运算符、枚举,供前端表单使用。"""
     from app.indicators.pipeline import ENRICHED_COLUMNS
     from app.services.kline_sync import intraday_monitor_support
-    from app.strategy.custom_signals import ALLOWED_FIELDS, load_all as load_csg
+    from app.strategy.custom_signals import ALLOWED_FIELDS
+    from app.strategy.custom_signals import load_all as load_csg
 
     # 阈值字段 (带中文标签)
     threshold_fields = [
-        {"key": f, "label": ENRICHED_COLUMNS.get(f, f)}
-        for f in sorted(ALLOWED_FIELDS)
+        {"key": f, "label": ENRICHED_COLUMNS.get(f, f)} for f in sorted(ALLOWED_FIELDS)
     ]
     # 内置信号列 (布尔, 用于 op=truth)
     builtin_signals = [
-        {"key": k, "label": v}
-        for k, v in ENRICHED_COLUMNS.items()
-        if k.startswith("signal_")
+        {"key": k, "label": v} for k, v in ENRICHED_COLUMNS.items() if k.startswith("signal_")
     ]
     builtin_signals.extend(
-        {"key": key, "label": label}
-        for key, label in INTRADAY_SIGNAL_LABELS.items()
+        {"key": key, "label": label} for key, label in INTRADAY_SIGNAL_LABELS.items()
     )
     # 自定义信号列 (csg_)
     custom_sigs = []
     try:
         for cs in load_csg(_data_dir(request)):
             if cs.get("enabled") is not False:
-                custom_sigs.append({
-                    "key": f"csg_{cs['id']}",
-                    "label": cs.get("name", cs["id"]),
-                })
+                custom_sigs.append(
+                    {
+                        "key": f"csg_{cs['id']}",
+                        "label": cs.get("name", cs["id"]),
+                    }
+                )
     except Exception:
         pass
 
     sector_service = getattr(request.app.state, "sector_monitor_service", None)
-    sector_targets = sector_service.list_targets() if sector_service is not None else {
-        "index": [], "concept": [], "industry": [],
-    }
+    sector_targets = (
+        sector_service.list_targets()
+        if sector_service is not None
+        else {
+            "index": [],
+            "concept": [],
+            "industry": [],
+        }
+    )
     return {
         "threshold_fields": threshold_fields,
         "builtin_signals": builtin_signals,
@@ -196,58 +219,85 @@ def get_options(request: Request):
 
 
 # ── 列表 ───────────────────────────────────────────────
-@router.get("")
-def list_rules(request: Request):
-    repo = request.app.state.repo
-    rules = [
-        _reconcile_index_asset_type(r, repo)
-        for r in monitor_rules.load_all(_data_dir(request))
-    ]
+def _attach_intraday_rule_warnings(
+    request: Request,
+    rules: list[dict[str, Any]],
+) -> None:
+    """为超出实时分时能力的启用规则附加运行告警。"""
     from app.services.kline_sync import intraday_monitor_support
 
     support = intraday_monitor_support(getattr(request.app.state, "capabilities", None))
     intraday_rules = [
-        rule for rule in rules
-        if rule.get("enabled", True) and uses_intraday_signals(rule)
+        rule for rule in rules if rule.get("enabled", True) and uses_intraday_signals(rule)
     ]
     pooled_symbols = {
-        str(symbol)
-        for rule in intraday_rules
-        for symbol in rule.get("symbols", [])
-        if symbol
+        str(symbol) for rule in intraday_rules for symbol in rule.get("symbols", []) if symbol
     }
     runtime_warning = ""
     if intraday_rules and not support["available"]:
         runtime_warning = str(support["reason"])
     elif len(pooled_symbols) > int(support["max_symbols"]):
-        runtime_warning = (
-            f"分时监听标的池已超限: {len(pooled_symbols)}/{support['max_symbols']}"
-        )
+        runtime_warning = f"分时监听标的池已超限: {len(pooled_symbols)}/{support['max_symbols']}"
     if runtime_warning:
         for rule in intraday_rules:
             rule["runtime_warning"] = runtime_warning
+
+
+def _context_rule_warning(
+    rule: dict[str, Any],
+    context_status: dict[str, Any],
+) -> str:
+    """根据上下文可用性和规则模式生成单条运行告警。"""
+    filters = rule.get("context_filters") or {}
+    sources = (
+        ("隔夜美股", filters.get("overnight_us") or {}, context_status.get("overnight_us") or {}),
+        ("新闻", filters.get("news") or {}, context_status.get("news") or {}),
+    )
+    missing: list[str] = []
+    blocking_missing: list[str] = []
+    for label, config, status in sources:
+        mode = config.get("mode", "off")
+        unavailable = not status.get("available")
+        if label == "新闻" and status.get("status") == "no_data":
+            unavailable = False
+        if mode == "off" or not unavailable:
+            continue
+        missing.append(label)
+        if mode != "display_only":
+            blocking_missing.append(label)
+    if not missing:
+        return ""
+    if not blocking_missing:
+        action = "仅展示已跳过"
+    elif filters.get("unavailable_action") == "pause":
+        action = "已暂停入场"
+    else:
+        action = "已降级执行"
+    return f"{'、'.join(missing)}数据暂不可用 - {action}"
+
+
+def _attach_context_rule_warnings(
+    request: Request,
+    rules: list[dict[str, Any]],
+) -> None:
+    """为依赖不可用市场上下文的策略规则附加运行告警。"""
     context_service = getattr(request.app.state, "monitor_market_context_service", None)
     context_status = context_service.runtime_status() if context_service is not None else {}
     for rule in rules:
         if not rule.get("enabled", True) or rule.get("type") != "strategy":
             continue
-        filters = rule.get("context_filters") or {}
-        missing: list[str] = []
-        if (
-            (filters.get("overnight_us") or {}).get("mode", "off") != "off"
-            and not (context_status.get("overnight_us") or {}).get("available")
-        ):
-            missing.append("隔夜美股")
-        if (filters.get("news") or {}).get("mode", "off") != "off":
-            news_status = context_status.get("news") or {}
-            if not news_status.get("available") and news_status.get("status") != "no_data":
-                missing.append("新闻")
-        if missing:
-            action = "已暂停入场" if filters.get("unavailable_action") == "pause" else "已降级执行"
-            rule["runtime_warning"] = f"{'、'.join(missing)}数据暂不可用 - {action}"
+        warning = _context_rule_warning(rule, context_status)
+        if warning:
+            rule["runtime_warning"] = warning
+
+
+def _attach_watchlist_rule_warnings(
+    request: Request,
+    rules: list[dict[str, Any]],
+) -> None:
+    """在实时行情未覆盖全部自选股时附加范围告警。"""
     watchlist_rules = [
-        rule for rule in rules
-        if rule.get("enabled", True) and rule.get("scope") == "watchlist"
+        rule for rule in rules if rule.get("enabled", True) and rule.get("scope") == "watchlist"
     ]
     if watchlist_rules:
         try:
@@ -263,17 +313,38 @@ def list_rules(request: Request):
                     rule["runtime_warning"] = f"{prior}; {warning}" if prior else warning
         except Exception:
             pass
+
+
+def _attach_sector_rule_warnings(
+    request: Request,
+    rules: list[dict[str, Any]],
+) -> None:
+    """为板块数据缺失或未启用的规则附加运行告警。"""
     sector_service = getattr(request.app.state, "sector_monitor_service", None)
-    if sector_service is not None:
-        for rule in rules:
-            if rule.get("type") != "sector":
-                continue
-            missing = sector_service.missing_target_keys(rule.get("sector_targets", []))
-            unavailable = sector_service.unavailable_target_keys(rule.get("sector_targets", []))
-            if missing:
-                rule["runtime_warning"] = "部分板块数据已不存在, 请重新选择监控对象"
-            elif unavailable:
-                rule["runtime_warning"] = "所选指数未加入实时指数池, 请先在实时监控设置中启用"
+    if sector_service is None:
+        return
+    for rule in rules:
+        if rule.get("type") != "sector":
+            continue
+        targets = rule.get("sector_targets", [])
+        if sector_service.missing_target_keys(targets):
+            rule["runtime_warning"] = "部分板块数据已不存在, 请重新选择监控对象"
+        elif sector_service.unavailable_target_keys(targets):
+            rule["runtime_warning"] = "所选指数未加入实时指数池, 请先在实时监控设置中启用"
+
+
+@router.get("")
+def list_rules(request: Request) -> dict[str, list[dict[str, Any]]]:
+    """返回监控规则及当前运行能力产生的告警。"""
+    repo = request.app.state.repo
+    rules = [
+        _reconcile_index_asset_type(rule, repo)
+        for rule in monitor_rules.load_all(_data_dir(request))
+    ]
+    _attach_intraday_rule_warnings(request, rules)
+    _attach_context_rule_warnings(request, rules)
+    _attach_watchlist_rule_warnings(request, rules)
+    _attach_sector_rule_warnings(request, rules)
     # 按 created_at 倒序
     rules.sort(key=lambda r: r.get("created_at", ""), reverse=True)
     return {"rules": rules}
@@ -288,6 +359,7 @@ def save_rule(req: RuleModel, request: Request):
     # 无能力时拒绝创建, 避免规则存了却永远无法触发。
     if rule.get("type") == "ladder":
         from app.tickflow.capabilities import Cap
+
         capset = getattr(request.app.state, "capabilities", None)
         if capset is None or not capset.has(Cap.DEPTH5_BATCH):
             raise HTTPException(
@@ -328,7 +400,9 @@ def save_rule(req: RuleModel, request: Request):
         if sector_service.missing_target_keys(targets):
             raise HTTPException(status_code=400, detail="所选板块数据已变化, 请重新选择")
         if sector_service.unavailable_target_keys(targets):
-            raise HTTPException(status_code=400, detail="所选指数未加入实时指数池, 请先在实时监控设置中启用")
+            raise HTTPException(
+                status_code=400, detail="所选指数未加入实时指数池, 请先在实时监控设置中启用"
+            )
     if rule.get("enabled", True) and uses_intraday_signals(rule):
         from app.services.kline_sync import intraday_monitor_support
 
@@ -368,27 +442,36 @@ def delete_rule(rule_id: str, request: Request):
 
 # ── 演示数据生成 (仅 Dev 页用) ─────────────────────────
 
-import time as _time
-from datetime import datetime, timezone
 
-
-def _demo_rule(rule_id: str, name: str, rtype: str, scope: str, symbols: list[str],
-               conditions: list[dict], logic: str = "or", cooldown: int = 3600,
-               severity: str = "info", message: str = "",
-               strategy_id: str | None = None, direction: str = "entry") -> dict:
-    rule = monitor_rules.normalize({
-        "id": rule_id,
-        "name": name,
-        "type": rtype,
-        "scope": scope,
-        "symbols": symbols,
-        "conditions": conditions,
-        "logic": logic,
-        "cooldown_seconds": cooldown,
-        "severity": severity,
-        "message": message,
-        "enabled": True,
-    })
+def _demo_rule(
+    rule_id: str,
+    name: str,
+    rtype: str,
+    scope: str,
+    symbols: list[str],
+    conditions: list[dict],
+    logic: str = "or",
+    cooldown: int = 3600,
+    severity: str = "info",
+    message: str = "",
+    strategy_id: str | None = None,
+    direction: str = "entry",
+) -> dict:
+    rule = monitor_rules.normalize(
+        {
+            "id": rule_id,
+            "name": name,
+            "type": rtype,
+            "scope": scope,
+            "symbols": symbols,
+            "conditions": conditions,
+            "logic": logic,
+            "cooldown_seconds": cooldown,
+            "severity": severity,
+            "message": message,
+            "enabled": True,
+        }
+    )
     if rtype == "strategy":
         rule["strategy_id"] = strategy_id
         rule["direction"] = direction
@@ -396,23 +479,86 @@ def _demo_rule(rule_id: str, name: str, rtype: str, scope: str, symbols: list[st
 
 
 _DEMO_RULES_TEMPLATE = [
-    ("个股信号 · 茅台放量突破", "signal", "symbols", ["600519.SH"],
-     [{"field": "signal_volume_surge", "op": "truth"},
-      {"field": "signal_n_day_high", "op": "truth"}], "or", "info"),
-    ("个股信号 · 宁德金叉", "signal", "symbols", ["300750.SZ"],
-     [{"field": "signal_ma_golden_5_20", "op": "truth"}], "or", "info"),
-    ("价格 · 平安跌幅监控", "price", "symbols", ["000001.SZ"],
-     [{"field": "change_pct", "op": "<", "value": -0.03}], "or", "warn", "warn"),
-    ("价格 · 比亚迪RSI超卖", "price", "symbols", ["002594.SZ"],
-     [{"field": "rsi_14", "op": "<", "value": 30}], "and", "warn", "warn"),
-    ("市场异动 · 全市场涨停", "market", "all", [],
-     [{"field": "signal_limit_up", "op": "truth"}], "or", "critical", "critical"),
-    ("市场异动 · 全市场炸板", "market", "all", [],
-     [{"field": "signal_broken_limit_up", "op": "truth"}], "or", "warn", "warn"),
-    ("市场异动 · 跌幅超5%", "market", "all", [],
-     [{"field": "change_pct", "op": "<", "value": -0.05}], "or", "warn", "warn"),
-    ("个股信号 · 茅台跌破MA20", "signal", "symbols", ["600519.SH"],
-     [{"field": "signal_ma20_breakdown", "op": "truth"}], "or", "info"),
+    (
+        "个股信号 · 茅台放量突破",
+        "signal",
+        "symbols",
+        ["600519.SH"],
+        [
+            {"field": "signal_volume_surge", "op": "truth"},
+            {"field": "signal_n_day_high", "op": "truth"},
+        ],
+        "or",
+        "info",
+    ),
+    (
+        "个股信号 · 宁德金叉",
+        "signal",
+        "symbols",
+        ["300750.SZ"],
+        [{"field": "signal_ma_golden_5_20", "op": "truth"}],
+        "or",
+        "info",
+    ),
+    (
+        "价格 · 平安跌幅监控",
+        "price",
+        "symbols",
+        ["000001.SZ"],
+        [{"field": "change_pct", "op": "<", "value": -0.03}],
+        "or",
+        "warn",
+        "warn",
+    ),
+    (
+        "价格 · 比亚迪RSI超卖",
+        "price",
+        "symbols",
+        ["002594.SZ"],
+        [{"field": "rsi_14", "op": "<", "value": 30}],
+        "and",
+        "warn",
+        "warn",
+    ),
+    (
+        "市场异动 · 全市场涨停",
+        "market",
+        "all",
+        [],
+        [{"field": "signal_limit_up", "op": "truth"}],
+        "or",
+        "critical",
+        "critical",
+    ),
+    (
+        "市场异动 · 全市场炸板",
+        "market",
+        "all",
+        [],
+        [{"field": "signal_broken_limit_up", "op": "truth"}],
+        "or",
+        "warn",
+        "warn",
+    ),
+    (
+        "市场异动 · 跌幅超5%",
+        "market",
+        "all",
+        [],
+        [{"field": "change_pct", "op": "<", "value": -0.05}],
+        "or",
+        "warn",
+        "warn",
+    ),
+    (
+        "个股信号 · 茅台跌破MA20",
+        "signal",
+        "symbols",
+        ["600519.SH"],
+        [{"field": "signal_ma20_breakdown", "op": "truth"}],
+        "or",
+        "info",
+    ),
 ]
 
 # 策略类型单独声明 (格式不同: 含 strategy_id + direction)
@@ -428,7 +574,7 @@ def seed_demo_rules(request: Request):
     ts = int(_time.time() * 1000)
     created = []
     i = 0
-    for (name, rtype, scope, symbols, conditions, logic, severity, sev) in _DEMO_RULES_TEMPLATE:
+    for name, rtype, scope, symbols, conditions, logic, _severity, sev in _DEMO_RULES_TEMPLATE:
         rule_id = f"demo_{ts}_{i}"
         rule = _demo_rule(rule_id, name, rtype, scope, symbols, conditions, logic, 3600, sev)
         monitor_rules.save_one(_data_dir(request), rule)
@@ -438,8 +584,17 @@ def seed_demo_rules(request: Request):
     for sr in _DEMO_STRATEGY_RULES:
         rule_id = f"demo_{ts}_{i}"
         rule = _demo_rule(
-            rule_id, sr["name"], "strategy", "all", [], [], "and", 3600, "info",
-            strategy_id=sr["strategy_id"], direction=sr.get("direction", "entry"),
+            rule_id,
+            sr["name"],
+            "strategy",
+            "all",
+            [],
+            [],
+            "and",
+            3600,
+            "info",
+            strategy_id=sr["strategy_id"],
+            direction=sr.get("direction", "entry"),
         )
         monitor_rules.save_one(_data_dir(request), rule)
         created.append(rule_id)
@@ -491,14 +646,18 @@ def test_ladder(request: Request):
     mock = enriched_today.select(avail).filter(pl.col("symbol").is_in(list(sealed.keys())))
 
     # 注入 _sealed_vol
-    sealed_df = pl.DataFrame({
-        "symbol": list(sealed.keys()),
-        "_sealed_vol": list(sealed.values()),
-    })
+    sealed_df = pl.DataFrame(
+        {
+            "symbol": list(sealed.keys()),
+            "_sealed_vol": list(sealed.values()),
+        }
+    )
     mock = mock.join(sealed_df, on="symbol", how="inner")
 
     # 取所有 ladder 规则, 逐条纯条件判断 (绕过引擎 cooldown, 不污染 _last_fire)
-    ladder_rules = [r for r in engine.rules.values() if r.get("type") == "ladder" and r.get("enabled", True)]
+    ladder_rules = [
+        r for r in engine.rules.values() if r.get("type") == "ladder" and r.get("enabled", True)
+    ]
     all_events = []
     not_triggered = []
 
@@ -525,34 +684,40 @@ def test_ladder(request: Request):
             else:
                 sv_text = f"{cur_val:,.0f} 手"
                 th_text = f"{thr:,.0f} 手"
-            all_events.append({
-                "rule_id": rule["id"],
-                "rule_name": rule.get("name", ""),
-                "symbol": sym,
-                "name": sym,
-                "type": warn_label,
-                "message": f"{warn_label} · 封单 {sv_text} ≤ {th_text}",
-                "severity": rule.get("severity", "warn"),
-                "sealed_value": cur_val,
-                "sealed_metric": metric,
-                "current_sealed_vol": cur_vol,
-                "current_sealed_amount": cur_amt,
-            })
-        else:
-            reason = "封单数据缺失" if cur_val is None else (
-                f"封单 {cur_val:,.0f} > 阈值 {thr:,.0f}" if cur_val > thr else "封单为 0"
+            all_events.append(
+                {
+                    "rule_id": rule["id"],
+                    "rule_name": rule.get("name", ""),
+                    "symbol": sym,
+                    "name": sym,
+                    "type": warn_label,
+                    "message": f"{warn_label} · 封单 {sv_text} ≤ {th_text}",
+                    "severity": rule.get("severity", "warn"),
+                    "sealed_value": cur_val,
+                    "sealed_metric": metric,
+                    "current_sealed_vol": cur_vol,
+                    "current_sealed_amount": cur_amt,
+                }
             )
-            not_triggered.append({
-                "rule_id": rule["id"],
-                "rule_name": rule.get("name", ""),
-                "symbol": sym,
-                "metric": metric,
-                "threshold": thr,
-                "current_value": cur_val,
-                "current_sealed_vol": cur_vol,
-                "current_sealed_amount": cur_amt,
-                "reason": reason,
-            })
+        else:
+            reason = (
+                "封单数据缺失"
+                if cur_val is None
+                else (f"封单 {cur_val:,.0f} > 阈值 {thr:,.0f}" if cur_val > thr else "封单为 0")
+            )
+            not_triggered.append(
+                {
+                    "rule_id": rule["id"],
+                    "rule_name": rule.get("name", ""),
+                    "symbol": sym,
+                    "metric": metric,
+                    "threshold": thr,
+                    "current_value": cur_val,
+                    "current_sealed_vol": cur_vol,
+                    "current_sealed_amount": cur_amt,
+                    "reason": reason,
+                }
+            )
 
     return {
         "ok": True,
@@ -571,6 +736,7 @@ def trigger_ladder(request: Request):
     让用户看到真实的预警通知。绕过 cooldown 强制触发。
     """
     import time
+
     from app.services import alert_store
 
     repo = request.app.state.repo
@@ -600,6 +766,7 @@ def trigger_ladder(request: Request):
 
     # 构造真实 rule_events (与 _evaluate_ladder 产出格式一致)
     import polars as pl
+
     enriched_today, _ = repo.get_enriched_latest()
     cols = [c for c in ["symbol", "close", "change_pct"] if c in enriched_today.columns]
     mock = enriched_today.select(cols).filter(pl.col("symbol").is_in(list(sealed.keys())))
@@ -612,8 +779,12 @@ def trigger_ladder(request: Request):
     try:
         inst = repo.get_instruments()
         if not inst.is_empty() and "name" in inst.columns:
-            name_map = {r["symbol"]: r["name"] for r in inst.select(["symbol", "name"]).iter_rows(named=True) if r.get("name")}
-    except Exception:  # noqa: BLE001
+            name_map = {
+                r["symbol"]: r["name"]
+                for r in inst.select(["symbol", "name"]).iter_rows(named=True)
+                if r.get("name")
+            }
+    except Exception:
         pass
 
     for rule in engine.rules.values():
@@ -641,57 +812,69 @@ def trigger_ladder(request: Request):
             sv_text = f"{cur_val:,.0f} 手"
             th_text = f"{thr:,.0f} 手"
 
-        rule_events.append({
-            "ts": int(now * 1000),
-            "rule_id": rule["id"],
-            "rule_name": rule.get("name", ""),
-            "source": "ladder",
-            "type": warn_label,
-            "symbol": sym,
-            "name": name_map.get(sym, sym),
-            "message": f"{warn_label} · 封单 {sv_text} ≤ {th_text}",
-            "price": close_v,
-            "change_pct": row["change_pct"][0] if "change_pct" in row.columns else None,
-            "signals": [],
-            "severity": rule.get("severity", "warn"),
-            "conditions": [],
-            "logic": "and",
-            "sealed_value": cur_val,
-            "sealed_metric": metric,
-        })
+        rule_events.append(
+            {
+                "ts": int(now * 1000),
+                "rule_id": rule["id"],
+                "rule_name": rule.get("name", ""),
+                "source": "ladder",
+                "type": warn_label,
+                "symbol": sym,
+                "name": name_map.get(sym, sym),
+                "message": f"{warn_label} · 封单 {sv_text} ≤ {th_text}",
+                "price": close_v,
+                "change_pct": row["change_pct"][0] if "change_pct" in row.columns else None,
+                "signals": [],
+                "severity": rule.get("severity", "warn"),
+                "conditions": [],
+                "logic": "and",
+                "sealed_value": cur_val,
+                "sealed_metric": metric,
+            }
+        )
 
     if not rule_events:
-        raise HTTPException(status_code=400, detail="当前无 ladder 规则满足触发条件 (封单均 > 阈值)")
+        raise HTTPException(
+            status_code=400, detail="当前无 ladder 规则满足触发条件 (封单均 > 阈值)"
+        )
 
     # 1. 落盘到 alerts.jsonl
-    try:
+    with suppress(Exception):
         alert_store.append_many(repo.store.data_dir, rule_events)
-    except Exception as e:  # noqa: BLE001
-        pass  # 落盘失败不阻断推送
 
     # 2. SSE 推送 (入 pending_alerts 队列)
     if quote_svc:
-        sse_alerts = [{
-            "source": ev["source"], "type": ev["type"], "rule_id": ev["rule_id"],
-            "strategy_id": None, "symbol": ev["symbol"], "name": ev["name"],
-            "message": ev["message"], "price": ev["price"], "change_pct": ev["change_pct"],
-            "signals": ev["signals"], "severity": ev["severity"],
-            "conditions": ev["conditions"], "logic": ev["logic"],
-        } for ev in rule_events]
-        try:
+        sse_alerts = [
+            {
+                "source": ev["source"],
+                "type": ev["type"],
+                "rule_id": ev["rule_id"],
+                "strategy_id": None,
+                "symbol": ev["symbol"],
+                "name": ev["name"],
+                "message": ev["message"],
+                "price": ev["price"],
+                "change_pct": ev["change_pct"],
+                "signals": ev["signals"],
+                "severity": ev["severity"],
+                "conditions": ev["conditions"],
+                "logic": ev["logic"],
+            }
+            for ev in rule_events
+        ]
+        with suppress(Exception):
             quote_svc.push_alerts(sse_alerts)
-        except Exception:  # noqa: BLE001
-            pass
 
     # 3. 飞书推送
     if quote_svc:
-        try:
+        with suppress(Exception):
             quote_svc._maybe_send_webhook(rule_events, engine)
-        except Exception:  # noqa: BLE001
-            pass
 
     return {
         "ok": True,
         "triggered": len(rule_events),
-        "events": [{"symbol": ev["symbol"], "name": ev["name"], "message": ev["message"]} for ev in rule_events],
+        "events": [
+            {"symbol": ev["symbol"], "name": ev["name"], "message": ev["message"]}
+            for ev in rule_events
+        ],
     }

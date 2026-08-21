@@ -1,4 +1,5 @@
 """Point-in-Time training dataset construction for the investment expert."""
+
 from __future__ import annotations
 
 import hashlib
@@ -34,36 +35,59 @@ def build_point_in_time_candidates(
     if frame.schema["date"] != pl.Date:
         frame = frame.with_columns(pl.col("date").cast(pl.Date, strict=False))
     if "name" in frame.columns:
-        frame = frame.filter(~pl.col("name").fill_null("").str.to_uppercase().str.contains(r"\*?ST"))
-    frame = frame.filter(
-        (pl.col("close").cast(pl.Float64, strict=False) > 0)
-        & (pl.col("amount").cast(pl.Float64, strict=False) > 0)
-    ).with_columns(
-        (
-            pl.col("close").cast(pl.Float64)
-            / pl.col("close").cast(pl.Float64).shift(20).over("symbol")
-            - 1
-        ).alias("_momentum_20d"),
-        pl.col("amount").cast(pl.Float64).alias("_amount"),
-    ).drop_nulls(["_momentum_20d"])
+        frame = frame.filter(
+            ~pl.col("name").fill_null("").str.to_uppercase().str.contains(r"\*?ST")
+        )
+    frame = (
+        frame.filter(
+            (pl.col("close").cast(pl.Float64, strict=False) > 0)
+            & (pl.col("amount").cast(pl.Float64, strict=False) > 0)
+        )
+        .with_columns(
+            (
+                pl.col("close").cast(pl.Float64)
+                / pl.col("close").cast(pl.Float64).shift(20).over("symbol")
+                - 1
+            ).alias("_momentum_20d"),
+            pl.col("amount").cast(pl.Float64).alias("_amount"),
+        )
+        .drop_nulls(["_momentum_20d"])
+    )
     if frame.is_empty():
         return pl.DataFrame()
 
-    dates = frame.select("date").unique().sort("date").with_columns(
-        pl.col("date").shift(-1).alias("trade_date")
-    ).rename({"date": "source_date"}).drop_nulls("trade_date")
-    ranked = frame.with_columns(
-        pl.col("_momentum_20d").rank(method="average", descending=True).over("date").alias("_mom_rank"),
-        pl.col("_amount").rank(method="average", descending=True).over("date").alias("_amt_rank"),
-        pl.len().over("date").cast(pl.Float64).alias("_count"),
-    ).with_columns(
-        (
-            0.7 * (1 - (pl.col("_mom_rank") - 1) / pl.col("_count"))
-            + 0.3 * (1 - (pl.col("_amt_rank") - 1) / pl.col("_count"))
-        ).alias("score")
-    ).sort(["date", "score", "symbol"], descending=[False, True, False]).group_by(
-        "date", maintain_order=True
-    ).head(limit).rename({"date": "source_date"}).join(dates, on="source_date", how="inner")
+    dates = (
+        frame.select("date")
+        .unique()
+        .sort("date")
+        .with_columns(pl.col("date").shift(-1).alias("trade_date"))
+        .rename({"date": "source_date"})
+        .drop_nulls("trade_date")
+    )
+    ranked = (
+        frame.with_columns(
+            pl.col("_momentum_20d")
+            .rank(method="average", descending=True)
+            .over("date")
+            .alias("_mom_rank"),
+            pl.col("_amount")
+            .rank(method="average", descending=True)
+            .over("date")
+            .alias("_amt_rank"),
+            pl.len().over("date").cast(pl.Float64).alias("_count"),
+        )
+        .with_columns(
+            (
+                0.7 * (1 - (pl.col("_mom_rank") - 1) / pl.col("_count"))
+                + 0.3 * (1 - (pl.col("_amt_rank") - 1) / pl.col("_count"))
+            ).alias("score")
+        )
+        .sort(["date", "score", "symbol"], descending=[False, True, False])
+        .group_by("date", maintain_order=True)
+        .head(limit)
+        .rename({"date": "source_date"})
+        .join(dates, on="source_date", how="inner")
+    )
     return ranked.select(
         "trade_date", "source_date", "symbol", "score", "_momentum_20d", "_amount"
     ).sort(["trade_date", "score", "symbol"], descending=[False, True, False])
@@ -155,16 +179,17 @@ class TrainingDatasetBuilder:
             required_symbols = self._tradable_symbols(daily, trade_date, symbols)
             remote_for_date = bool(
                 remote_minutes_enabled
-                and (
-                    remote_minute_start_date is None
-                    or trade_date >= remote_minute_start_date
-                )
+                and (remote_minute_start_date is None or trade_date >= remote_minute_start_date)
             )
-            allowed_missing_symbols = self._audited_gap_symbols(
-                audited_gaps,
-                trade_date,
-                required_symbols,
-            ) if not remote_for_date else []
+            allowed_missing_symbols = (
+                self._audited_gap_symbols(
+                    audited_gaps,
+                    trade_date,
+                    required_symbols,
+                )
+                if not remote_for_date
+                else []
+            )
             if (
                 download_minutes
                 and minute_path.exists()
@@ -265,9 +290,7 @@ class TrainingDatasetBuilder:
 
         minute_sources = []
         if remote_minutes_enabled:
-            minute_sources.append(
-                getattr(self.minute_provider, "name", "configured provider")
-            )
+            minute_sources.append(getattr(self.minute_provider, "name", "configured provider"))
         if fallback_minute_source is not None:
             minute_sources.append(fallback_minute_source)
         manifest = {
@@ -360,7 +383,9 @@ class TrainingDatasetBuilder:
     def _filter_trade_date(minute: pl.DataFrame, trade_date: date) -> pl.DataFrame:
         if "datetime" not in minute.columns:
             return pl.DataFrame()
-        return minute.filter(pl.col("datetime").cast(pl.Datetime, strict=False).dt.date() == trade_date)
+        return minute.filter(
+            pl.col("datetime").cast(pl.Datetime, strict=False).dt.date() == trade_date
+        )
 
     def _load_local_minute(self, symbols: list[str], trade_date: date) -> pl.DataFrame:
         loader = getattr(self.repo, "get_minute_batch", None)
@@ -403,12 +428,8 @@ class TrainingDatasetBuilder:
         except (OSError, pl.exceptions.PolarsError):
             return pl.DataFrame()
         return (
-            audit.filter(
-                pl.col("classification") == "verified_trading_day_missing_minutes"
-            )
-            .with_columns(
-                (pl.col("symbol") + pl.lit(".") + pl.col("exchange")).alias("symbol")
-            )
+            audit.filter(pl.col("classification") == "verified_trading_day_missing_minutes")
+            .with_columns((pl.col("symbol") + pl.lit(".") + pl.col("exchange")).alias("symbol"))
             .select(pl.col("date").alias("trade_date"), "symbol")
             .unique()
         )
@@ -424,8 +445,7 @@ class TrainingDatasetBuilder:
         return sorted(
             str(value)
             for value in audit.filter(
-                (pl.col("trade_date") == trade_date)
-                & pl.col("symbol").is_in(required_symbols)
+                (pl.col("trade_date") == trade_date) & pl.col("symbol").is_in(required_symbols)
             )["symbol"].to_list()
         )
 
@@ -521,13 +541,13 @@ class TrainingDatasetBuilder:
         trade_date: date,
     ) -> pl.DataFrame:
         raw_daily = (
-            pl.coalesce("raw_close", "close")
-            if "raw_close" in daily.columns
-            else pl.col("close")
+            pl.coalesce("raw_close", "close") if "raw_close" in daily.columns else pl.col("close")
         )
-        context = daily.sort(["symbol", "date"]).with_columns(
-            raw_daily.shift(1).over("symbol").alias("previous_close")
-        ).filter(pl.col("date") == trade_date)
+        context = (
+            daily.sort(["symbol", "date"])
+            .with_columns(raw_daily.shift(1).over("symbol").alias("previous_close"))
+            .filter(pl.col("date") == trade_date)
+        )
         if "name" not in context.columns:
             context = context.with_columns(pl.lit("").alias("name"))
         context = context.select("symbol", "previous_close", "name").unique("symbol")
@@ -541,20 +561,13 @@ class TrainingDatasetBuilder:
         )
         limit_up = polars_limit_price(pl.col("previous_close"), limit_pct, up=True)
         limit_down = polars_limit_price(pl.col("previous_close"), limit_pct, up=False)
-        spread = (
-            pl.max_horizontal("raw_open", "raw_high", "raw_low", "raw_close")
-            - pl.min_horizontal("raw_open", "raw_high", "raw_low", "raw_close")
-        )
+        spread = pl.max_horizontal(
+            "raw_open", "raw_high", "raw_low", "raw_close"
+        ) - pl.min_horizontal("raw_open", "raw_high", "raw_low", "raw_close")
         tolerance = pl.max_horizontal(pl.col("raw_close").abs() * 1e-4, pl.lit(0.01))
         one_price = spread <= tolerance
         return frame.with_columns(
-            ((pl.col("volume") <= 0) | pl.col("previous_close").is_null()).alias(
-                "is_suspended"
-            ),
-            (one_price & ((pl.col("raw_close") - limit_up).abs() < 0.005)).alias(
-                "is_limit_up"
-            ),
-            (one_price & ((pl.col("raw_close") - limit_down).abs() < 0.005)).alias(
-                "is_limit_down"
-            ),
+            ((pl.col("volume") <= 0) | pl.col("previous_close").is_null()).alias("is_suspended"),
+            (one_price & ((pl.col("raw_close") - limit_up).abs() < 0.005)).alias("is_limit_up"),
+            (one_price & ((pl.col("raw_close") - limit_down).abs() < 0.005)).alias("is_limit_down"),
         ).drop("name")

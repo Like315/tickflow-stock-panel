@@ -23,17 +23,26 @@ def test_normalize_openai_base_url_preserves_v1_base():
 
 
 def test_normalize_openai_base_url_strips_chat_completions_path():
-    assert normalize_openai_base_url("http://ai.zedbox.cn:8080/v1/chat/completions") == "http://ai.zedbox.cn:8080/v1"
+    assert (
+        normalize_openai_base_url("http://ai.zedbox.cn:8080/v1/chat/completions")
+        == "http://ai.zedbox.cn:8080/v1"
+    )
 
 
 def test_normalize_openai_base_url_preserves_glm_v4():
     """智谱 GLM 用 /api/paas/v4, 不能强制补成 /v4/v1 (会 404)。"""
-    assert normalize_openai_base_url("https://open.bigmodel.cn/api/paas/v4") == "https://open.bigmodel.cn/api/paas/v4"
+    assert (
+        normalize_openai_base_url("https://open.bigmodel.cn/api/paas/v4")
+        == "https://open.bigmodel.cn/api/paas/v4"
+    )
 
 
 def test_normalize_openai_base_url_strips_chat_completions_from_glm_v4():
     """用户填完整 /v4/chat/completions 时, 去掉后缀归一化为 /v4。"""
-    assert normalize_openai_base_url("https://open.bigmodel.cn/api/paas/v4/chat/completions") == "https://open.bigmodel.cn/api/paas/v4"
+    assert (
+        normalize_openai_base_url("https://open.bigmodel.cn/api/paas/v4/chat/completions")
+        == "https://open.bigmodel.cn/api/paas/v4"
+    )
 
 
 def test_normalize_openai_base_url_preserves_other_version_segments():
@@ -42,7 +51,10 @@ def test_normalize_openai_base_url_preserves_other_version_segments():
 
 
 def test_normalize_openai_base_url_strips_trailing_slash():
-    assert normalize_openai_base_url("https://open.bigmodel.cn/api/paas/v4/") == "https://open.bigmodel.cn/api/paas/v4"
+    assert (
+        normalize_openai_base_url("https://open.bigmodel.cn/api/paas/v4/")
+        == "https://open.bigmodel.cn/api/paas/v4"
+    )
 
 
 def test_format_openai_error_hides_html_gateway_body():
@@ -116,7 +128,8 @@ def test_is_temperature_rejected_matches_generic_temperature_hint():
         request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
     )
     exc = openai.BadRequestError(
-        "bad request", response=response,
+        "bad request",
+        response=response,
         body={"error": {"message": "unsupported parameter: temperature"}},
     )
     assert _is_temperature_rejected(exc) is True
@@ -130,7 +143,8 @@ def test_is_temperature_rejected_false_for_other_400():
         request=httpx.Request("POST", "https://example.com/v1/chat/completions"),
     )
     exc = openai.BadRequestError(
-        "bad request", response=response,
+        "bad request",
+        response=response,
         body={"error": {"message": "model not found"}},
     )
     assert _is_temperature_rejected(exc) is False

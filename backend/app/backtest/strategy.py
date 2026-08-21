@@ -2,6 +2,7 @@
 
 核心优化: 向量化 filter_fn，不逐日调用 StrategyEngine.run()。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -47,10 +48,21 @@ from app.strategy.scoring import scoring_dependencies, scoring_value_expr
 logger = logging.getLogger(__name__)
 
 BENCHMARK_SYMBOL = "000001.SH"
-_EXECUTION_COLUMNS = frozenset({
-    "symbol", "date", "open", "high", "low", "close", "volume",
-    "name", "score", "signal_limit_up", "signal_limit_down",
-})
+_EXECUTION_COLUMNS = frozenset(
+    {
+        "symbol",
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "name",
+        "score",
+        "signal_limit_up",
+        "signal_limit_down",
+    }
+)
 _LIMIT_BASE_COLUMNS = frozenset({"raw_close", "raw_high"})
 _INSTRUMENT_COLUMNS = frozenset({"name", "total_shares", "float_shares"})
 
@@ -128,9 +140,7 @@ class StrategyDependencyResolver:
 
         required_features = set(strategy.required_features)
         required_signals = {
-            _normalize_signal_name(signal)
-            for signal in [*entry_signals, *exit_signals]
-            if signal
+            _normalize_signal_name(signal) for signal in [*entry_signals, *exit_signals] if signal
         }
         required_signals.update({"signal_limit_up", "signal_limit_down"})
 
@@ -145,9 +155,7 @@ class StrategyDependencyResolver:
         filter_features, filter_resolved = _filter_dependencies(strategy, params)
         required_features.update(filter_features)
         embedded_signals = {
-            feature
-            for feature in required_features
-            if feature.startswith(("signal_", "csg_"))
+            feature for feature in required_features if feature.startswith(("signal_", "csg_"))
         }
         required_signals.update(embedded_signals)
         required_features.difference_update(embedded_signals)
@@ -219,9 +227,7 @@ class StrategyDependencyResolver:
         required_features.update(strategy.matrix_strategy.required_fields())
         required_features.update(_basic_filter_dependencies(basic_filter))
         sector_context_filter = overrides.get("sector_context_filter")
-        if isinstance(sector_context_filter, dict) and sector_context_filter.get(
-            "enabled", True
-        ):
+        if isinstance(sector_context_filter, dict) and sector_context_filter.get("enabled", True):
             required_features.update({"amount", "consecutive_limit_ups"})
         scoring = dict(strategy.meta.get("scoring", {}) or {})
         scoring.update(overrides.get("scoring") or {})
@@ -235,10 +241,14 @@ class StrategyDependencyResolver:
         instrument_columns = frozenset(required_features & set(_INSTRUMENT_COLUMNS))
         instrument_columns = frozenset(set(instrument_columns) | {"name"})
         warmup_bars = max(60, int(strategy.matrix_strategy.required_warmup_bars(params)))
-        matrix_columns = set(base_columns) | set(instrument_columns) | {
-            "signal_limit_up",
-            "signal_limit_down",
-        }
+        matrix_columns = (
+            set(base_columns)
+            | set(instrument_columns)
+            | {
+                "signal_limit_up",
+                "signal_limit_down",
+            }
+        )
         return ResolvedFeaturePlan(
             base_columns=base_columns,
             intermediate_columns=frozenset(),
@@ -292,24 +302,24 @@ def build_matrix_cache_profile(
                 continue
             if item.get("type") in {"int", "float"} and item.get("max") is not None:
                 params[str(item["id"])] = item["max"]
-        plans.append(resolver.resolve(
-            strategy,
-            params=params,
-            basic_filter={**dict(strategy.basic_filter or {}), **common_filter},
-            entry_signals=strategy.entry_signals,
-            exit_signals=strategy.exit_signals,
-            overrides={},
-            minute_fill=False,
-        ))
+        plans.append(
+            resolver.resolve(
+                strategy,
+                params=params,
+                basic_filter={**dict(strategy.basic_filter or {}), **common_filter},
+                entry_signals=strategy.entry_signals,
+                exit_signals=strategy.exit_signals,
+                overrides={},
+                minute_fill=False,
+            )
+        )
         forward_bars = max(forward_bars, int(strategy.max_hold_days or 0))
 
     if not plans:
         raise ValueError(f"no matrix-native cache profile available for asset_type={asset_type!r}")
     merged = _merge_resolved_feature_plans(plans)
     fields = frozenset(
-        set(merged.base_columns)
-        | set(merged.instrument_columns)
-        | set(merged.matrix_columns)
+        set(merged.base_columns) | set(merged.instrument_columns) | set(merged.matrix_columns)
     )
     generation_payload = json.dumps(
         {
@@ -353,17 +363,19 @@ def prewarm_matrix_cache(
     formal_start = date(max(1, latest_date.year - years + 1), 1, 1)
     warmup_days = max(120, int(max(profile.warmup_bars, 1) * 1.6))
     coverage_start = formal_start - timedelta(days=warmup_days)
-    prewarm_columns = frozenset({
-        "symbol",
-        "date",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "raw_close",
-        "raw_high",
-    })
+    prewarm_columns = frozenset(
+        {
+            "symbol",
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "raw_close",
+            "raw_high",
+        }
+    )
     plan = ResolvedFeaturePlan(
         base_columns=prewarm_columns,
         intermediate_columns=frozenset(),
@@ -441,8 +453,14 @@ def _resolve_base_columns(features: set[str]) -> frozenset[str]:
     storage = set(ENRICHED_STORAGE_COLS)
     base = {"symbol", "date"} | (features & storage)
     close_indicators = set(INDICATOR_COLUMNS) - {
-        "atr_14", "amplitude", "kdj_k", "kdj_d", "kdj_j",
-        "vol_ma5", "vol_ma10", "vol_ratio_5d",
+        "atr_14",
+        "amplitude",
+        "kdj_k",
+        "kdj_d",
+        "kdj_j",
+        "vol_ma5",
+        "vol_ma10",
+        "vol_ratio_5d",
     }
     if features & close_indicators:
         base.add("close")
@@ -657,7 +675,7 @@ class StrategyBacktestService:
                     loaded = loader(child.strategy_id)
                     if isinstance(loaded, dict):
                         child_override = dict(loaded)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
             child_params = self.strategy_engine.resolve_params(child_def, overrides=child_override)
             child_plan = resolver.resolve(
@@ -776,15 +794,17 @@ class StrategyBacktestService:
         plans: list[ResolvedFeaturePlan] = []
         for config in configs:
             params = self._normalize_params(config.params or {}, strategy)
-            plans.append(resolver.resolve(
-                strategy,
-                params=params,
-                basic_filter=basic_filter,
-                entry_signals=entry_signals,
-                exit_signals=exit_signals,
-                overrides=overrides,
-                minute_fill=config.minute_fill,
-            ))
+            plans.append(
+                resolver.resolve(
+                    strategy,
+                    params=params,
+                    basic_filter=basic_filter,
+                    entry_signals=entry_signals,
+                    exit_signals=exit_signals,
+                    overrides=overrides,
+                    minute_fill=config.minute_fill,
+                )
+            )
         feature_plan = _merge_resolved_feature_plans(plans)
 
         max_hold_days = self._override_value(overrides, "max_hold_days", strategy.max_hold_days)
@@ -826,10 +846,7 @@ class StrategyBacktestService:
             labels = market_data_override.timestamp_labels
             visible_ids = np.flatnonzero(
                 np.fromiter(
-                    (
-                        str(load_start) <= label[:10] <= str(load_end)
-                        for label in labels
-                    ),
+                    (str(load_start) <= label[:10] <= str(load_end) for label in labels),
                     dtype=bool,
                     count=len(labels),
                 )
@@ -862,7 +879,8 @@ class StrategyBacktestService:
         )
         # 市场环境过滤(优化器共享, 用首个 config 的 regime_filter)
         _rm = self._build_regime_mask(
-            market_data.timestamp_labels, first.regime_filter,
+            market_data.timestamp_labels,
+            first.regime_filter,
             getattr(getattr(self.engine.repo, "store", None), "data_dir", None),
         )
         if _rm is not None:
@@ -883,9 +901,7 @@ class StrategyBacktestService:
         start_id = int(time_ids[0])
         stop_id = int(time_ids[-1]) + 1
         reference_price = (
-            rolling_mean(market_data.close, 5)[start_id:stop_id]
-            if first.minute_fill
-            else None
+            rolling_mean(market_data.close, 5)[start_id:stop_id] if first.minute_fill else None
         )
         sector_context_started = time.perf_counter()
         (
@@ -893,9 +909,7 @@ class StrategyBacktestService:
             entry_context_score,
             entry_context_weight,
             sector_context_metadata,
-        ) = self._build_sector_context_mask(
-            market_data, overrides.get("sector_context_filter")
-        )
+        ) = self._build_sector_context_mask(market_data, overrides.get("sector_context_filter"))
         timing_ms["sector_context"] = round(
             (time.perf_counter() - sector_context_started) * 1000,
             1,
@@ -981,17 +995,27 @@ class StrategyBacktestService:
             0.5,
         )
         trailing_take_profit_activate = self._normalize_pct(
-            self._override_value(overrides, "trailing_take_profit_activate", getattr(s, "trailing_take_profit_activate", None)),
+            self._override_value(
+                overrides,
+                "trailing_take_profit_activate",
+                getattr(s, "trailing_take_profit_activate", None),
+            ),
             0.01,
             2.0,
         )
         trailing_take_profit_drawdown = self._normalize_pct(
-            self._override_value(overrides, "trailing_take_profit_drawdown", getattr(s, "trailing_take_profit_drawdown", None)),
+            self._override_value(
+                overrides,
+                "trailing_take_profit_drawdown",
+                getattr(s, "trailing_take_profit_drawdown", None),
+            ),
             0.005,
             0.5,
         )
         if trailing_take_profit_activate is not None and trailing_take_profit_drawdown is not None:
-            trailing_take_profit_drawdown = min(trailing_take_profit_drawdown, trailing_take_profit_activate)
+            trailing_take_profit_drawdown = min(
+                trailing_take_profit_drawdown, trailing_take_profit_activate
+            )
         max_hold_days = self._override_value(overrides, "max_hold_days", s.max_hold_days)
         score_min, score_max = self._normalize_score_range(
             overrides.get("score_min"),
@@ -1035,7 +1059,9 @@ class StrategyBacktestService:
         load_end = config.end
         if config.mode == "full":
             fwd_buffer = full_horizon_days + 5  # 多取几天, 容错停牌缺口/open_t+1
-            load_end = config.end + timedelta(days=fwd_buffer * 2)  # 日历日放宽, 确保覆盖 N 个交易日
+            load_end = config.end + timedelta(
+                days=fwd_buffer * 2
+            )  # 日历日放宽, 确保覆盖 N 个交易日
 
         sim_end = load_end if config.mode == "full" else config.end
         panel: pl.DataFrame | None = None
@@ -1077,9 +1103,7 @@ class StrategyBacktestService:
             coverage_start = config.start - timedelta(days=cache_warmup_days)
             coverage_end = config.end
             if config.mode == "full":
-                coverage_end = config.end + timedelta(
-                    days=(cache_profile.forward_bars + 5) * 2
-                )
+                coverage_end = config.end + timedelta(days=(cache_profile.forward_bars + 5) * 2)
             try:
                 market_data = self.engine.load_market_data_matrix_for_backtest(
                     config.symbols,
@@ -1168,7 +1192,8 @@ class StrategyBacktestService:
             )
             # 市场环境过滤(强制 T-1): 只叠加 entry, 不影响 exit
             _rm = self._build_regime_mask(
-                market_data.timestamp_labels, config.regime_filter,
+                market_data.timestamp_labels,
+                config.regime_filter,
                 getattr(getattr(self.engine.repo, "store", None), "data_dir", None),
             )
             if _rm is not None:
@@ -1271,7 +1296,8 @@ class StrategyBacktestService:
                     config.end,
                 )
                 _rm = self._build_regime_mask(
-                    market_data.timestamp_labels, config.regime_filter,
+                    market_data.timestamp_labels,
+                    config.regime_filter,
                     getattr(getattr(self.engine.repo, "store", None), "data_dir", None),
                 )
                 if _rm is not None:
@@ -1388,8 +1414,12 @@ class StrategyBacktestService:
                 expr = StrategyEngine._basic_filter_expr(panel, basic_filter)
                 if expr is not None:
                     try:
-                        basic_mask = panel.select(expr.alias("_basic"))["_basic"].fill_null(False).cast(pl.Boolean)
-                    except Exception as e:  # noqa: BLE001
+                        basic_mask = (
+                            panel.select(expr.alias("_basic"))["_basic"]
+                            .fill_null(False)
+                            .cast(pl.Boolean)
+                        )
+                    except Exception as e:
                         logger.warning("basic_filter mask failed: %s", e)
                         return _err(f"基础过滤计算失败: {e}")
 
@@ -1397,17 +1427,25 @@ class StrategyBacktestService:
             candidate_mask = basic_mask & candidate_filter_mask
             panel = self._apply_score(panel, s, overrides, universe_mask=candidate_mask)
             formal_candidate_mask = candidate_mask & formal_range
-            entry_mask = self._build_entry_mask_from_candidate(panel, candidate_mask, s, entry_signals)
+            entry_mask = self._build_entry_mask_from_candidate(
+                panel, candidate_mask, s, entry_signals
+            )
             entry_mask = entry_mask & formal_range
             raw_exit_mask = self._build_signal_mask(panel, exit_signals, "_exit")
-            exit_range = self._date_range_mask(panel, config.start, load_end) if config.mode == "full" else formal_range
+            exit_range = (
+                self._date_range_mask(panel, config.start, load_end)
+                if config.mode == "full"
+                else formal_range
+            )
             exit_mask = raw_exit_mask & exit_range
             timing_ms["signals_score"] = round((time.perf_counter() - t_signal) * 1000, 1)
             if not entry_mask.any():
                 return _err("在指定区间内未产生买入信号")
 
             sim_range = self._date_range_mask(panel, config.start, sim_end)
-            sim_columns = [column for column in feature_plan.matrix_columns if column in panel.columns]
+            sim_columns = [
+                column for column in feature_plan.matrix_columns if column in panel.columns
+            ]
             sim_panel = panel.filter(sim_range).select(sorted(sim_columns))
             sim_entry_mask = entry_mask.filter(sim_range)
             sim_exit_mask = exit_mask.filter(sim_range)
@@ -1499,37 +1537,41 @@ class StrategyBacktestService:
         )
 
         # 构建策略信息
-        strategy_info = {
-            "id": s.meta.get("id", config.strategy_id),
-            "name": s.meta.get("name", config.strategy_id),
-            "description": s.meta.get("description", ""),
-            "entry_signals": entry_signals,
-            "exit_signals": exit_signals,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "trailing_stop": trailing_stop,
-            "trailing_take_profit_activate": trailing_take_profit_activate,
-            "trailing_take_profit_drawdown": trailing_take_profit_drawdown,
-            "max_hold_days": max_hold_days,
-            "full_horizon_days": full_horizon_days,
-            "score_min": score_min,
-            "score_max": score_max,
-            "source": s.source,
-            "execution_backend": s.execution_backend,
-            **(
-                {
-                    "composite_children": [
-                        {
-                            "id": cid,
-                            "weight": cw,
-                        }
-                        for cid, cw in getattr(self, "_composite_children_weights", [])
-                    ]
-                }
-                if s.execution_backend == "composite"
-                else {}
-            ),
-        } if result_policy.include_strategy_info else {}
+        strategy_info = (
+            {
+                "id": s.meta.get("id", config.strategy_id),
+                "name": s.meta.get("name", config.strategy_id),
+                "description": s.meta.get("description", ""),
+                "entry_signals": entry_signals,
+                "exit_signals": exit_signals,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "trailing_stop": trailing_stop,
+                "trailing_take_profit_activate": trailing_take_profit_activate,
+                "trailing_take_profit_drawdown": trailing_take_profit_drawdown,
+                "max_hold_days": max_hold_days,
+                "full_horizon_days": full_horizon_days,
+                "score_min": score_min,
+                "score_max": score_max,
+                "source": s.source,
+                "execution_backend": s.execution_backend,
+                **(
+                    {
+                        "composite_children": [
+                            {
+                                "id": cid,
+                                "weight": cw,
+                            }
+                            for cid, cw in getattr(self, "_composite_children_weights", [])
+                        ]
+                    }
+                    if s.execution_backend == "composite"
+                    else {}
+                ),
+            }
+            if result_policy.include_strategy_info
+            else {}
+        )
 
         selected_stats = result_policy.select_stats(result.stats)
 
@@ -1548,9 +1590,7 @@ class StrategyBacktestService:
                 else []
             ),
             per_symbol_stats=(
-                result.per_symbol_stats
-                if result_policy.include_per_symbol_stats
-                else []
+                result.per_symbol_stats if result_policy.include_per_symbol_stats else []
             ),
             strategy_info=strategy_info,
             elapsed_ms=round(elapsed, 1),
@@ -1571,10 +1611,14 @@ class StrategyBacktestService:
         """
         n = holding_days if holding_days and holding_days > 0 else 5
 
-        df = panel.with_columns([
-            entry_mask.cast(pl.Boolean).alias("_is_candidate"),
-            (pl.col("close").shift(-n).over("symbol") / pl.col("close") - 1).alias("_fwd_return"),
-        ]).filter(
+        df = panel.with_columns(
+            [
+                entry_mask.cast(pl.Boolean).alias("_is_candidate"),
+                (pl.col("close").shift(-n).over("symbol") / pl.col("close") - 1).alias(
+                    "_fwd_return"
+                ),
+            ]
+        ).filter(
             pl.col("_is_candidate")
             & pl.col("_fwd_return").is_not_null()
             & pl.col("_fwd_return").is_not_nan()
@@ -1591,10 +1635,12 @@ class StrategyBacktestService:
 
         # 按日聚合: 当日候选的平均前瞻收益
         daily = (
-            df.group_by("date").agg(
+            df.group_by("date")
+            .agg(
                 pl.col("_fwd_return").mean().alias("avg_ret"),
                 pl.col("_fwd_return").count().alias("n_cand"),
-            ).sort("date")
+            )
+            .sort("date")
         )
 
         # 累计超额曲线: 每日复利平均收益 (基准归零, 故 equity 即累计策略收益)
@@ -1604,21 +1650,21 @@ class StrategyBacktestService:
         drawdown_curve: list[dict] = []
         for row in daily.iter_rows(named=True):
             ret = float(row["avg_ret"] or 0.0)
-            equity *= (1 + ret)
+            equity *= 1 + ret
             peak = max(peak, equity)
             dd = (equity - peak) / peak if peak > 0 else 0.0
             d_str = str(row["date"])[:10]
-            equity_curve.append({
-                "date": d_str,
-                "value": round(equity, 4),
-                "positions": int(row["n_cand"]),
-            })
+            equity_curve.append(
+                {
+                    "date": d_str,
+                    "value": round(equity, 4),
+                    "positions": int(row["n_cand"]),
+                }
+            )
             drawdown_curve.append({"date": d_str, "value": round(dd, 4)})
 
         # 同期上证收益 (用 benchmark close 算)
-        benchmark_curve = self._build_benchmark_curve(
-            daily["date"].min(), daily["date"].max()
-        )
+        benchmark_curve = self._build_benchmark_curve(daily["date"].min(), daily["date"].max())
         benchmark_return = 0.0
         if benchmark_curve:
             closes = [b["close"] for b in benchmark_curve if b.get("close")]
@@ -1632,7 +1678,8 @@ class StrategyBacktestService:
         daily_rets = daily["avg_ret"].to_numpy()
         sharpe = (
             float(daily_rets.mean() / daily_rets.std() * np.sqrt(252))
-            if daily_rets.size > 1 and daily_rets.std() > 0 else 0.0
+            if daily_rets.size > 1 and daily_rets.std() > 0
+            else 0.0
         )
 
         # 收益分布直方图: 按 [-20%, +20%] 分 21 档 (每档 2%), 超出归入首尾档
@@ -1641,7 +1688,7 @@ class StrategyBacktestService:
         counts, edges = np.histogram(clipped, bins=nbins, range=(lo, hi))
         dist = [
             {
-                "range": f"{(edges[i]*100):+.0f}~{(edges[i+1]*100):+.0f}%",
+                "range": f"{(edges[i] * 100):+.0f}~{(edges[i + 1] * 100):+.0f}%",
                 "count": int(counts[i]),
                 "ratio": round(float(counts[i] / fwd.size), 4) if fwd.size else 0.0,
             }
@@ -1679,9 +1726,13 @@ class StrategyBacktestService:
 
     @staticmethod
     def _date_range_mask(panel: pl.DataFrame, start: date, end: date) -> pl.Series:
-        return panel.select(
-            ((pl.col("date") >= start) & (pl.col("date") <= end)).alias("_range")
-        )["_range"].fill_null(False).cast(pl.Boolean)
+        return (
+            panel.select(((pl.col("date") >= start) & (pl.col("date") <= end)).alias("_range"))[
+                "_range"
+            ]
+            .fill_null(False)
+            .cast(pl.Boolean)
+        )
 
     @staticmethod
     def _matrix_date_range_mask(
@@ -1746,6 +1797,7 @@ class StrategyBacktestService:
             return None
 
         from app.services import regime_builder
+
         regime_df = regime_builder.load_regime_history(data_dir)
         if regime_df.is_empty():
             return None
@@ -1794,13 +1846,10 @@ class StrategyBacktestService:
                     return false_mask
                 # 命中行 (symbol,date) → 转 panel 等长布尔 mask
                 hits = hit_df.select(["symbol", "date"]).unique()
-                marked = (
-                    panel.select(["symbol", "date"])
-                    .join(
-                        hits.with_columns(pl.lit(True).alias("_hit")),
-                        on=["symbol", "date"],
-                        how="left",
-                    )
+                marked = panel.select(["symbol", "date"]).join(
+                    hits.with_columns(pl.lit(True).alias("_hit")),
+                    on=["symbol", "date"],
+                    how="left",
                 )
                 return marked["_hit"].fill_null(False).cast(pl.Boolean)
             except Exception as e:
@@ -1872,7 +1921,9 @@ class StrategyBacktestService:
 
     def _build_benchmark_curve(self, start: date, end: date) -> list[dict]:
         try:
-            df = self.engine.repo.get_index_daily(BENCHMARK_SYMBOL, start, end, columns=["date", "close"])
+            df = self.engine.repo.get_index_daily(
+                BENCHMARK_SYMBOL, start, end, columns=["date", "close"]
+            )
         except Exception as e:
             logger.warning("load benchmark %s failed: %s", BENCHMARK_SYMBOL, e)
             return []
@@ -2001,8 +2052,8 @@ class StrategyBacktestService:
         return {
             "symbol": t.symbol,
             "name": t.name,
-            "entry_date": str(t.entry_date) if isinstance(t.entry_date, date) else str(t.entry_date),
-            "exit_date": str(t.exit_date) if isinstance(t.exit_date, date) else str(t.exit_date),
+            "entry_date": str(t.entry_date),
+            "exit_date": str(t.exit_date),
             "entry_price": t.entry_price,
             "exit_price": t.exit_price,
             "pnl_pct": t.pnl_pct,
@@ -2015,8 +2066,12 @@ class StrategyBacktestService:
             "exit_value": t.exit_value,
             "pnl_amount": t.pnl_amount,
             "entry_score": getattr(t, "entry_score", None),
-            "entry_signal_date": str(t.entry_signal_date) if getattr(t, "entry_signal_date", None) is not None else None,
-            "exit_signal_date": str(t.exit_signal_date) if getattr(t, "exit_signal_date", None) is not None else None,
+            "entry_signal_date": str(t.entry_signal_date)
+            if getattr(t, "entry_signal_date", None) is not None
+            else None,
+            "exit_signal_date": str(t.exit_signal_date)
+            if getattr(t, "exit_signal_date", None) is not None
+            else None,
             "blocked_exit_days": getattr(t, "blocked_exit_days", 0),
             "entry_signal_id": getattr(t, "entry_signal_id", None),
             "exit_signal_id": getattr(t, "exit_signal_id", None),
@@ -2041,9 +2096,7 @@ class StrategyBacktestService:
             "entry_fill": c.entry_fill,
             "exit_fill": c.exit_fill,
             "timing_mode": (
-                "strict"
-                if c.entry_fill == "open_t+1" and c.exit_fill == "open_t+1"
-                else "custom"
+                "strict" if c.entry_fill == "open_t+1" and c.exit_fill == "open_t+1" else "custom"
             ),
             "fees_pct": c.fees_pct,
             "commission_pct": c.commission_pct,
@@ -2098,17 +2151,23 @@ class StrategyBacktestService:
                     col_min = value.min().over("date")
                     col_max = value.max().over("date")
                     col_range = col_max - col_min
-                    normalized = pl.when(col_range > 0).then(
-                        (score_value - col_min) / col_range
-                    ).otherwise(pl.lit(0.5))
+                    normalized = (
+                        pl.when(col_range > 0)
+                        .then((score_value - col_min) / col_range)
+                        .otherwise(pl.lit(0.5))
+                    )
                     if has_universe:
-                        normalized = pl.when(pl.col("_score_universe")).then(normalized).otherwise(0.0)
+                        normalized = (
+                            pl.when(pl.col("_score_universe")).then(normalized).otherwise(0.0)
+                        )
                     score_parts.append(normalized * w)
                 if score_parts:
                     score_expr = score_parts[0]
                     for part in score_parts[1:]:
                         score_expr = score_expr + part
-                    return _finish(work.with_columns((score_expr * 100).fill_null(0).alias("score")))
+                    return _finish(
+                        work.with_columns((score_expr * 100).fill_null(0).alias("score"))
+                    )
 
         order_by = s.meta.get("order_by")
         if order_by and order_by != "score" and order_by in work.columns:

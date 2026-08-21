@@ -68,7 +68,7 @@ export function CompositeStrategyDialog({ open, onClose, onSavedId, editStrategy
           setName(detail.name)
           setDescription(detail.description)
           setMergeMode((detail.params_defaults?.merge_mode as 'union' | 'intersect') ?? 'union')
-          setMinConfirm(detail.params_defaults?.min_confirm ?? 0)
+          setMinConfirm(Number(detail.params_defaults?.min_confirm ?? 0))
           if (detail.composite_children) {
             setChildren(detail.composite_children.map(c => ({ strategy_id: c.id, weight: c.weight })))
           }
@@ -130,8 +130,8 @@ export function CompositeStrategyDialog({ open, onClose, onSavedId, editStrategy
       })
       await onSavedId?.(result.strategy_id)
       setTimeout(() => onClose(), 800)
-    } catch (e: any) {
-      setError(String(e?.message ?? '保存失败'))
+    } catch (error: unknown) {
+      setError(error instanceof Error ? error.message : '保存失败')
     }
     setSaving(false)
   }

@@ -1,4 +1,5 @@
 """美股行业分类与主题 ETF 持仓的标准化参考数据 Provider。"""
+
 from __future__ import annotations
 
 import io
@@ -157,9 +158,7 @@ def parse_state_street_holdings(frame: pl.DataFrame) -> dict[str, Any]:
             "name": name,
             "weight_pct": weight,
             "sector": (
-                str(row[sector_index] or "").strip()
-                if 0 <= sector_index < len(row)
-                else ""
+                str(row[sector_index] or "").strip() if 0 <= sector_index < len(row) else ""
             ),
         }
         previous = members.get(symbol)
@@ -172,9 +171,7 @@ def parse_state_street_holdings(frame: pl.DataFrame) -> dict[str, Any]:
         "schema_version": 1,
         "source": "State Street daily fund holdings",
         "as_of": as_of,
-        "members": sorted(
-            members.values(), key=lambda member: member["weight_pct"], reverse=True
-        ),
+        "members": sorted(members.values(), key=lambda member: member["weight_pct"], reverse=True),
     }
 
 

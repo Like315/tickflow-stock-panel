@@ -1,4 +1,5 @@
 """AI 研究 Agent 的稳定数据契约。"""
+
 from __future__ import annotations
 
 from datetime import date, datetime

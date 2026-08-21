@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { SSE_INVALIDATE_PREFIXES, QK } from './queryKeys'
 import { getQueryConfig } from './useQueryConfig'
 import { toast } from '@/components/Toast'
-import { pushAlertToasts } from '@/components/AlertToast'
+import { pushAlertToasts } from '@/lib/alertToastStore'
 import { feedReviewEvent } from './reviewStore'
 import type { StrategyAlertEvent } from './api'
 
@@ -98,7 +98,11 @@ export function useQuoteStream(
         onAlert(strategyAlerts)
       }
       // 批量弹通知 (去掉了 slice(0,2) 截断, 让每只新命中都弹 toast; 声音整批只响一次)
-      pushAlertToasts(strategyAlerts as any)
+      const receivedAt = Date.now()
+      pushAlertToasts(strategyAlerts.map((alert, index) => ({
+        ...alert,
+        ts: typeof alert.ts === 'number' ? alert.ts : receivedAt + index,
+      })))
     }
   }, [onAlert])
 

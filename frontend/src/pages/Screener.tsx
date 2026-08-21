@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { ScanSearch, Clock, TrendingUp, Star, Filter, Layers, Network, Sparkles, RefreshCw, Settings2, Store, RotateCcw, X } from 'lucide-react'
-import { api, genRuleId, type ScreenerStrategy, type ScreenerResult } from '@/lib/api'
+import { api, genRuleId, type ScreenerStrategy, type ScreenerResult, type ScreenerRow } from '@/lib/api'
 import { DEFAULT_STRATEGY_NOTIFY_EVENTS } from '@/lib/strategyMonitorEvents'
 import { toast } from '@/components/Toast'
 import { useDataStatus, usePreferences, useCapabilities, useQuoteStatus } from '@/lib/useSharedQueries'
@@ -115,9 +115,10 @@ export function Screener() {
   }, [])
 
   // 对原始结果应用过滤
-  const filteredRows = result
-    ? applyFilter(result.rows, filter)
-    : []
+  const filteredRows = useMemo(
+    () => result ? applyFilter(result.rows, filter) : [],
+    [filter, result],
+  )
 
   const { data: prefs } = usePreferences()
   const screenerAutoRun = prefs?.screener_auto_run ?? true
@@ -203,7 +204,10 @@ export function Screener() {
   }, [allStrategyIds, prune, strategies.isError, strategies.isSuccess])
 
   // 策略文件加载失败时提示用户(避免"策略静默消失"被误判为正常)
-  const loadErrors = strategies.data?.load_errors ?? []
+  const loadErrors = useMemo(
+    () => strategies.data?.load_errors ?? [],
+    [strategies.data?.load_errors],
+  )
   useEffect(() => {
     for (const e of loadErrors) {
       toast(`策略「${e.file}」加载失败：${e.error}`, 'error')
@@ -314,7 +318,7 @@ export function Screener() {
   const allRows = useMemo(() => {
     if (!effectiveResults) return []
     const seen = new Set<string>()
-    const merged: any[] = []
+    const merged: ScreenerRow[] = []
     for (const r of Object.values(effectiveResults)) {
       for (const row of r.rows) {
         if (!seen.has(row.symbol)) {
@@ -330,14 +334,14 @@ export function Screener() {
   const expiredRows = useMemo(() => {
     const everRows = singleCachedQuery.data?.today_ever_rows
     if (!everRows || !result || result.as_of !== asOf) return []
-    const currentSymbols = new Set(result.rows.map((row: any) => row.symbol))
+    const currentSymbols = new Set(result.rows.map(row => row.symbol))
     return Object.entries(everRows)
       .filter(([symbol]) => !currentSymbols.has(symbol))
       .map(([, row]) => ({ ...row, _expired: true }))
   }, [singleCachedQuery.data, result, asOf])
 
   // 表头排序（受控）：用户点击列则按该列；未点时下方按评分默认降序
-  const { sort, toggle, sortRows } = useTableSort()
+  const { sort, toggle, sortRows } = useTableSort<ScreenerRow>()
 
   // 当前显示的行数据 (全部模式 或 单策略模式) + 失效行
   const displayRows = useMemo(() => {
@@ -375,7 +379,7 @@ export function Screener() {
 
   // 批量日k数据 (仅当蜡烛图可见时加载，省请求)
   const dailyKSymbols = useMemo(
-    () => [...new Set(displayRows.map((r: any) => r.symbol as string))].sort(),
+    () => [...new Set(displayRows.map(r => r.symbol))].sort(),
     [displayRows],
   )
   const resultSymbolsKey = dailyKSymbols.join(',')
@@ -410,7 +414,7 @@ export function Screener() {
   const intradayRefreshInterval = prefs?.minute_intraday_refresh_interval ?? 6
 
   const allIntradaySymbols = useMemo(
-    () => displayRows.map((r: any) => r.symbol),
+    () => displayRows.map(r => r.symbol),
     [displayRows],
   )
   const intradayTruncated = intradayVisible && allIntradaySymbols.length > minuteBatchCap
@@ -504,7 +508,7 @@ export function Screener() {
   })
   const watchlistSet = useMemo(() => {
     const symbols = watchlist.data?.symbols ?? []
-    return new Set(symbols.map((s: any) => s.symbol))
+    return new Set(symbols.map(s => s.symbol))
   }, [watchlist.data])
 
   // 单只股票加入/移出自选
@@ -574,7 +578,7 @@ export function Screener() {
 
   const handleBatchAdd = () => {
     if (!displayRows.length) return
-    const symbols = displayRows.map((r: any) => r.symbol)
+    const symbols = displayRows.map(r => r.symbol)
     batchAdd.mutate(symbols, {
       onSuccess: (data) => {
         setBatchMsg(`已添加 ${data.added} 只到自选`)
@@ -748,7 +752,7 @@ export function Screener() {
         <section>
           {run.isError && (
             <div className="text-sm text-danger bg-danger/10 border border-danger/30 rounded-btn px-3 py-2">
-              {String((run.error as any).message)}
+              {run.error instanceof Error ? run.error.message : String(run.error)}
             </div>
           )}
 
@@ -971,12 +975,18 @@ export function Screener() {
               description: detail.description ?? '',
               direction: 'long',
               rules: storage.strategyRules.get({})[settingsStrategyId] ?? '',
-              code: src.code, step: 2, strategyId: settingsStrategyId, source: src.source as any,
+              code: src.code,
+              step: 2,
+              strategyId: settingsStrategyId,
+              source: src.source === 'ai' || src.source === 'custom' ? src.source : undefined,
             })
             setSettingsStrategyId(null)
             setBuilderMode('modify')
             setShowBuilder(true)
-          } catch {}
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            toast(`策略加载失败：${message}`, 'error')
+          }
         }}
         onDeleted={() => {
           if (settingsStrategyId) {

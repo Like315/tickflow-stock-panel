@@ -19,7 +19,8 @@ import {
 import { api } from '@/lib/api'
 import { useCapabilities, useSettings } from '@/lib/useSharedQueries'
 import { QK } from '@/lib/queryKeys'
-import { CAP_LABELS, tierTextStyle, tierStyle, tierBaseName, ALL_TIERS, TierTag } from '@/lib/capability-labels'
+import { CAP_LABELS, tierTextStyle, tierStyle, tierBaseName, ALL_TIERS } from '@/lib/capability-labels'
+import { TierTag } from '@/components/TierTag'
 
 // ===== 导出为 Panel 组件 (由 Settings.tsx 嵌入) =====
 
@@ -181,7 +182,7 @@ export function SettingsKeysPanel() {
 
             {save.isError && (
               <div className="mt-3 text-xs text-danger">
-                保存失败:{String((save.error as any).message)}
+                保存失败:{save.error instanceof Error ? save.error.message : String(save.error)}
               </div>
             )}
             {/* 无效 key —— 先探后存:探测失败(key 无效/乱填)时不存储,提示用户 */}

@@ -1,4 +1,5 @@
 """TickFlow provider implementation."""
+
 from __future__ import annotations
 
 import logging
@@ -137,6 +138,7 @@ class TickFlowProvider:
         }
         if start_time and end_time:
             from app.services.kline_sync import _datetime_to_ms
+
             kwargs["start_time"] = _datetime_to_ms(start_time)
             kwargs["end_time"] = _datetime_to_ms(end_time)
         raw = tf.klines.batch(symbols, **kwargs)
@@ -165,6 +167,7 @@ class TickFlowProvider:
         kwargs = {"as_dataframe": False}
         if start_time or end_time:
             from app.services.kline_sync import _datetime_to_ms
+
             if start_time:
                 kwargs["start_time"] = _datetime_to_ms(start_time)
             if end_time:
@@ -187,7 +190,7 @@ class TickFlowProvider:
             raise ValueError("TickFlow minute provider currently supports freq='1m' only")
         tf = get_client()
         chunks = [
-            symbols[index:index + self._minute_batch_size]
+            symbols[index : index + self._minute_batch_size]
             for index in range(0, len(symbols), self._minute_batch_size)
         ]
         frames: list[pl.DataFrame] = []
@@ -253,7 +256,7 @@ class TickFlowProvider:
             raise ValueError("TickFlow intraday provider currently supports freq='1m' only")
         tf = get_client()
         chunks = [
-            symbols[index:index + self._intraday_batch_size]
+            symbols[index : index + self._intraday_batch_size]
             for index in range(0, len(symbols), self._intraday_batch_size)
         ]
         frames: list[pl.DataFrame] = []

@@ -56,11 +56,14 @@ def test_candidate_news_score_uses_company_and_industry_relevance() -> None:
         now,
     )
 
-    scored = score_candidate_news(context, {
-        "SZ.300750": {"name": "宁德时代"},
-        "SH.688001": {"name": "华兴公司", "industry": "半导体"},
-        "SH.600000": {"name": "浦发银行", "industry": "银行"},
-    })
+    scored = score_candidate_news(
+        context,
+        {
+            "SZ.300750": {"name": "宁德时代"},
+            "SH.688001": {"name": "华兴公司", "industry": "半导体"},
+            "SH.600000": {"name": "浦发银行", "industry": "银行"},
+        },
+    )
 
     assert scored["SZ.300750"]["score"] > 0
     assert scored["SZ.300750"]["matched_count"] == 2

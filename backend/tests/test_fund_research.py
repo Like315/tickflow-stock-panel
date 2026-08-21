@@ -115,35 +115,43 @@ class FakeResponse:
 class FakeEastmoneyClient:
     def get(self, url: str, **_kwargs) -> FakeResponse:
         if "FundSearchAPI" in url:
-            return FakeResponse(document={
-                "Datas": [{
-                    "CODE": "005827",
-                    "NAME": "易方达蓝筹精选混合",
-                    "CATEGORYDESC": "混合型",
-                    "FundBaseInfo": {"FTYPE": "混合型-偏股", "JJGS": "易方达基金"},
-                }],
-            })
+            return FakeResponse(
+                document={
+                    "Datas": [
+                        {
+                            "CODE": "005827",
+                            "NAME": "易方达蓝筹精选混合",
+                            "CATEGORYDESC": "混合型",
+                            "FundBaseInfo": {"FTYPE": "混合型-偏股", "JJGS": "易方达基金"},
+                        }
+                    ],
+                }
+            )
         if url.endswith("/pingzhongdata/005827.js"):
-            return FakeResponse(text=(
-                'var unrelated = "ignore";\n'
-                'var Data_assetAllocation = {"series":['
-                '{"name":"股票占净比","data":[80.0]},'
-                '{"name":"债券占净比","data":[5.0]},'
-                '{"name":"现金占净比","data":[15.0]}],'
-                '"categories":["2026-06-30"]};\n'
-                'var Data_netWorthTrend = ['
-                '{"x":1753977600000,"y":1.0},'
-                '{"x":1756656000000,"y":1.1},'
-                '{"x":1785513600000,"y":1.2}'
-                '];\nvar after = true;'
-            ))
+            return FakeResponse(
+                text=(
+                    'var unrelated = "ignore";\n'
+                    'var Data_assetAllocation = {"series":['
+                    '{"name":"股票占净比","data":[80.0]},'
+                    '{"name":"债券占净比","data":[5.0]},'
+                    '{"name":"现金占净比","data":[15.0]}],'
+                    '"categories":["2026-06-30"]};\n'
+                    "var Data_netWorthTrend = ["
+                    '{"x":1753977600000,"y":1.0},'
+                    '{"x":1756656000000,"y":1.1},'
+                    '{"x":1785513600000,"y":1.2}'
+                    "];\nvar after = true;"
+                )
+            )
         assert url.endswith("/FundArchivesDatas.aspx")
         html = (
             "<h4>截止至: 2026-06-30</h4><table><tbody><tr>"
             "<td>1</td><td>600000</td><td>浦发银行</td><td></td><td></td><td></td>"
             "<td>8.50%</td><td>100.00</td><td>2,000.00</td></tr></tbody></table>"
         )
-        return FakeResponse(text=f"var apidata={{ content:{json.dumps(html, ensure_ascii=False)},arryear:[]}};")
+        return FakeResponse(
+            text=f"var apidata={{ content:{json.dumps(html, ensure_ascii=False)},arryear:[]}};"
+        )
 
     def close(self) -> None:
         return None

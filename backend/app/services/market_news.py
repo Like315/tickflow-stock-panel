@@ -1,4 +1,5 @@
 """市场新闻编排: 读取配置、解析 RSS 地址并提供失败降级."""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,13 +22,44 @@ _PROVIDER: RssNewsProvider | None = None
 _EASTMONEY_PROVIDER = EastmoneyNewsProvider()
 _CHINA_TZ = ZoneInfo("Asia/Shanghai")
 _GENERIC_KEYWORDS = {
-    "A股", "AI", "中国", "产业", "公司", "市场", "指数", "概念", "板块", "股票",
-    "科技", "行业", "集团", "龙头",
+    "A股",
+    "AI",
+    "中国",
+    "产业",
+    "公司",
+    "市场",
+    "指数",
+    "概念",
+    "板块",
+    "股票",
+    "科技",
+    "行业",
+    "集团",
+    "龙头",
 }
 _MACRO_TERMS = (
-    "国务院", "央行", "证监会", "金融监管总局", "财政部", "商务部", "发改委",
-    "货币政策", "财政政策", "降准", "降息", "利率", "关税", "人民币", "美联储",
-    "CPI", "PPI", "GDP", "通胀", "就业", "进口价格", "新屋开工",
+    "国务院",
+    "央行",
+    "证监会",
+    "金融监管总局",
+    "财政部",
+    "商务部",
+    "发改委",
+    "货币政策",
+    "财政政策",
+    "降准",
+    "降息",
+    "利率",
+    "关税",
+    "人民币",
+    "美联储",
+    "CPI",
+    "PPI",
+    "GDP",
+    "通胀",
+    "就业",
+    "进口价格",
+    "新屋开工",
 )
 _AMBIGUOUS_KEYWORD_CONTEXT = {
     "证券": ("券商", "证券板块", "证券行业", "证券公司", "经纪业务", "投行业务", "证监会"),
@@ -88,7 +120,7 @@ def _keyword_variants(value: str) -> tuple[str, ...]:
             variants.append(part)
     if re.fullmatch(r"[\u4e00-\u9fff]{4,}", keyword):
         for index in range(len(keyword) - 1):
-            part = keyword[index:index + 2]
+            part = keyword[index : index + 2]
             if part not in _GENERIC_KEYWORDS and part not in variants:
                 variants.append(part)
     return tuple(variants)
@@ -147,21 +179,27 @@ def _rank_news(
         relevance = "盘面关联"
         tier = 2
         if not matched:
-            macro_hits = [term for term in _MACRO_TERMS if term.casefold() in f"{item.title} {item.snippet}".casefold()]
+            macro_hits = [
+                term
+                for term in _MACRO_TERMS
+                if term.casefold() in f"{item.title} {item.snippet}".casefold()
+            ]
             if not macro_hits:
                 continue
             matched = ["宏观/监管"]
             score = min(len(macro_hits) * 2, 6)
             relevance = "宏观背景"
             tier = 1
-        scored.append((
-            tier,
-            score,
-            item.published_at.timestamp(),
-            item,
-            matched,
-            relevance,
-        ))
+        scored.append(
+            (
+                tier,
+                score,
+                item.published_at.timestamp(),
+                item,
+                matched,
+                relevance,
+            )
+        )
 
     scored.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
     selected: list[dict[str, str]] = []

@@ -27,30 +27,34 @@ class FakeRepo:
 
     def get_instruments_asset(self, asset_type: str) -> pl.DataFrame:
         assert asset_type == "stock"
-        return pl.DataFrame({
-            "code": ["600519", "000001"],
-            "symbol": ["600519.SH", "000001.SZ"],
-            "name": ["贵州茅台", "平安银行"],
-        })
+        return pl.DataFrame(
+            {
+                "code": ["600519", "000001"],
+                "symbol": ["600519.SH", "000001.SZ"],
+                "name": ["贵州茅台", "平安银行"],
+            }
+        )
 
 
 def _service(tmp_path: Path) -> StockPortfolioService:
     return StockPortfolioService(
         tmp_path,
-        FakeRepo([
-            {
-                "symbol": "600519.SH",
-                "raw_close": 12.0,
-                "close": 6.0,
-                "change_pct": 0.025,
-            },
-            {
-                "symbol": "000001.SZ",
-                "raw_close": 8.0,
-                "close": 4.0,
-                "change_pct": -0.01,
-            },
-        ]),
+        FakeRepo(
+            [
+                {
+                    "symbol": "600519.SH",
+                    "raw_close": 12.0,
+                    "close": 6.0,
+                    "change_pct": 0.025,
+                },
+                {
+                    "symbol": "000001.SZ",
+                    "raw_close": 8.0,
+                    "close": 4.0,
+                    "change_pct": -0.01,
+                },
+            ]
+        ),
     )
 
 

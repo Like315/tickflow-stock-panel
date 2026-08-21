@@ -1,4 +1,5 @@
 """Minute-native paper matcher with fail-closed execution semantics."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -39,9 +40,7 @@ class StrictMinuteExecutor:
         lot_size = self.constitution.lot_size
         shares = intent.shares - intent.shares % lot_size
         if shares <= 0:
-            return self._event(
-                "order_rejected", intent.signal_time, intent, reason="buy_lot_size"
-            )
+            return self._event("order_rejected", intent.signal_time, intent, reason="buy_lot_size")
         normalized = intent.model_copy(update={"shares": shares})
         self.pending[intent.id] = _PendingOrder(
             intent=normalized,
@@ -60,12 +59,14 @@ class StrictMinuteExecutor:
         self.last_prices[bar.symbol] = bar.raw_close
         lag = (bar.received_at - (bar.datetime + timedelta(minutes=1))).total_seconds()
         if lag > self.constitution.max_data_lag_seconds:
-            return [self._event(
-                "data_rejected",
-                bar.received_at,
-                symbol=bar.symbol,
-                reason=f"stale_minute_bar:{int(lag)}s",
-            )]
+            return [
+                self._event(
+                    "data_rejected",
+                    bar.received_at,
+                    symbol=bar.symbol,
+                    reason=f"stale_minute_bar:{int(lag)}s",
+                )
+            ]
 
         emitted: list[ExecutionEvent] = []
         for order_id, pending in list(self.pending.items()):
@@ -143,7 +144,10 @@ class StrictMinuteExecutor:
         if bar.is_limit_up:
             return self._event("order_rejected", bar.datetime, intent, reason="buy_limit_up")
         held_symbols = {lot.symbol for lot in self.lots if lot.remaining_shares > 0}
-        if intent.symbol not in held_symbols and len(held_symbols) >= self.constitution.max_positions:
+        if (
+            intent.symbol not in held_symbols
+            and len(held_symbols) >= self.constitution.max_positions
+        ):
             return self._event("order_rejected", bar.datetime, intent, reason="buy_no_slot")
 
         price = bar.raw_open * (1 + self.constitution.slippage_bps / 10_000)
@@ -179,19 +183,29 @@ class StrictMinuteExecutor:
         if total_cost > self.cash:
             return self._event("order_rejected", bar.datetime, intent, reason="buy_cash")
         self.cash -= total_cost
-        self.lots.append(PositionLot(
-            lot_id=f"lot_{uuid4().hex}",
-            symbol=intent.symbol,
-            acquired_date=bar.datetime.date(),
-            shares=shares,
-            remaining_shares=shares,
-            entry_price=price,
-            entry_cost=commission,
-        ))
-        event_type = "order_filled" if shares == pending.remaining_shares else "order_partially_filled"
+        self.lots.append(
+            PositionLot(
+                lot_id=f"lot_{uuid4().hex}",
+                symbol=intent.symbol,
+                acquired_date=bar.datetime.date(),
+                shares=shares,
+                remaining_shares=shares,
+                entry_price=price,
+                entry_cost=commission,
+            )
+        )
+        event_type = (
+            "order_filled" if shares == pending.remaining_shares else "order_partially_filled"
+        )
         return self._event(
-            event_type, bar.datetime, intent, shares=shares, price=price,
-            fees=commission, reason="next_minute_open", cash_after=self.cash,
+            event_type,
+            bar.datetime,
+            intent,
+            shares=shares,
+            price=price,
+            fees=commission,
+            reason="next_minute_open",
+            cash_after=self.cash,
         )
 
     def _fill_sell(self, pending: _PendingOrder, bar: MinuteBar) -> ExecutionEvent:
@@ -222,7 +236,9 @@ class StrictMinuteExecutor:
                 continue
             take = min(lot.remaining_shares, remaining)
             cost_basis += take * lot.entry_price + lot.entry_cost * (take / lot.shares)
-            self.lots[index] = lot.model_copy(update={"remaining_shares": lot.remaining_shares - take})
+            self.lots[index] = lot.model_copy(
+                update={"remaining_shares": lot.remaining_shares - take}
+            )
             remaining -= take
             if remaining == 0:
                 break
@@ -233,11 +249,19 @@ class StrictMinuteExecutor:
         fees = commission + stamp_tax
         realized_pnl = gross - fees - cost_basis
         self.cash += gross - fees
-        event_type = "order_filled" if shares == pending.remaining_shares else "order_partially_filled"
+        event_type = (
+            "order_filled" if shares == pending.remaining_shares else "order_partially_filled"
+        )
         return self._event(
-            event_type, bar.datetime, intent, shares=shares, price=price,
-            fees=fees, realized_pnl=realized_pnl,
-            reason="next_minute_open", cash_after=self.cash,
+            event_type,
+            bar.datetime,
+            intent,
+            shares=shares,
+            price=price,
+            fees=fees,
+            realized_pnl=realized_pnl,
+            reason="next_minute_open",
+            cash_after=self.cash,
         )
 
     def _event(

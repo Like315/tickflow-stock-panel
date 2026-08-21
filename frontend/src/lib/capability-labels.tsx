@@ -88,19 +88,3 @@ export function tierTextStyle(label: string): { color?: string; background?: str
   return tierStyle(label).labelTextStyle
 }
 
-/** 渲染档位 tag(与左侧菜单一致的胶囊样式) */
-export function TierTag({ label, className = '' }: { label: string; className?: string }) {
-  const t = tierStyle(label)
-  const base = tierBaseName(label)
-  // none 档显示英文「None」,其余档显示英文档名
-  const display = base === 'none' ? 'None' : base
-  return (
-    <span
-      className={`inline-flex h-[18px] max-w-[80px] shrink-0 items-center overflow-hidden rounded px-1.5 text-[10px] font-bold font-mono leading-none ${className}`}
-      style={t.tagBg}
-    >
-      <span className="truncate capitalize" style={t.labelTextStyle}>{display}</span>
-    </span>
-  )
-}
-

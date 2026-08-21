@@ -120,14 +120,8 @@ class VolumeDryBreakoutIntradayCandidateStrategy:
         candidate = (
             (previous_vol_ratio >= float(params.get("setup_vol_ratio_min", 2.0)))
             & (setup_range > 0)
-            & (
-                setup_body
-                <= setup_range * float(params.get("max_body_to_range", 0.25))
-            )
-            & (
-                setup_lower_wick
-                >= setup_range * float(params.get("min_lower_wick_to_range", 0.45))
-            )
+            & (setup_body <= setup_range * float(params.get("max_body_to_range", 0.25)))
+            & (setup_lower_wick >= setup_range * float(params.get("min_lower_wick_to_range", 0.45)))
         )
 
         daily = DAILY_VOLUME_STRATEGY.compute_signals(market, params)
@@ -191,7 +185,11 @@ def confirm_intraday_entries(
         "cutoff": cutoff.strftime("%H:%M"),
     }
     required = {"symbol", "datetime", "open", "close", "volume"}
-    if not candidate_points.size or minute_df.is_empty() or not required.issubset(minute_df.columns):
+    if (
+        not candidate_points.size
+        or minute_df.is_empty()
+        or not required.issubset(minute_df.columns)
+    ):
         stats["missing_minute_symbol_days"] = len(candidate_points)
         stats["minute_coverage"] = 0.0
         return confirmed, fill_price, stats
@@ -251,13 +249,20 @@ def confirm_intraday_entries(
         prev_high = float(previous_high[time_id, asset_id])
         prev_volume = float(previous_volume[time_id, asset_id])
         prior_mean = float(prior_19_close_mean[time_id, asset_id])
-        if not all(np.isfinite(value) and value > 0 for value in (prev_high, prev_volume, prior_mean, next_open)):
+        if not all(
+            np.isfinite(value) and value > 0
+            for value in (prev_high, prev_volume, prior_mean, next_open)
+        ):
             stats["missing_minute_symbol_days"] += 1
             stats["minute_covered_symbol_days"] -= 1
             continue
 
         provisional_ma20 = (prior_mean * 19.0 + current_price) / 20.0
-        if current_price <= prev_high or current_price <= day_open or current_price <= provisional_ma20:
+        if (
+            current_price <= prev_high
+            or current_price <= day_open
+            or current_price <= provisional_ma20
+        ):
             stats["rejected_price"] += 1
             continue
         cumulative_volume = sum(point[3] for point in points[: cutoff_id + 1])
@@ -269,10 +274,7 @@ def confirm_intraday_entries(
             stats["rejected_extension"] += 1
             continue
         breakout_margin = current_price / prev_high - 1.0
-        if (
-            ma20_bias >= quality_guard_ma20_bias_min
-            and breakout_margin <= quality_guard_margin_max
-        ):
+        if ma20_bias >= quality_guard_ma20_bias_min and breakout_margin <= quality_guard_margin_max:
             stats["rejected_quality"] += 1
             continue
 
@@ -301,7 +303,9 @@ def summarize_activity(
     positions = [int(row.get("positions") or 0) for row in equity_curve]
     active = [value for value in exposures if value > 0]
     years = max(len(equity_curve) / 252.0, 1 / 252.0)
-    gross_turnover = (buy_notional + sell_notional) / initial_capital if initial_capital > 0 else 0.0
+    gross_turnover = (
+        (buy_notional + sell_notional) / initial_capital if initial_capital > 0 else 0.0
+    )
     avg_exposure = float(np.mean(exposures)) if exposures else 0.0
     return {
         "round_trip_trades": len(trades),
@@ -317,6 +321,8 @@ def summarize_activity(
         "avg_exposure": round(avg_exposure, 4),
         "avg_active_exposure": round(float(np.mean(active)), 4) if active else 0.0,
         "max_exposure": round(max(exposures), 4) if exposures else 0.0,
-        "exposure_limit_utilization": round(avg_exposure / exposure_cap, 4) if exposure_cap > 0 else 0.0,
+        "exposure_limit_utilization": round(avg_exposure / exposure_cap, 4)
+        if exposure_cap > 0
+        else 0.0,
         "idle_capital_ratio": round(1.0 - avg_exposure, 4),
     }

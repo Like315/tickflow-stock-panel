@@ -29,18 +29,96 @@ META = {
         "exclude_new_days": 120,
     },
     "params": [
-        {"id": "weekly_fast", "label": "周线快均线", "type": "int", "default": 4, "min": 2, "max": 8, "step": 1},
-        {"id": "weekly_slow", "label": "周线慢均线", "type": "int", "default": 10, "min": 6, "max": 20, "step": 1},
-        {"id": "monthly_fast", "label": "月线快均线", "type": "int", "default": 3, "min": 2, "max": 6, "step": 1},
-        {"id": "monthly_slow", "label": "月线慢均线", "type": "int", "default": 6, "min": 4, "max": 12, "step": 1},
-        {"id": "min_momentum_20d", "label": "20日最低动量", "type": "float", "default": 0.08, "min": 0.0, "max": 1.0, "step": 0.01},
-        {"id": "max_ma5_bias", "label": "距离5日线最大乖离", "type": "float", "default": 0.20, "min": 0.02, "max": 0.50, "step": 0.01},
-        {"id": "entry_on_momentum_breakout", "label": "动量突破入场", "type": "bool", "default": True},
-        {"id": "entry_on_ma5_reclaim", "label": "回踩收复5日线入场", "type": "bool", "default": True},
-        {"id": "entry_on_20d_high_breakout", "label": "20日新高入场", "type": "bool", "default": False},
-        {"id": "entry_once_per_trend", "label": "每轮趋势只首次入场", "type": "bool", "default": False},
-        {"id": "exit_on_weekly_breakdown", "label": "跌破4周线出场", "type": "bool", "default": True},
-        {"id": "exit_on_monthly_breakdown", "label": "跌破3月线出场", "type": "bool", "default": True},
+        {
+            "id": "weekly_fast",
+            "label": "周线快均线",
+            "type": "int",
+            "default": 4,
+            "min": 2,
+            "max": 8,
+            "step": 1,
+        },
+        {
+            "id": "weekly_slow",
+            "label": "周线慢均线",
+            "type": "int",
+            "default": 10,
+            "min": 6,
+            "max": 20,
+            "step": 1,
+        },
+        {
+            "id": "monthly_fast",
+            "label": "月线快均线",
+            "type": "int",
+            "default": 3,
+            "min": 2,
+            "max": 6,
+            "step": 1,
+        },
+        {
+            "id": "monthly_slow",
+            "label": "月线慢均线",
+            "type": "int",
+            "default": 6,
+            "min": 4,
+            "max": 12,
+            "step": 1,
+        },
+        {
+            "id": "min_momentum_20d",
+            "label": "20日最低动量",
+            "type": "float",
+            "default": 0.08,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01,
+        },
+        {
+            "id": "max_ma5_bias",
+            "label": "距离5日线最大乖离",
+            "type": "float",
+            "default": 0.20,
+            "min": 0.02,
+            "max": 0.50,
+            "step": 0.01,
+        },
+        {
+            "id": "entry_on_momentum_breakout",
+            "label": "动量突破入场",
+            "type": "bool",
+            "default": True,
+        },
+        {
+            "id": "entry_on_ma5_reclaim",
+            "label": "回踩收复5日线入场",
+            "type": "bool",
+            "default": True,
+        },
+        {
+            "id": "entry_on_20d_high_breakout",
+            "label": "20日新高入场",
+            "type": "bool",
+            "default": False,
+        },
+        {
+            "id": "entry_once_per_trend",
+            "label": "每轮趋势只首次入场",
+            "type": "bool",
+            "default": False,
+        },
+        {
+            "id": "exit_on_weekly_breakdown",
+            "label": "跌破4周线出场",
+            "type": "bool",
+            "default": True,
+        },
+        {
+            "id": "exit_on_monthly_breakdown",
+            "label": "跌破3月线出场",
+            "type": "bool",
+            "default": True,
+        },
     ],
     "scoring": {"momentum_20d": 0.55, "momentum_60d": 0.30, "amount": 0.15},
     "order_by": "score",
@@ -69,7 +147,9 @@ def _first_entry_per_trend(entry: np.ndarray, trend: np.ndarray) -> np.ndarray:
     return out
 
 
-def _weekly_averages(market: MarketDataMatrix, fast: int, slow: int) -> tuple[np.ndarray, np.ndarray]:
+def _weekly_averages(
+    market: MarketDataMatrix, fast: int, slow: int
+) -> tuple[np.ndarray, np.ndarray]:
     """Return expanding current-week close averages without using future bars."""
     dates = np.asarray(market.timestamps).astype("datetime64[ms]").astype("datetime64[D]")
     week_ids = dates.astype("datetime64[W]")
@@ -94,7 +174,9 @@ def _weekly_averages(market: MarketDataMatrix, fast: int, slow: int) -> tuple[np
     return fast_out, slow_out
 
 
-def _monthly_averages(market: MarketDataMatrix, fast: int, slow: int) -> tuple[np.ndarray, np.ndarray]:
+def _monthly_averages(
+    market: MarketDataMatrix, fast: int, slow: int
+) -> tuple[np.ndarray, np.ndarray]:
     """Return expanding current-month close averages without using future bars."""
     dates = np.asarray(market.timestamps).astype("datetime64[ms]").astype("datetime64[M]")
     n_t, n_a = market.shape

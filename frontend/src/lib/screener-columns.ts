@@ -112,7 +112,7 @@ export async function saveScreenerColumnConfig(columns: ColumnConfig[]): Promise
 export async function loadScreenerColumnConfig(): Promise<ColumnConfig[]> {
   try {
     const { api } = await import('@/lib/api')
-    const res = await api.screenerResultColumns()
+    const res = await api.screenerResultColumns<ColumnConfig>()
     if (res.columns && res.columns.length > 0) {
       const merged = mergeColumns(res.columns, SCREENER_BUILTIN_COLUMNS)
       storage.screenerResultColumns.set(serializeColumns(merged))

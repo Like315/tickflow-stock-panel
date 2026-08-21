@@ -1,5 +1,5 @@
 """Local fund portfolio ledger, snapshot import parsers, and quote refresh."""
-# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import csv
@@ -57,7 +57,9 @@ def parse_localized_number(value: Any) -> Decimal | None:
     negative = (text.startswith("(") and text.endswith(")")) or (
         text.startswith("（") and text.endswith("）")
     )
-    multiplier = Decimal("100000000") if "亿" in text else Decimal("10000") if "万" in text else Decimal("1")
+    multiplier = (
+        Decimal("100000000") if "亿" in text else Decimal("10000") if "万" in text else Decimal("1")
+    )
     match = _NUMBER_RE.search(text.replace("，", ","))
     if not match:
         return None
@@ -82,7 +84,14 @@ def _decode_csv(payload: bytes) -> str:
 _CSV_ALIASES = {
     "code": {"基金代码", "代码", "fund_code", "code"},
     "name": {"基金名称", "名称", "fund_name", "name"},
-    "holding_amount": {"持有金额", "持仓金额", "持有市值", "市值", "holding_amount", "market_value"},
+    "holding_amount": {
+        "持有金额",
+        "持仓金额",
+        "持有市值",
+        "市值",
+        "holding_amount",
+        "market_value",
+    },
     "shares": {"持有份额", "持仓份额", "份额", "shares"},
     "cost_amount": {"持仓成本", "成本金额", "持有成本", "cost_amount", "cost"},
     "holding_profit": {"持有收益", "累计收益", "持仓收益", "holding_profit", "profit"},
@@ -128,7 +137,9 @@ def parse_csv_snapshot(payload: bytes) -> dict[str, Any]:
     reader = csv.DictReader(StringIO(text))
     if not reader.fieldnames:
         raise ValueError("CSV 缺少表头")
-    normalized_headers = {str(header).strip().lower(): header for header in reader.fieldnames if header}
+    normalized_headers = {
+        str(header).strip().lower(): header for header in reader.fieldnames if header
+    }
     column_map: dict[str, str] = {}
     for target, aliases in _CSV_ALIASES.items():
         for alias in aliases:
@@ -189,7 +200,9 @@ def _extract_ocr_value(lines: list[str], aliases: tuple[str, ...]) -> Decimal | 
 
 
 def _looks_like_fund_name(line: str) -> bool:
-    if _CODE_RE.search(line) or any(label in line for labels in _OCR_FIELDS.values() for label in labels):
+    if _CODE_RE.search(line) or any(
+        label in line for labels in _OCR_FIELDS.values() for label in labels
+    ):
         return False
     if any(word in line for word in ("支付宝", "资产", "基金代码", "详情", "更新于")):
         return False
@@ -199,7 +212,11 @@ def _looks_like_fund_name(line: str) -> bool:
 def parse_ocr_snapshot(text: str) -> dict[str, Any]:
     """Extract conservative, editable candidates from OCR text."""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    code_rows = [(index, match.group(1)) for index, line in enumerate(lines) if (match := _CODE_RE.search(line))]
+    code_rows = [
+        (index, match.group(1))
+        for index, line in enumerate(lines)
+        if (match := _CODE_RE.search(line))
+    ]
     if not code_rows:
         raise ValueError("没有识别到 6 位基金代码，请换一张清晰截图或使用 CSV")
 
@@ -278,7 +295,7 @@ class EastmoneyFundQuoteProvider:
         )
         official_response.raise_for_status()
         document = official_response.json()
-        rows = ((document.get("Data") or {}).get("LSJZList") or [])
+        rows = (document.get("Data") or {}).get("LSJZList") or []
         if int(document.get("ErrCode") or 0) != 0 or not rows:
             raise RuntimeError("该基金暂无正式净值数据")
         latest = rows[0]
@@ -336,7 +353,11 @@ def _normalized_position(raw: dict[str, Any], *, require_holding: bool = True) -
     ):
         if field in raw:
             candidate[field] = raw[field]
-    if candidate["cost_amount"] is None and candidate["holding_amount"] is not None and candidate["holding_profit"] is not None:
+    if (
+        candidate["cost_amount"] is None
+        and candidate["holding_amount"] is not None
+        and candidate["holding_profit"] is not None
+    ):
         candidate["cost_amount"] = _float(
             Decimal(str(candidate["holding_amount"])) - Decimal(str(candidate["holding_profit"])),
             _MONEY,
@@ -392,10 +413,22 @@ class FundPortfolioService:
         official_nav = parse_localized_number(position.get("official_nav"))
         imported_amount = parse_localized_number(position.get("holding_amount"))
         current_nav = estimate_nav or official_nav
-        market_value = shares * current_nav if shares is not None and current_nav is not None else imported_amount
+        market_value = (
+            shares * current_nav
+            if shares is not None and current_nav is not None
+            else imported_amount
+        )
         cost = parse_localized_number(position.get("cost_amount"))
-        profit = market_value - cost if market_value is not None and cost is not None else parse_localized_number(position.get("holding_profit"))
-        profit_pct = profit / cost * 100 if profit is not None and cost is not None and cost > 0 else parse_localized_number(position.get("holding_profit_pct"))
+        profit = (
+            market_value - cost
+            if market_value is not None and cost is not None
+            else parse_localized_number(position.get("holding_profit"))
+        )
+        profit_pct = (
+            profit / cost * 100
+            if profit is not None and cost is not None and cost > 0
+            else parse_localized_number(position.get("holding_profit_pct"))
+        )
         position["market_value"] = _float(market_value, _MONEY)
         position["holding_profit"] = _float(profit, _MONEY)
         position["holding_profit_pct"] = _float(profit_pct, _PERCENT)
@@ -456,7 +489,14 @@ class FundPortfolioService:
     def upsert_position(self, code: str, values: dict[str, Any]) -> dict[str, Any]:
         normalized_code = _normalize_code(code)
         with self._lock:
-            index = next((i for i, row in enumerate(self._state["positions"]) if row["code"] == normalized_code), None)
+            index = next(
+                (
+                    i
+                    for i, row in enumerate(self._state["positions"])
+                    if row["code"] == normalized_code
+                ),
+                None,
+            )
             existing = self._state["positions"][index] if index is not None else {}
             merged = {**existing, **values, "code": normalized_code, "updated_at": _now()}
             normalized = _normalized_position(merged)
@@ -512,7 +552,9 @@ class FundPortfolioService:
                     position[field] = quote.get(field)
                 if quote.get("name") and not position.get("name"):
                     position["name"] = quote["name"]
-                position["quote_status"] = "estimate" if quote.get("estimated_nav") is not None else "official"
+                position["quote_status"] = (
+                    "estimate" if quote.get("estimated_nav") is not None else "official"
+                )
                 change_pct = parse_localized_number(quote.get("estimated_change_pct"))
                 presented = self._present_position(position)
                 market_value = parse_localized_number(presented.get("market_value"))

@@ -1,4 +1,5 @@
 """Tushare research-only provider for historical A-share minute bars."""
+
 from __future__ import annotations
 
 import logging

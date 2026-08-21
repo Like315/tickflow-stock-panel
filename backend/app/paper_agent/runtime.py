@@ -1,4 +1,5 @@
 """Deterministic investment-expert decision runtime."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -95,12 +96,8 @@ class InvestmentExpertRuntime:
         features["overnight_us_tilt"] = context.get("overnight_us_tilt")
         features["overnight_us_factor"] = context.get("overnight_us_factor")
         features["overnight_us_module"] = context.get("overnight_us_module")
-        features["overnight_us_module_symbol"] = context.get(
-            "overnight_us_module_symbol"
-        )
-        features["overnight_us_match_confidence"] = context.get(
-            "overnight_us_match_confidence"
-        )
+        features["overnight_us_module_symbol"] = context.get("overnight_us_module_symbol")
+        features["overnight_us_match_confidence"] = context.get("overnight_us_match_confidence")
         features["news_sentiment_score"] = context.get("news_sentiment_score")
         features["candidate_news_sentiment"] = context.get("candidate_news_sentiment")
         features["news_sentiment_confidence"] = context.get("news_sentiment_confidence")
@@ -111,10 +108,12 @@ class InvestmentExpertRuntime:
             else None
         )
         action, reason = self._decide(bar, features)
-        decision_id = str(uuid5(
-            NAMESPACE_URL,
-            f"{self.session_id}:{self.policy.id}:{bar.symbol}:{available_at.isoformat()}:{action}",
-        ))
+        decision_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"{self.session_id}:{self.policy.id}:{bar.symbol}:{available_at.isoformat()}:{action}",
+            )
+        )
         decision = {
             "id": decision_id,
             "symbol": bar.symbol,
@@ -153,12 +152,8 @@ class InvestmentExpertRuntime:
             -1.0,
             min(1.0, float(features.get("overnight_us_factor") or 0.0)),
         )
-        overnight_exit_adjustment = (
-            overnight_factor * self.policy.overnight_us_exit_weight * 0.01
-        )
-        effective_exit_vwap_bias = (
-            self.policy.exit_vwap_bias - overnight_exit_adjustment
-        )
+        overnight_exit_adjustment = overnight_factor * self.policy.overnight_us_exit_weight * 0.01
+        effective_exit_vwap_bias = self.policy.exit_vwap_bias - overnight_exit_adjustment
         effective_take_profit_pct = max(
             0.001,
             self.policy.take_profit_pct
@@ -196,9 +191,7 @@ class InvestmentExpertRuntime:
             -1.0,
             min(1.0, float(features.get("news_factor_score") or 0.0)),
         )
-        news_confirmation_bias = (
-            news_factor_score * self.policy.news_candidate_weight * 0.004
-        )
+        news_confirmation_bias = news_factor_score * self.policy.news_candidate_weight * 0.004
         raw_overnight_entry_adjustment = (
             overnight_factor * self.policy.overnight_us_entry_weight * 0.01
         )
@@ -208,7 +201,8 @@ class InvestmentExpertRuntime:
                 min(
                     self.policy.min_vwap_bias - news_confirmation_bias,
                     self.policy.min_breakout_pct - news_confirmation_bias,
-                ) * 0.5,
+                )
+                * 0.5,
             )
             overnight_entry_adjustment = min(
                 raw_overnight_entry_adjustment,
@@ -217,15 +211,11 @@ class InvestmentExpertRuntime:
         else:
             overnight_entry_adjustment = raw_overnight_entry_adjustment
         required_vwap_bias = (
-            self.policy.min_vwap_bias
-            - news_confirmation_bias
-            - overnight_entry_adjustment
+            self.policy.min_vwap_bias - news_confirmation_bias - overnight_entry_adjustment
         )
         required_breakout_pct = max(
             0.0,
-            self.policy.min_breakout_pct
-            - news_confirmation_bias
-            - overnight_entry_adjustment,
+            self.policy.min_breakout_pct - news_confirmation_bias - overnight_entry_adjustment,
         )
         required_probability = max(
             0.50,
@@ -236,9 +226,7 @@ class InvestmentExpertRuntime:
             ),
         )
         features["news_confirmation_bias"] = news_confirmation_bias
-        features["raw_overnight_us_entry_adjustment"] = (
-            raw_overnight_entry_adjustment
-        )
+        features["raw_overnight_us_entry_adjustment"] = raw_overnight_entry_adjustment
         features["overnight_us_entry_adjustment"] = overnight_entry_adjustment
         features["required_vwap_bias"] = required_vwap_bias
         features["required_breakout_pct"] = required_breakout_pct

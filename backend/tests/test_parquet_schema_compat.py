@@ -13,30 +13,38 @@ def test_partitioned_daily_scan_tolerates_added_quote_ts(tmp_path):
     old_part.parent.mkdir(parents=True)
     new_part.parent.mkdir(parents=True)
 
-    pl.DataFrame({
-        "symbol": ["600000.SH"],
-        "date": [date(2026, 7, 8)],
-        "open": [10.0],
-        "high": [10.5],
-        "low": [9.8],
-        "close": [10.2],
-        "volume": [1000.0],
-        "amount": [10200.0],
-    }).write_parquet(old_part)
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "date": [date(2026, 7, 8)],
+            "open": [10.0],
+            "high": [10.5],
+            "low": [9.8],
+            "close": [10.2],
+            "volume": [1000.0],
+            "amount": [10200.0],
+        }
+    ).write_parquet(old_part)
 
-    pl.DataFrame({
-        "symbol": ["600000.SH"],
-        "date": [date(2026, 7, 9)],
-        "open": [10.2],
-        "high": [10.8],
-        "low": [10.1],
-        "close": [10.6],
-        "volume": [1200],
-        "amount": [12720.0],
-        "quote_ts": [1783560600000],
-    }).write_parquet(new_part)
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "date": [date(2026, 7, 9)],
+            "open": [10.2],
+            "high": [10.8],
+            "low": [10.1],
+            "close": [10.6],
+            "volume": [1200],
+            "amount": [12720.0],
+            "quote_ts": [1783560600000],
+        }
+    ).write_parquet(new_part)
 
-    df = scan_daily_parquet(str(tmp_path / "kline_daily" / "**" / "*.parquet")).sort("date").collect()
+    df = (
+        scan_daily_parquet(str(tmp_path / "kline_daily" / "**" / "*.parquet"))
+        .sort("date")
+        .collect()
+    )
 
     assert df.height == 2
     assert df.schema["volume"] == pl.Float64

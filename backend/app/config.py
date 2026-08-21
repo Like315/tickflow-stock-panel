@@ -1,4 +1,5 @@
 """全局配置 — 从环境变量 / .env 读取。"""
+
 from __future__ import annotations
 
 import sys
@@ -117,7 +118,9 @@ class Settings(BaseSettings):
     tiers_yaml: Path = _RESOURCE_ROOT / "tiers.yaml" if _IS_FROZEN else _PROJECT_ROOT / "tiers.yaml"
 
     # 静态文件(前端 dist) — frozen: 资源目录的 static/; 非 frozen: frontend/dist
-    static_dir: Path = _RESOURCE_ROOT / "static" if _IS_FROZEN else (_PROJECT_ROOT / "frontend" / "dist")
+    static_dir: Path = (
+        _RESOURCE_ROOT / "static" if _IS_FROZEN else (_PROJECT_ROOT / "frontend" / "dist")
+    )
 
     @model_validator(mode="after")
     def _resolve_paths(self) -> Settings:
@@ -135,6 +138,7 @@ class Settings(BaseSettings):
     def use_free_mode(self) -> bool:
         """是否走 Free 模式。优先看 secrets.json,其次看 .env。"""
         from app import secrets_store
+
         return not secrets_store.get_tickflow_key()
 
 

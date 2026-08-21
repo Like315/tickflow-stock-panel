@@ -17,19 +17,21 @@ from app.strategy.monitor import MonitorRuleEngine
 
 
 def _rule(*events: str, **overrides) -> dict:
-    return monitor_rules.normalize({
-        "id": "strategy_rule",
-        "name": "策略监控",
-        "type": "strategy",
-        "asset_type": "stock",
-        "scope": "all",
-        "symbols": [],
-        "strategy_id": "demo",
-        "notify_events": list(events),
-        "conditions": [],
-        "cooldown_seconds": 3600,
-        **overrides,
-    })
+    return monitor_rules.normalize(
+        {
+            "id": "strategy_rule",
+            "name": "策略监控",
+            "type": "strategy",
+            "asset_type": "stock",
+            "scope": "all",
+            "symbols": [],
+            "strategy_id": "demo",
+            "notify_events": list(events),
+            "conditions": [],
+            "cooldown_seconds": 3600,
+            **overrides,
+        }
+    )
 
 
 class _SequenceStrategyEngine:
@@ -79,17 +81,22 @@ def _result(
 
 
 def _quotes() -> pl.DataFrame:
-    return pl.DataFrame({
-        "symbol": ["A", "B"],
-        "close": [10.0, 20.0],
-        "change_pct": [0.01, -0.02],
-    })
+    return pl.DataFrame(
+        {
+            "symbol": ["A", "B"],
+            "close": [10.0, 20.0],
+            "change_pct": [0.01, -0.02],
+        }
+    )
 
 
 def test_strategy_rule_compatibility_and_validation(tmp_path):
     legacy = {
-        "id": "legacy", "name": "旧规则", "type": "strategy",
-        "scope": "all", "strategy_id": "demo",
+        "id": "legacy",
+        "name": "旧规则",
+        "type": "strategy",
+        "scope": "all",
+        "strategy_id": "demo",
     }
     monitor_rules.save_one(tmp_path, legacy)
 
@@ -105,27 +112,33 @@ def test_strategy_rule_compatibility_and_validation(tmp_path):
     monitor_rules.validate(_rule("buy_signal", "pool_exit"))
     monitor_rules.validate(_rule("pool_entry", scope="watchlist"))
     with pytest.raises(ValueError, match=r"overnight_us\.mode"):
-        monitor_rules.validate(_rule(
-            "pool_entry",
-            context_filters={
-                "overnight_us": {"mode": "unknown", "threshold": -0.35},
-                "news": {"mode": "off", "threshold": -0.35},
-                "unavailable_action": "degrade",
-            },
-        ))
+        monitor_rules.validate(
+            _rule(
+                "pool_entry",
+                context_filters={
+                    "overnight_us": {"mode": "unknown", "threshold": -0.35},
+                    "news": {"mode": "off", "threshold": -0.35},
+                    "unavailable_action": "degrade",
+                },
+            )
+        )
 
 
 def test_strategy_events_baseline_dedupe_and_next_day_replay():
     day1 = date(2026, 7, 24)
     day2 = date(2026, 7, 25)
     engine = MonitorRuleEngine()
-    engine.set_strategy_engine(_SequenceStrategyEngine([
-        _result(day1, pool=("A",), buys=("A",)),
-        _result(day1, pool=("A", "B"), buys=("A", "B")),
-        _result(day1, pool=("A", "B")),
-        _result(day1, pool=("A", "B"), buys=("B",)),
-        _result(day2, pool=("A", "B"), buys=("B",)),
-    ]))
+    engine.set_strategy_engine(
+        _SequenceStrategyEngine(
+            [
+                _result(day1, pool=("A",), buys=("A",)),
+                _result(day1, pool=("A", "B"), buys=("A", "B")),
+                _result(day1, pool=("A", "B")),
+                _result(day1, pool=("A", "B"), buys=("B",)),
+                _result(day2, pool=("A", "B"), buys=("B",)),
+            ]
+        )
+    )
     engine.set_rules([_rule("buy_signal", "pool_entry")])
 
     with patch("app.strategy.monitor.time.time", side_effect=[100, 101, 102, 103, 4000]):
@@ -145,10 +158,14 @@ def test_strategy_events_baseline_dedupe_and_next_day_replay():
 def test_strategy_sell_and_pool_exit_are_independent_events():
     day = date(2026, 7, 24)
     engine = MonitorRuleEngine()
-    engine.set_strategy_engine(_SequenceStrategyEngine([
-        _result(day, pool=("A", "B")),
-        _result(day, pool=("A",), sells=("B",)),
-    ]))
+    engine.set_strategy_engine(
+        _SequenceStrategyEngine(
+            [
+                _result(day, pool=("A", "B")),
+                _result(day, pool=("A",), sells=("B",)),
+            ]
+        )
+    )
     engine.set_rules([_rule("sell_signal", "pool_exit")])
 
     with patch("app.strategy.monitor.time.time", side_effect=[100, 101]):
@@ -164,14 +181,20 @@ def test_strategy_sell_and_pool_exit_are_independent_events():
 def test_watchlist_scope_tracks_engine_watchlist_snapshot():
     engine = MonitorRuleEngine()
     engine.set_watchlist_symbols(["A"])
-    engine.set_rules([monitor_rules.normalize({
-        "id": "watchlist_price",
-        "name": "自选股价格监控",
-        "type": "price",
-        "asset_type": "stock",
-        "scope": "watchlist",
-        "conditions": [{"field": "close", "op": ">", "value": 0}],
-    })])
+    engine.set_rules(
+        [
+            monitor_rules.normalize(
+                {
+                    "id": "watchlist_price",
+                    "name": "自选股价格监控",
+                    "type": "price",
+                    "asset_type": "stock",
+                    "scope": "watchlist",
+                    "conditions": [{"field": "close", "op": ">", "value": 0}],
+                }
+            )
+        ]
+    )
 
     events = engine.evaluate(_quotes())
 
@@ -180,48 +203,67 @@ def test_watchlist_scope_tracks_engine_watchlist_snapshot():
 
 def test_market_context_blocks_then_releases_entry_events():
     day = date(2026, 7, 24)
-    context = _MarketContext({
-        "overnight_us": {
-            "available": True, "status": "live", "tilt": 0.0, "score": 0.0,
-            "market_date": "2026-07-23",
-        },
-        "news": {"available": True, "status": "live"},
-        "candidate_news": {
-            "A": {"score": -1.0, "matched_count": 1, "headlines": ["负面新闻"]},
-        },
-    })
+    context = _MarketContext(
+        {
+            "overnight_us": {
+                "available": True,
+                "status": "live",
+                "tilt": 0.0,
+                "score": 0.0,
+                "market_date": "2026-07-23",
+            },
+            "news": {"available": True, "status": "live"},
+            "candidate_news": {
+                "A": {"score": -1.0, "matched_count": 1, "headlines": ["负面新闻"]},
+            },
+        }
+    )
     engine = MonitorRuleEngine()
-    engine.set_strategy_engine(_SequenceStrategyEngine([
-        _result(day, pool=("A",)),
-        _result(day, pool=("A",), buys=("A",)),
-        _result(day, pool=("A",), buys=("A",)),
-        _result(day, pool=("A",), buys=("A",)),
-        _result(day, pool=("A",), buys=("A",)),
-    ]))
+    engine.set_strategy_engine(
+        _SequenceStrategyEngine(
+            [
+                _result(day, pool=("A",)),
+                _result(day, pool=("A",), buys=("A",)),
+                _result(day, pool=("A",), buys=("A",)),
+                _result(day, pool=("A",), buys=("A",)),
+                _result(day, pool=("A",), buys=("A",)),
+            ]
+        )
+    )
     engine.set_market_context_service(context)
-    engine.set_rules([_rule(
-        "buy_signal",
-        "pool_entry",
-        context_filters={
-            "overnight_us": {"mode": "risk_gate", "threshold": -0.35},
-            "news": {"mode": "negative_veto", "threshold": -0.35},
-            "unavailable_action": "degrade",
-        },
-    )])
+    engine.set_rules(
+        [
+            _rule(
+                "buy_signal",
+                "pool_entry",
+                context_filters={
+                    "overnight_us": {"mode": "risk_gate", "threshold": -0.35},
+                    "news": {"mode": "negative_veto", "threshold": -0.35},
+                    "unavailable_action": "degrade",
+                },
+            )
+        ]
+    )
 
     with patch("app.strategy.monitor.time.time", side_effect=[100, 101, 102, 103, 104]):
         assert engine.evaluate(_quotes()) == []
         assert engine.evaluate(_quotes()) == []
         context.snapshot["candidate_news"]["A"] = {
-            "score": 0.0, "matched_count": 0, "headlines": [],
+            "score": 0.0,
+            "matched_count": 0,
+            "headlines": [],
         }
         events = engine.evaluate(_quotes())
         context.snapshot["candidate_news"]["A"] = {
-            "score": -1.0, "matched_count": 1, "headlines": ["负面新闻"],
+            "score": -1.0,
+            "matched_count": 1,
+            "headlines": ["负面新闻"],
         }
         assert engine.evaluate(_quotes()) == []
         context.snapshot["candidate_news"]["A"] = {
-            "score": 0.0, "matched_count": 0, "headlines": [],
+            "score": 0.0,
+            "matched_count": 0,
+            "headlines": [],
         }
         assert engine.evaluate(_quotes()) == []
 
@@ -237,26 +279,36 @@ def test_market_context_blocks_then_releases_entry_events():
 
 def test_market_context_never_blocks_sell_or_pool_exit():
     day = date(2026, 7, 24)
-    context = _MarketContext({
-        "overnight_us": {"available": True, "status": "live", "tilt": -1.0},
-        "news": {"available": False, "status": "no_data"},
-        "candidate_news": {},
-    })
+    context = _MarketContext(
+        {
+            "overnight_us": {"available": True, "status": "live", "tilt": -1.0},
+            "news": {"available": False, "status": "no_data"},
+            "candidate_news": {},
+        }
+    )
     engine = MonitorRuleEngine()
-    engine.set_strategy_engine(_SequenceStrategyEngine([
-        _result(day, pool=("A",)),
-        _result(day, sells=("A",)),
-    ]))
+    engine.set_strategy_engine(
+        _SequenceStrategyEngine(
+            [
+                _result(day, pool=("A",)),
+                _result(day, sells=("A",)),
+            ]
+        )
+    )
     engine.set_market_context_service(context)
-    engine.set_rules([_rule(
-        "sell_signal",
-        "pool_exit",
-        context_filters={
-            "overnight_us": {"mode": "risk_gate", "threshold": -0.35},
-            "news": {"mode": "off", "threshold": -0.35},
-            "unavailable_action": "pause",
-        },
-    )])
+    engine.set_rules(
+        [
+            _rule(
+                "sell_signal",
+                "pool_exit",
+                context_filters={
+                    "overnight_us": {"mode": "risk_gate", "threshold": -0.35},
+                    "news": {"mode": "off", "threshold": -0.35},
+                    "unavailable_action": "pause",
+                },
+            )
+        ]
+    )
 
     with patch("app.strategy.monitor.time.time", side_effect=[100, 101]):
         assert engine.evaluate(_quotes()) == []
@@ -266,17 +318,65 @@ def test_market_context_never_blocks_sell_or_pool_exit():
         ("sell_signal", "A"),
         ("pool_exit", "A"),
     }
+    assert all(event["market_context"] is None for event in events)
+    assert all("隔夜美股" not in event["message"] for event in events)
+
+
+def test_display_only_context_never_pauses_entry_when_source_is_unavailable():
+    """仅展示模式在数据不可用时仍应放行新的入场提醒。"""
+    day = date(2026, 7, 24)
+    context = _MarketContext(
+        {
+            "overnight_us": {"available": False, "status": "unavailable"},
+            "news": {"available": False, "status": "unavailable"},
+            "candidate_news": {},
+        }
+    )
+    engine = MonitorRuleEngine()
+    engine.set_strategy_engine(
+        _SequenceStrategyEngine(
+            [
+                _result(day),
+                _result(day, buys=("A",)),
+            ]
+        )
+    )
+    engine.set_market_context_service(context)
+    engine.set_rules(
+        [
+            _rule(
+                "buy_signal",
+                context_filters={
+                    "overnight_us": {"mode": "display_only", "threshold": -0.35},
+                    "news": {"mode": "display_only", "threshold": -0.35},
+                    "unavailable_action": "pause",
+                },
+            )
+        ]
+    )
+
+    with patch("app.strategy.monitor.time.time", side_effect=[100, 101]):
+        assert engine.evaluate(_quotes()) == []
+        events = engine.evaluate(_quotes())
+
+    assert [(event["type"], event["symbol"]) for event in events] == [("buy_signal", "A")]
+    assert events[0]["market_context"]["allowed"] is True
+    assert "仅展示已跳过" in events[0]["message"]
 
 
 def test_strategy_rule_reload_preserves_state_and_semantic_edit_resets_it():
     day = date(2026, 7, 24)
     engine = MonitorRuleEngine()
-    engine.set_strategy_engine(_SequenceStrategyEngine([
-        _result(day, buys=("A",)),
-        _result(day, buys=("A",)),
-        _result(day, buys=("A",)),
-        _result(day, buys=("A",)),
-    ]))
+    engine.set_strategy_engine(
+        _SequenceStrategyEngine(
+            [
+                _result(day, buys=("A",)),
+                _result(day, buys=("A",)),
+                _result(day, buys=("A",)),
+                _result(day, buys=("A",)),
+            ]
+        )
+    )
     rule = _rule("buy_signal")
     engine.set_rules([rule])
     assert engine.evaluate(_quotes()) == []
@@ -308,16 +408,18 @@ def test_matrix_signal_hits_map_codes_and_keep_unlabelled_hits():
 
 def test_matrix_strategy_pool_masks_rows_and_both_signal_directions():
     day = date(2026, 7, 24)
-    panel = pl.DataFrame({
-        "symbol": ["A", "B"],
-        "date": [day, day],
-        "open": [10.0, 20.0],
-        "high": [10.0, 20.0],
-        "low": [10.0, 20.0],
-        "close": [10.0, 20.0],
-        "volume": [100.0, 100.0],
-        "amount": [1000.0, 2000.0],
-    })
+    panel = pl.DataFrame(
+        {
+            "symbol": ["A", "B"],
+            "date": [day, day],
+            "open": [10.0, 20.0],
+            "high": [10.0, 20.0],
+            "low": [10.0, 20.0],
+            "close": [10.0, 20.0],
+            "volume": [100.0, 100.0],
+            "amount": [1000.0, 2000.0],
+        }
+    )
     calls = 0
 
     class _AllSignals:
@@ -382,13 +484,15 @@ def test_matrix_strategy_pool_masks_rows_and_both_signal_directions():
 
 def test_ordinary_strategy_uses_signal_overrides_and_ignores_malformed_values():
     day = date(2026, 7, 24)
-    quotes = pl.DataFrame({
-        "symbol": ["A", "B"],
-        "signal_default_buy": [True, False],
-        "signal_override_buy": [False, True],
-        "signal_default_sell": [False, True],
-        "signal_override_sell": [True, False],
-    })
+    quotes = pl.DataFrame(
+        {
+            "symbol": ["A", "B"],
+            "signal_default_buy": [True, False],
+            "signal_override_buy": [False, True],
+            "signal_default_sell": [False, True],
+            "signal_override_sell": [True, False],
+        }
+    )
     strategy = StrategyDef(
         meta={"id": "ordinary", "scoring": {}, "limit": 100},
         basic_filter={"enabled": False},

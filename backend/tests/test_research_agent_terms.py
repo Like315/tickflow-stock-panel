@@ -28,14 +28,16 @@ def test_recommendation_requires_counter_evidence_and_valid_confidence() -> None
         "stance": "观察",
         "confidence": 60,
         "thesis": "趋势改善但仍需确认",
-        "evidence": [{
-            "dimension": "技术面",
-            "conclusion": "均线改善",
-            "supports": ["收盘价位于 MA20 上方"],
-            "source": "TickFlow enriched",
-            "evidence_refs": ["technical.ma20"],
-            "as_of": "2026-08-11",
-        }],
+        "evidence": [
+            {
+                "dimension": "技术面",
+                "conclusion": "均线改善",
+                "supports": ["收盘价位于 MA20 上方"],
+                "source": "TickFlow enriched",
+                "evidence_refs": ["technical.ma20"],
+                "as_of": "2026-08-11",
+            }
+        ],
         "counter_evidence": ["成交量不足"],
         "risks": ["市场转弱"],
     }

@@ -1,4 +1,5 @@
 """Deterministic multi-source news sentiment for the investment expert."""
+
 from __future__ import annotations
 
 import asyncio
@@ -20,34 +21,142 @@ logger = logging.getLogger(__name__)
 _CN_TZ = ZoneInfo("Asia/Shanghai")
 _MAX_AGE_HOURS = 48.0
 _POSITIVE_TERMS = (
-    "超预期", "上调", "增持", "回购", "中标", "签约", "获批", "降息", "降准",
-    "大涨", "上涨", "走强", "反弹", "突破", "创新高", "增长", "盈利", "扭亏",
-    "扩产", "复苏", "支持", "利好", "beat", "upgrade", "surge", "rally", "record high",
-    "rate cut", "stimulus", "approval", "buyback",
+    "超预期",
+    "上调",
+    "增持",
+    "回购",
+    "中标",
+    "签约",
+    "获批",
+    "降息",
+    "降准",
+    "大涨",
+    "上涨",
+    "走强",
+    "反弹",
+    "突破",
+    "创新高",
+    "增长",
+    "盈利",
+    "扭亏",
+    "扩产",
+    "复苏",
+    "支持",
+    "利好",
+    "beat",
+    "upgrade",
+    "surge",
+    "rally",
+    "record high",
+    "rate cut",
+    "stimulus",
+    "approval",
+    "buyback",
 )
 _NEGATIVE_TERMS = (
-    "不及预期", "下调", "减持", "处罚", "调查", "召回", "违约", "破产", "加息",
-    "暴跌", "下跌", "走弱", "跳水", "新低", "亏损", "裁员", "制裁", "禁令",
-    "关税", "风险", "利空", "miss", "downgrade", "plunge", "selloff", "default",
-    "bankruptcy", "layoff", "sanction", "tariff", "rate hike", "recall",
+    "不及预期",
+    "下调",
+    "减持",
+    "处罚",
+    "调查",
+    "召回",
+    "违约",
+    "破产",
+    "加息",
+    "暴跌",
+    "下跌",
+    "走弱",
+    "跳水",
+    "新低",
+    "亏损",
+    "裁员",
+    "制裁",
+    "禁令",
+    "关税",
+    "风险",
+    "利空",
+    "miss",
+    "downgrade",
+    "plunge",
+    "selloff",
+    "default",
+    "bankruptcy",
+    "layoff",
+    "sanction",
+    "tariff",
+    "rate hike",
+    "recall",
 )
 _STRONG_TERMS = (
-    "大涨", "暴跌", "飙升", "跳水", "重大", "紧急", "超预期", "不及预期",
-    "surge", "plunge", "emergency", "record high", "bankruptcy",
+    "大涨",
+    "暴跌",
+    "飙升",
+    "跳水",
+    "重大",
+    "紧急",
+    "超预期",
+    "不及预期",
+    "surge",
+    "plunge",
+    "emergency",
+    "record high",
+    "bankruptcy",
 )
 _GLOBAL_TERMS = (
-    "美股", "美国", "美联储", "纳斯达克", "标普", "道琼斯", "英伟达", "特斯拉",
-    "欧洲", "欧央行", "日本央行", "全球", "原油", "黄金", "美元", "fed", "nasdaq",
-    "s&p", "dow jones", "nvidia", "tesla", "ecb", "wall street", "oil",
+    "美股",
+    "美国",
+    "美联储",
+    "纳斯达克",
+    "标普",
+    "道琼斯",
+    "英伟达",
+    "特斯拉",
+    "欧洲",
+    "欧央行",
+    "日本央行",
+    "全球",
+    "原油",
+    "黄金",
+    "美元",
+    "fed",
+    "nasdaq",
+    "s&p",
+    "dow jones",
+    "nvidia",
+    "tesla",
+    "ecb",
+    "wall street",
+    "oil",
 )
 _DOMESTIC_TERMS = (
-    "A股", "中国", "国务院", "央行", "证监会", "金融监管总局", "财政部", "商务部",
-    "发改委", "沪指", "深成指", "创业板", "科创板", "人民币", "北交所", "沪深",
+    "A股",
+    "中国",
+    "国务院",
+    "央行",
+    "证监会",
+    "金融监管总局",
+    "财政部",
+    "商务部",
+    "发改委",
+    "沪指",
+    "深成指",
+    "创业板",
+    "科创板",
+    "人民币",
+    "北交所",
+    "沪深",
 )
 _NAME_SUFFIXES = (
-    "股份有限公司", "有限责任公司", "股份", "集团", "控股", "科技", "发展", "实业",
+    "股份有限公司",
+    "有限责任公司",
+    "股份",
+    "集团",
+    "控股",
+    "科技",
+    "发展",
+    "实业",
 )
-_TAG_SPLIT_RE = re.compile(r"[,，;；/、|]+")  # noqa: RUF001
+_TAG_SPLIT_RE = re.compile(r"[,，;；/、|]+")
 
 NewsFetcher = Callable[..., Awaitable[list[dict[str, str]]] | list[dict[str, str]]]
 
@@ -97,8 +206,16 @@ def _candidate_terms(symbol: str, metadata: Mapping[str, Any]) -> tuple[str, ...
                 terms.append(name[: -len(suffix)])
                 break
     for key in (
-        "industry", "industry_name", "行业", "sector", "sector_name", "行业名称",
-        "concept", "concept_name", "概念", "题材",
+        "industry",
+        "industry_name",
+        "行业",
+        "sector",
+        "sector_name",
+        "行业名称",
+        "concept",
+        "concept_name",
+        "概念",
+        "题材",
     ):
         raw = metadata.get(key)
         if raw is None:
@@ -235,16 +352,18 @@ class NewsSentimentService:
             if sentiment:
                 weighted_sum += sentiment * recency_weight
                 total_weight += recency_weight
-            items.append({
-                "title": title,
-                "snippet": snippet,
-                "published_at": published_at.isoformat(timespec="seconds"),
-                "source": source,
-                "source_url": str(row.get("source_url") or ""),
-                "region": item_region,
-                "sentiment": round(sentiment, 8),
-                "recency_weight": round(recency_weight, 8),
-            })
+            items.append(
+                {
+                    "title": title,
+                    "snippet": snippet,
+                    "published_at": published_at.isoformat(timespec="seconds"),
+                    "source": source,
+                    "source_url": str(row.get("source_url") or ""),
+                    "region": item_region,
+                    "sentiment": round(sentiment, 8),
+                    "recency_weight": round(recency_weight, 8),
+                }
+            )
         signal_count = sum(bool(item["sentiment"]) for item in items)
         score = weighted_sum / total_weight if total_weight else 0.0
         confidence = min(signal_count / 6, 1.0) * min(len(items) / 12, 1.0)

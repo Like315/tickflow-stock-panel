@@ -1,5 +1,5 @@
 """AI 研究 Agent 的问答、每日推荐与历史复盘编排。"""
-# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import asyncio
@@ -21,8 +21,8 @@ from app.services.ai_provider import (
     generate_ai_text,
     stream_ai_text,
 )
-from app.services.fund_research import FundResearchService
 from app.services.fund_market_research import FundMarketResearchService
+from app.services.fund_research import FundResearchService
 from app.services.research_agent_evidence import build_stock_evidence
 from app.services.research_agent_models import DailyReview, RecommendationPick
 from app.services.research_agent_screening import screen_candidates
@@ -127,7 +127,9 @@ def _parse_picks(
     picks = _PICKS_ADAPTER.validate_python(values)
     if len(picks) > 5:
         raise ValueError("AI 推荐超过 5 只")
-    candidate_names = {str(row["symbol"]).upper(): str(row.get("name") or row["symbol"]) for row in candidates}
+    candidate_names = {
+        str(row["symbol"]).upper(): str(row.get("name") or row["symbol"]) for row in candidates
+    }
     seen: set[str] = set()
     normalized: list[RecommendationPick] = []
     for pick in picks:
@@ -174,7 +176,9 @@ def _parse_picks(
     return normalized
 
 
-def _evidence_catalog(candidates: list[dict[str, Any]], fallback_date: date) -> dict[str, dict[str, Any]]:
+def _evidence_catalog(
+    candidates: list[dict[str, Any]], fallback_date: date
+) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for candidate in candidates:
         symbol = str(candidate["screen"]["symbol"]).upper()
@@ -291,9 +295,9 @@ def _resolve_symbol(repo, question: str, explicit: str | None = None) -> str | N
     if exact.height == 1:
         return str(exact["symbol"][0])
     mentioned = instruments.filter(
-        pl.col("name").cast(pl.String).map_elements(
-            lambda name: bool(name and str(name) in question), return_dtype=pl.Boolean
-        )
+        pl.col("name")
+        .cast(pl.String)
+        .map_elements(lambda name: bool(name and str(name) in question), return_dtype=pl.Boolean)
     ).sort(pl.col("name").str.len_chars(), descending=True)
     return str(mentioned["symbol"][0]) if mentioned.height else None
 
@@ -305,7 +309,11 @@ def _performance_rows(stock: pl.DataFrame, benchmark: pl.DataFrame | None) -> li
     if stock.height < 2:
         return []
     benchmark_map: dict[date, float] = {}
-    if benchmark is not None and not benchmark.is_empty() and {"date", "close"}.issubset(benchmark.columns):
+    if (
+        benchmark is not None
+        and not benchmark.is_empty()
+        and {"date", "close"}.issubset(benchmark.columns)
+    ):
         benchmark_map = {
             row[0]: float(row[1])
             for row in benchmark.select(["date", "close"]).drop_nulls().iter_rows()
@@ -328,16 +336,20 @@ def _performance_rows(stock: pl.DataFrame, benchmark: pl.DataFrame | None) -> li
         if base_benchmark and dates[index] in benchmark_map:
             benchmark_return = benchmark_map[dates[index]] / base_benchmark - 1
         cumulative = nav - 1
-        rows.append({
-            "trade_date": dates[index],
-            "holding_day": index,
-            "daily_return": closes[index] / closes[index - 1] - 1,
-            "cumulative_return": cumulative,
-            "max_gain": max_gain,
-            "max_drawdown": max_drawdown,
-            "benchmark_return": benchmark_return,
-            "relative_return": cumulative - benchmark_return if benchmark_return is not None else None,
-        })
+        rows.append(
+            {
+                "trade_date": dates[index],
+                "holding_day": index,
+                "daily_return": closes[index] / closes[index - 1] - 1,
+                "cumulative_return": cumulative,
+                "max_gain": max_gain,
+                "max_drawdown": max_drawdown,
+                "benchmark_return": benchmark_return,
+                "relative_return": cumulative - benchmark_return
+                if benchmark_return is not None
+                else None,
+            }
+        )
     return rows
 
 
@@ -452,9 +464,7 @@ class ResearchAgentService:
         evidence = None
         if resolved_symbol:
             try:
-                evidence = await asyncio.to_thread(
-                    build_stock_evidence, self.repo, resolved_symbol
-                )
+                evidence = await asyncio.to_thread(build_stock_evidence, self.repo, resolved_symbol)
             except ValueError as exc:
                 yield _json_event("error", message=str(exc))
                 return
@@ -475,7 +485,10 @@ class ResearchAgentService:
         prompt += "\n\n请给出分析倾向、技术面、情绪/行业、基本面、信息面、支持证据、反向证据、风险和后续验证点。"
         try:
             async for delta in self._stream_text(
-                [{"role": "system", "content": _SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
+                [
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
                 temperature=0.35,
                 max_tokens=4500,
             ):
@@ -702,7 +715,10 @@ class ResearchAgentService:
             repaired = await self._generate_text(
                 [
                     {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": _repair_prompt(raw, str(first_error), screen.candidates)},
+                    {
+                        "role": "user",
+                        "content": _repair_prompt(raw, str(first_error), screen.candidates),
+                    },
                 ],
                 temperature=0,
                 max_tokens=5000,
@@ -731,23 +747,25 @@ class ResearchAgentService:
                 / len(screen.candidates)
             ),
         }
-        batch = self.store.save_batch({
-            "as_of": screen.as_of,
-            "trigger": trigger,
-            "version": version,
-            "parent_batch_id": existing["id"] if existing else None,
-            "model": current_ai_model(),
-            "prompt_version": _RECOMMENDATION_PROMPT_VERSION,
-            "market_snapshot": market_snapshot,
-            "screen_summary": {
-                "eligible_count": screen.eligible_count,
-                "excluded": screen.excluded,
-            },
-            "candidates": enriched_candidates,
-            "picks": [pick.model_dump(mode="json") for pick in picks],
-            "status": "official",
-            "message": "证据不足时推荐数量可能少于 5 只",
-        })
+        batch = self.store.save_batch(
+            {
+                "as_of": screen.as_of,
+                "trigger": trigger,
+                "version": version,
+                "parent_batch_id": existing["id"] if existing else None,
+                "model": current_ai_model(),
+                "prompt_version": _RECOMMENDATION_PROMPT_VERSION,
+                "market_snapshot": market_snapshot,
+                "screen_summary": {
+                    "eligible_count": screen.eligible_count,
+                    "excluded": screen.excluded,
+                },
+                "candidates": enriched_candidates,
+                "picks": [pick.model_dump(mode="json") for pick in picks],
+                "status": "official",
+                "message": "证据不足时推荐数量可能少于 5 只",
+            }
+        )
         return {"status": "succeeded", "batch": batch}
 
     async def run_daily_reviews(self, *, trigger: str = "manual") -> dict[str, Any]:
@@ -827,12 +845,14 @@ class ResearchAgentService:
                     key = (symbol, holding_day)
                     if holding_day not in _STAGE_DAYS or key in known_stage_keys:
                         return
-                    self.store.save_stage_review(_stage_review_payload(
-                        batch_id=batch_id,
-                        symbol=symbol,
-                        current=current,
-                        trajectory=trajectory,
-                    ))
+                    self.store.save_stage_review(
+                        _stage_review_payload(
+                            batch_id=batch_id,
+                            symbol=symbol,
+                            current=current,
+                            trajectory=trajectory,
+                        )
+                    )
                     known_stage_keys.add(key)
                     stage_saved += 1
 
@@ -849,10 +869,7 @@ class ResearchAgentService:
                 )
                 if stock is not None and not stock.is_empty():
                     stock = stock.filter(pl.col("date") >= batch_date)
-                existing_by_date = {
-                    str(row["trade_date"]): row
-                    for row in existing_reviews
-                }
+                existing_by_date = {str(row["trade_date"]): row for row in existing_reviews}
                 for metrics in _performance_rows(stock, benchmark):
                     thesis_state = "维持"
                     cumulative = metrics["cumulative_return"]
@@ -866,9 +883,7 @@ class ResearchAgentService:
                     assessment: _ReviewAssessment | None = None
                     review_date = metrics["trade_date"].isoformat()
                     previous = existing_by_date.get(review_date)
-                    if previous and (
-                        is_backfill or previous.get("analysis_status") == "succeeded"
-                    ):
+                    if previous and (is_backfill or previous.get("analysis_status") == "succeeded"):
                         continue
                     if (
                         not is_backfill
@@ -895,9 +910,13 @@ class ResearchAgentService:
                                 temperature=0.2,
                                 max_tokens=1800,
                             )
-                            assessment = _ReviewAssessment.validate_state(_extract_json(raw_assessment))
+                            assessment = _ReviewAssessment.validate_state(
+                                _extract_json(raw_assessment)
+                            )
                         except Exception as exc:
-                            logger.warning("AI daily review degraded for %s: %s", pick["symbol"], exc)
+                            logger.warning(
+                                "AI daily review degraded for %s: %s", pick["symbol"], exc
+                            )
                     review = DailyReview(
                         batch_id=batch["id"],
                         symbol=pick["symbol"],
@@ -905,9 +924,9 @@ class ResearchAgentService:
                         support_changes=assessment.support_changes if assessment else [],
                         counter_changes=assessment.counter_changes if assessment else [],
                         risks=assessment.risks if assessment else [],
-                        reflection=assessment.reflection if assessment else (
-                            "这是补算或 AI 不可用时的客观复盘；未补写信息面结论。"
-                        ),
+                        reflection=assessment.reflection
+                        if assessment
+                        else ("这是补算或 AI 不可用时的客观复盘；未补写信息面结论。"),
                         analysis_status=(
                             "succeeded" if assessment else "backfill" if is_backfill else "degraded"
                         ),
@@ -940,9 +959,11 @@ class ResearchAgentService:
         try:
             reviews = await self._run_daily_reviews(trigger=trigger)
             recommendations = await self._run_recommendations(trigger=trigger)
-            status = "degraded" if "degraded" in {
-                reviews.get("status"), recommendations.get("status")
-            } else "succeeded"
+            status = (
+                "degraded"
+                if "degraded" in {reviews.get("status"), recommendations.get("status")}
+                else "succeeded"
+            )
             messages = [
                 str(result["message"])
                 for result in (reviews, recommendations)
@@ -961,9 +982,8 @@ class ResearchAgentService:
         with self._task_lock:
             if self._closed:
                 return {"status": "closed", "running": False}
-            if (
-                self._operation_lock.locked()
-                or (self._active_future is not None and not self._active_future.done())
+            if self._operation_lock.locked() or (
+                self._active_future is not None and not self._active_future.done()
             ):
                 return {"status": "reused", "running": True}
             run = self.store.record_run(kind="daily_cycle", trigger=trigger, status="running")

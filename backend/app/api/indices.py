@@ -1,9 +1,10 @@
 """指数 API。"""
+
 from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Annotated
 
 import polars as pl
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -58,7 +59,9 @@ def search_indices(
     masks = []
     if "code" in df.columns:
         masks.append(pl.col("code").cast(pl.Utf8).str.contains(keyword, literal=True))
-    masks.append(pl.col("symbol").cast(pl.Utf8).str.to_uppercase().str.contains(keyword, literal=True))
+    masks.append(
+        pl.col("symbol").cast(pl.Utf8).str.to_uppercase().str.contains(keyword, literal=True)
+    )
     if "name" in df.columns:
         masks.append(pl.col("name").cast(pl.Utf8).str.contains(q.strip(), literal=True))
 
@@ -74,8 +77,8 @@ def get_index_daily(
     request: Request,
     symbol: str = Query(..., description="指数代码, 如 000001.SH"),
     days: int = Query(120, ge=10, le=2000),
-    start_date: Optional[str] = Query(None, description="起始日期 YYYY-MM-DD, 优先于 days"),
-    end_date: Optional[str] = Query(None, description="截止日期 YYYY-MM-DD, 默认今天"),
+    start_date: str | None = Query(None, description="起始日期 YYYY-MM-DD, 优先于 days"),
+    end_date: str | None = Query(None, description="截止日期 YYYY-MM-DD, 默认今天"),
 ):
     """读取指数日 K。指数数据使用独立 kline_index_* parquet。"""
     repo = request.app.state.repo
@@ -85,37 +88,66 @@ def get_index_daily(
 
     df = repo.get_index_daily(symbol, start, end)
     if not df.is_empty():
-        return {"symbol": symbol, "name": info.get("name"), "index_info": info, "rows": df.to_dicts(), "source": "index_enriched"}
+        return {
+            "symbol": symbol,
+            "name": info.get("name"),
+            "index_info": info,
+            "rows": df.to_dicts(),
+            "source": "index_enriched",
+        }
 
     capset = request.app.state.capabilities
     if not capset.has(Cap.KLINE_DAILY_BATCH):
-        return {"symbol": symbol, "name": info.get("name"), "index_info": info, "rows": [], "source": "none"}
+        return {
+            "symbol": symbol,
+            "name": info.get("name"),
+            "index_info": info,
+            "rows": [],
+            "source": "none",
+        }
 
     try:
         raw = kline_sync.sync_daily_batch([symbol], count=days + 150)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise HTTPException(status_code=502, detail=f"TickFlow fetch failed: {e}") from e
     if raw.is_empty():
-        return {"symbol": symbol, "name": info.get("name"), "index_info": info, "rows": [], "source": "none"}
+        return {
+            "symbol": symbol,
+            "name": info.get("name"),
+            "index_info": info,
+            "rows": [],
+            "source": "none",
+        }
 
     enriched = compute_enriched(raw, factors=None, instruments=None)
     repo.append_index_daily(raw)
     repo.append_index_enriched(enriched)
     from app.jobs.daily_pipeline import _refresh_single_view
+
     _refresh_single_view(repo, "kline_index_daily")
     _refresh_single_view(repo, "kline_index_enriched")
     from app.api.data import invalidate_data_cache
+
     invalidate_data_cache("index_daily")
     invalidate_data_cache("index_enriched")
     rows = enriched.filter((pl.col("date") >= start) & (pl.col("date") <= end)).to_dicts()
-    return {"symbol": symbol, "name": info.get("name"), "index_info": info, "rows": rows, "source": "live"}
+    return {
+        "symbol": symbol,
+        "name": info.get("name"),
+        "index_info": info,
+        "rows": rows,
+        "source": "live",
+    }
 
 
 @router.get("/minute")
 def get_index_minute(
     request: Request,
     symbol: str = Query(..., description="指数代码, 如 000001.SH"),
-    trade_date: date | None = Query(None, alias="date", description="交易日期, 默认今天"),
+    trade_date: Annotated[
+        date | None,
+        Query(alias="date", description="交易日期, 默认今天"),
+    ] = None,
 ):
     """读取指数分钟 K，本地缺失时实时拉取并写入指数分钟分区。"""
     repo = request.app.state.repo
@@ -129,6 +161,7 @@ def get_index_minute(
         if not df.is_empty():
             kline_sync.persist_minute_frame(df, repo, asset_type="index")
             from app.api.data import invalidate_data_cache
+
             invalidate_data_cache("index_minute")
     return {
         "symbol": symbol,

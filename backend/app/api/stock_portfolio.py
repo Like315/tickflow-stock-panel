@@ -1,5 +1,5 @@
 """股票持仓 API。"""
-# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import logging

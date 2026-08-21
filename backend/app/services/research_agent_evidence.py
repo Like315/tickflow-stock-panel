@@ -1,4 +1,5 @@
 """指定 A 股和候选股票的结构化证据聚合。"""
+
 from __future__ import annotations
 
 import math
@@ -14,17 +15,51 @@ from app.services.research_agent_announcements import CninfoAnnouncementProvider
 from app.services.research_agent_models import StockEvidence
 
 _TECHNICAL_FIELDS = (
-    "close", "raw_close", "change_pct", "ma5", "ma10", "ma20", "ma60",
-    "macd_dif", "macd_dea", "macd_hist", "rsi_14", "boll_upper", "boll_lower",
-    "vol_ratio_5d", "annual_vol_20d", "momentum_5d", "momentum_20d",
-    "high_60d", "low_60d", "turnover_rate",
+    "close",
+    "raw_close",
+    "change_pct",
+    "ma5",
+    "ma10",
+    "ma20",
+    "ma60",
+    "macd_dif",
+    "macd_dea",
+    "macd_hist",
+    "rsi_14",
+    "boll_upper",
+    "boll_lower",
+    "vol_ratio_5d",
+    "annual_vol_20d",
+    "momentum_5d",
+    "momentum_20d",
+    "high_60d",
+    "low_60d",
+    "turnover_rate",
 )
 _FINANCIAL_FIELDS = (
-    "ann_date", "report_date", "end_date", "fiscal_year", "fiscal_period",
-    "revenue", "total_revenue", "revenue_yoy", "operating_revenue",
-    "net_profit", "net_profit_yoy", "net_profit_parent", "gross_profit_margin",
-    "net_profit_margin", "roe", "roa", "eps", "pe_ttm", "pb",
-    "debt_to_assets", "current_ratio", "operating_cash_flow", "net_cash_flow",
+    "ann_date",
+    "report_date",
+    "end_date",
+    "fiscal_year",
+    "fiscal_period",
+    "revenue",
+    "total_revenue",
+    "revenue_yoy",
+    "operating_revenue",
+    "net_profit",
+    "net_profit_yoy",
+    "net_profit_parent",
+    "gross_profit_margin",
+    "net_profit_margin",
+    "roe",
+    "roa",
+    "eps",
+    "pe_ttm",
+    "pb",
+    "debt_to_assets",
+    "current_ratio",
+    "operating_cash_flow",
+    "net_cash_flow",
 )
 _ANNOUNCEMENT_PROVIDER = CninfoAnnouncementProvider()
 

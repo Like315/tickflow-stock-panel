@@ -19,13 +19,15 @@ def test_candidate_source_date_is_always_before_trade_date() -> None:
     rows = []
     for symbol, offset in (("A", 0.0), ("B", 1.0), ("C", -1.0)):
         for index, day in enumerate(dates):
-            rows.append({
-                "symbol": symbol,
-                "name": symbol,
-                "date": day,
-                "close": 10 + offset + index * (0.1 if symbol != "C" else -0.02),
-                "amount": 100_000_000 + index,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "name": symbol,
+                    "date": day,
+                    "close": 10 + offset + index * (0.1 if symbol != "C" else -0.02),
+                    "amount": 100_000_000 + index,
+                }
+            )
     result = build_point_in_time_candidates(pl.DataFrame(rows), limit=2)
 
     assert not result.is_empty()
@@ -53,9 +55,7 @@ def test_policy_versions_are_immutable_and_champion_uses_promotion_ledger(tmp_pa
 
     assert store.get_champion().id == candidate.id  # type: ignore[union-attr]
 
-    rollback = store.rollback_last_promotion(
-        reason="paper drawdown", metrics={"drawdown": -0.2}
-    )
+    rollback = store.rollback_last_promotion(reason="paper drawdown", metrics={"drawdown": -0.2})
     assert rollback is not None
     assert store.get_champion().id == baseline.id  # type: ignore[union-attr]
     assert store.rollback_last_promotion(reason="again", metrics={}) is None
@@ -102,15 +102,17 @@ def test_portfolio_sync_is_audited_and_replaces_the_restore_state(tmp_path) -> N
         "position_count": 1,
         "executor_state": {
             "cash": 123_456,
-            "lots": [{
-                "lot_id": "synced_1",
-                "symbol": "600000.SH",
-                "acquired_date": "2026-08-19",
-                "shares": 10_000,
-                "remaining_shares": 10_000,
-                "entry_price": 10.0,
-                "entry_cost": 0.0,
-            }],
+            "lots": [
+                {
+                    "lot_id": "synced_1",
+                    "symbol": "600000.SH",
+                    "acquired_date": "2026-08-19",
+                    "shares": 10_000,
+                    "remaining_shares": 10_000,
+                    "entry_price": 10.0,
+                    "entry_cost": 0.0,
+                }
+            ],
             "last_prices": {"600000.SH": 11.0},
             "pending": [],
         },
@@ -135,9 +137,7 @@ def test_portfolio_sync_is_audited_and_replaces_the_restore_state(tmp_path) -> N
 def test_trade_history_joins_fill_to_recorded_decision_reason(tmp_path) -> None:
     store = PaperAgentStore(tmp_path)
     policy = store.ensure_baseline_policy()
-    session = store.start_session(
-        date(2026, 8, 18), policy.id, mode="paper", candidates=["A"]
-    )
+    session = store.start_session(date(2026, 8, 18), policy.id, mode="paper", candidates=["A"])
     decision_time = datetime(2026, 8, 18, 9, 32, tzinfo=UTC)
     features = {
         "candidate_score": 0.91,
@@ -155,41 +155,48 @@ def test_trade_history_joins_fill_to_recorded_decision_reason(tmp_path) -> None:
         features=features,
         reason="vwap_and_opening_range_confirmed",
     )
-    store.save_execution_events(session["id"], [ExecutionEvent(
-        id="evt_buy_a",
-        event_type="order_filled",
-        occurred_at=decision_time + timedelta(minutes=1),
-        order_id="order_decision_buy_a",
-        symbol="A",
-        side="buy",
-        shares=100,
-        price=10.2,
-        fees=5,
-        reason="next_minute_open",
-    )])
+    store.save_execution_events(
+        session["id"],
+        [
+            ExecutionEvent(
+                id="evt_buy_a",
+                event_type="order_filled",
+                occurred_at=decision_time + timedelta(minutes=1),
+                order_id="order_decision_buy_a",
+                symbol="A",
+                side="buy",
+                shares=100,
+                price=10.2,
+                fees=5,
+                reason="next_minute_open",
+            )
+        ],
+    )
 
     history = store.list_trade_history(limit=10)
 
-    assert history == [{
-        "id": "evt_buy_a",
-        "session_id": session["id"],
-        "trade_date": "2026-08-18",
-        "order_id": "order_decision_buy_a",
-        "symbol": "A",
-        "side": "buy",
-        "occurred_at": (decision_time + timedelta(minutes=1)).isoformat(),
-        "fill_status": "order_filled",
-        "shares": 100,
-        "price": 10.2,
-        "fees": 5.0,
-        "realized_pnl": None,
-        "execution_reason": "next_minute_open",
-        "decision_id": "decision_buy_a",
-        "decision_time": decision_time.isoformat(),
-        "decision_action": "buy",
-        "decision_reason": "vwap_and_opening_range_confirmed",
-        "decision_features": features,
-    }]
+    assert history == [
+        {
+            "id": "evt_buy_a",
+            "session_id": session["id"],
+            "trade_date": "2026-08-18",
+            "order_id": "order_decision_buy_a",
+            "symbol": "A",
+            "side": "buy",
+            "occurred_at": (decision_time + timedelta(minutes=1)).isoformat(),
+            "fill_status": "order_filled",
+            "shares": 100,
+            "price": 10.2,
+            "fees": 5.0,
+            "realized_pnl": None,
+            "execution_reason": "next_minute_open",
+            "decision_id": "decision_buy_a",
+            "decision_time": decision_time.isoformat(),
+            "decision_action": "buy",
+            "decision_reason": "vwap_and_opening_range_confirmed",
+            "decision_features": features,
+        }
+    ]
 
 
 def test_execution_statistics_use_after_cost_closed_trades_and_refresh_cache(tmp_path) -> None:
@@ -261,12 +268,8 @@ def test_execution_statistics_use_after_cost_closed_trades_and_refresh_cache(tmp
 def test_restart_recovery_closes_stale_sessions_and_dataset_runs(tmp_path) -> None:
     store = PaperAgentStore(tmp_path)
     policy = store.ensure_baseline_policy()
-    stale = store.start_session(
-        date(2026, 8, 19), policy.id, mode="paper", candidates=["A"]
-    )
-    current = store.start_session(
-        date(2026, 8, 20), policy.id, mode="paper", candidates=["B"]
-    )
+    stale = store.start_session(date(2026, 8, 19), policy.id, mode="paper", candidates=["A"])
+    current = store.start_session(date(2026, 8, 20), policy.id, mode="paper", candidates=["B"])
     store.record_dataset_run(
         start_date=date(2025, 8, 20),
         end_date=date(2026, 8, 20),
@@ -288,22 +291,26 @@ def test_restart_recovery_closes_stale_sessions_and_dataset_runs(tmp_path) -> No
 
 def test_historical_minute_partition_marks_one_price_limit_up() -> None:
     trade_date = date(2026, 8, 18)
-    daily = pl.DataFrame({
-        "symbol": ["600000.SH", "600000.SH"],
-        "date": [date(2026, 8, 17), trade_date],
-        "close": [10.0, 11.0],
-        "raw_close": [10.0, 11.0],
-        "name": ["浦发银行", "浦发银行"],
-    })
-    minute = pl.DataFrame({
-        "symbol": ["600000.SH"],
-        "datetime": [datetime(2026, 8, 18, 9, 30)],
-        "raw_open": [11.0],
-        "raw_high": [11.0],
-        "raw_low": [11.0],
-        "raw_close": [11.0],
-        "volume": [1_000.0],
-    })
+    daily = pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "600000.SH"],
+            "date": [date(2026, 8, 17), trade_date],
+            "close": [10.0, 11.0],
+            "raw_close": [10.0, 11.0],
+            "name": ["浦发银行", "浦发银行"],
+        }
+    )
+    minute = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"],
+            "datetime": [datetime(2026, 8, 18, 9, 30)],
+            "raw_open": [11.0],
+            "raw_high": [11.0],
+            "raw_low": [11.0],
+            "raw_close": [11.0],
+            "volume": [1_000.0],
+        }
+    )
 
     result = TrainingDatasetBuilder._add_execution_flags(minute, daily, trade_date)
 
@@ -313,10 +320,12 @@ def test_historical_minute_partition_marks_one_price_limit_up() -> None:
 
 
 def test_dataset_dates_are_processed_in_chronological_order() -> None:
-    candidates = pl.DataFrame({
-        "trade_date": [date(2024, 10, 10), date(2024, 2, 1), date(2024, 1, 22)],
-        "symbol": ["A", "A", "A"],
-    })
+    candidates = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 10, 10), date(2024, 2, 1), date(2024, 1, 22)],
+            "symbol": ["A", "A", "A"],
+        }
+    )
 
     groups = TrainingDatasetBuilder._ordered_date_groups(candidates)
 
@@ -331,18 +340,20 @@ def test_dataset_fails_fast_when_historical_minute_day_is_empty(tmp_path) -> Non
     class Repo:
         def __init__(self) -> None:
             days = pl.date_range(date(2024, 1, 1), date(2024, 3, 15), interval="1d", eager=True)
-            self.daily = pl.DataFrame({
-                "symbol": ["600000.SH"] * len(days),
-                "name": ["浦发银行"] * len(days),
-                "date": days,
-                "open": [10.0] * len(days),
-                "high": [10.1] * len(days),
-                "low": [9.9] * len(days),
-                "close": [10.0 + index * 0.01 for index in range(len(days))],
-                "raw_close": [10.0 + index * 0.01 for index in range(len(days))],
-                "volume": [100_000.0] * len(days),
-                "amount": [100_000_000.0] * len(days),
-            })
+            self.daily = pl.DataFrame(
+                {
+                    "symbol": ["600000.SH"] * len(days),
+                    "name": ["浦发银行"] * len(days),
+                    "date": days,
+                    "open": [10.0] * len(days),
+                    "high": [10.1] * len(days),
+                    "low": [9.9] * len(days),
+                    "close": [10.0 + index * 0.01 for index in range(len(days))],
+                    "raw_close": [10.0 + index * 0.01 for index in range(len(days))],
+                    "volume": [100_000.0] * len(days),
+                    "amount": [100_000_000.0] * len(days),
+                }
+            )
 
         def latest_daily_date(self):
             return self.daily["date"].max()
@@ -381,18 +392,20 @@ def test_dataset_reuses_canonical_local_minute_partition_before_provider(tmp_pat
 
     class Repo:
         def __init__(self) -> None:
-            self.daily = pl.DataFrame({
-                "symbol": ["600000.SH"] * len(days),
-                "name": ["浦发银行"] * len(days),
-                "date": days,
-                "open": [10.0] * len(days),
-                "high": [10.2] * len(days),
-                "low": [9.8] * len(days),
-                "close": [10.0 + index * 0.01 for index in range(len(days))],
-                "raw_close": [10.0 + index * 0.01 for index in range(len(days))],
-                "volume": [100_000.0] * len(days),
-                "amount": [100_000_000.0] * len(days),
-            })
+            self.daily = pl.DataFrame(
+                {
+                    "symbol": ["600000.SH"] * len(days),
+                    "name": ["浦发银行"] * len(days),
+                    "date": days,
+                    "open": [10.0] * len(days),
+                    "high": [10.2] * len(days),
+                    "low": [9.8] * len(days),
+                    "close": [10.0 + index * 0.01 for index in range(len(days))],
+                    "raw_close": [10.0 + index * 0.01 for index in range(len(days))],
+                    "volume": [100_000.0] * len(days),
+                    "amount": [100_000_000.0] * len(days),
+                }
+            )
             self.local_calls: list[tuple[list[str], date, str]] = []
 
         def latest_daily_date(self):
@@ -411,20 +424,22 @@ def test_dataset_reuses_canonical_local_minute_partition_before_provider(tmp_pat
             self.local_calls.append((symbols, requested_date, asset_type))
             if asset_type != "etf":
                 return pl.DataFrame()
-            return pl.DataFrame({
-                "symbol": ["600000.SH"] * 3,
-                "datetime": [
-                    datetime(2024, 3, 1, 9, 30),
-                    datetime(2024, 3, 1, 9, 31),
-                    datetime(2024, 3, 1, 9, 32),
-                ],
-                "open": [10.5, 10.5, 10.5],
-                "high": [10.5, 10.6, 10.6],
-                "low": [10.4, 10.5, 10.5],
-                "close": [10.5, 10.6, 10.5],
-                "volume": [1_000.0, 1_200.0, 900.0],
-                "amount": [10_500.0, 12_720.0, 9_450.0],
-            })
+            return pl.DataFrame(
+                {
+                    "symbol": ["600000.SH"] * 3,
+                    "datetime": [
+                        datetime(2024, 3, 1, 9, 30),
+                        datetime(2024, 3, 1, 9, 31),
+                        datetime(2024, 3, 1, 9, 32),
+                    ],
+                    "open": [10.5, 10.5, 10.5],
+                    "high": [10.5, 10.6, 10.6],
+                    "low": [10.4, 10.5, 10.5],
+                    "close": [10.5, 10.6, 10.5],
+                    "volume": [1_000.0, 1_200.0, 900.0],
+                    "amount": [10_500.0, 12_720.0, 9_450.0],
+                }
+            )
 
     class ForbiddenProvider:
         name = "forbidden"
@@ -462,22 +477,24 @@ def test_dataset_reuses_canonical_local_minute_partition_before_provider(tmp_pat
 
 def test_minute_frame_allows_only_audited_upstream_gaps() -> None:
     trade_date = date(2024, 1, 2)
-    minute = pl.DataFrame({
-        "symbol": ["600000.SH"] * 3,
-        "datetime": [
-            datetime(2024, 1, 2, 9, 30),
-            datetime(2024, 1, 2, 9, 31),
-            datetime(2024, 1, 2, 9, 32),
-        ],
-        "raw_open": [10.0] * 3,
-        "raw_high": [10.1] * 3,
-        "raw_low": [9.9] * 3,
-        "raw_close": [10.0] * 3,
-        "previous_close": [9.9] * 3,
-        "is_suspended": [False] * 3,
-        "is_limit_up": [False] * 3,
-        "is_limit_down": [False] * 3,
-    })
+    minute = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"] * 3,
+            "datetime": [
+                datetime(2024, 1, 2, 9, 30),
+                datetime(2024, 1, 2, 9, 31),
+                datetime(2024, 1, 2, 9, 32),
+            ],
+            "raw_open": [10.0] * 3,
+            "raw_high": [10.1] * 3,
+            "raw_low": [9.9] * 3,
+            "raw_close": [10.0] * 3,
+            "previous_close": [9.9] * 3,
+            "is_suspended": [False] * 3,
+            "is_limit_up": [False] * 3,
+            "is_limit_down": [False] * 3,
+        }
+    )
     required = ["600000.SH", "920123.BJ"]
 
     assert not TrainingDatasetBuilder._minute_frame_valid(
@@ -494,12 +511,14 @@ def test_minute_frame_allows_only_audited_upstream_gaps() -> None:
 
 
 def test_partial_enriched_history_is_filled_from_raw_daily() -> None:
-    raw = pl.DataFrame({
-        "symbol": ["600000.SH"] * 3,
-        "date": [date(2023, 8, 18), date(2025, 8, 18), date(2026, 8, 18)],
-        "close": [8.0, 9.0, 10.0],
-        "amount": [80.0, 90.0, 100.0],
-    })
+    raw = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"] * 3,
+            "date": [date(2023, 8, 18), date(2025, 8, 18), date(2026, 8, 18)],
+            "close": [8.0, 9.0, 10.0],
+            "amount": [80.0, 90.0, 100.0],
+        }
+    )
     enriched = raw.tail(2).with_columns(pl.lit(1.0).alias("rps_20"))
 
     result = TrainingDatasetBuilder._merge_daily_history(enriched, raw).sort("date")
@@ -510,17 +529,19 @@ def test_partial_enriched_history_is_filled_from_raw_daily() -> None:
 
 def test_dataset_build_fails_when_required_minute_dates_are_empty(tmp_path) -> None:
     dates = pl.date_range(date(2026, 1, 1), date(2026, 2, 10), interval="1d", eager=True)
-    daily = pl.DataFrame({
-        "symbol": ["600000.SH"] * len(dates),
-        "name": ["浦发银行"] * len(dates),
-        "date": dates,
-        "open": [10.0] * len(dates),
-        "high": [10.2] * len(dates),
-        "low": [9.8] * len(dates),
-        "close": [10.0 + index * 0.01 for index in range(len(dates))],
-        "volume": [1_000.0] * len(dates),
-        "amount": [100_000.0] * len(dates),
-    })
+    daily = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"] * len(dates),
+            "name": ["浦发银行"] * len(dates),
+            "date": dates,
+            "open": [10.0] * len(dates),
+            "high": [10.2] * len(dates),
+            "low": [9.8] * len(dates),
+            "close": [10.0 + index * 0.01 for index in range(len(dates))],
+            "volume": [1_000.0] * len(dates),
+            "amount": [100_000.0] * len(dates),
+        }
+    )
 
     class Repo:
         def latest_daily_date(self):

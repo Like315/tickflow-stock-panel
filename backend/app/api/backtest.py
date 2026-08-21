@@ -1,10 +1,13 @@
 """回测 API — 信号回测 + 因子回测 + 策略回测。"""
+
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import threading
+import time
 from dataclasses import asdict
 from datetime import date, timedelta
 from typing import Literal
@@ -38,6 +41,7 @@ BACKTEST_SERVER_GUARD_MESSAGE = (
 def _get_engine(request: Request):
     """获取或创建 BacktestEngine (单例，PanelCache 跨请求生效)。"""
     from app.backtest.engine import BacktestEngine
+
     engine = getattr(request.app.state, "backtest_engine", None)
     if engine is None:
         engine = BacktestEngine(request.app.state.repo)
@@ -47,7 +51,7 @@ def _get_engine(request: Request):
 
 def _resolve_start(req: BaseModel, end: date, default_days: int) -> date:
     """未传 start 使用默认区间；显式传 null/空值表示全部历史。"""
-    start = getattr(req, "start")
+    start = req.start
     if start is not None:
         return start
     if "start" in req.model_fields_set:
@@ -67,6 +71,7 @@ def _guard_server_backtest_range(start: date, end: date):
 # 状态
 # ================================================================
 
+
 @router.get("/status")
 def status():
     """前端可用此接口判断回测页是否要灰显。"""
@@ -76,6 +81,7 @@ def status():
 # ================================================================
 # 信号回测 (现有接口，保持不变)
 # ================================================================
+
 
 class BacktestRequest(BaseModel):
     symbols: list[str] = Field(..., min_length=1)
@@ -123,6 +129,7 @@ def run(req: BacktestRequest, request: Request):
 # 因子回测
 # ================================================================
 
+
 class FactorColumnsResponse(BaseModel):
     columns: list[dict]
 
@@ -131,6 +138,7 @@ class FactorColumnsResponse(BaseModel):
 def factor_columns():
     """返回可用的因子列列表。"""
     from app.backtest.factor import FACTOR_COLUMNS
+
     return {"columns": FACTOR_COLUMNS}
 
 
@@ -185,6 +193,7 @@ def factor_run(req: FactorBacktestRequest, request: Request):
 # 策略回测
 # ================================================================
 
+
 class StrategyBacktestRequest(BaseModel):
     strategy_id: str
     symbols: list[str] | None = None
@@ -235,9 +244,7 @@ def _resolve_sector_symbols(
         parts = pl.col(kind).str.split("-")
         idx = pl.min_horizontal(pl.lit(sector_level - 1), pl.col(kind).str.count_matches("-"))
         mapping = mapping.with_columns(parts.list.get(idx).alias(kind))
-    members = set(
-        mapping.filter(pl.col(kind) == name).get_column("_sym_up").to_list()
-    )
+    members = set(mapping.filter(pl.col(kind) == name).get_column("_sym_up").to_list())
     if not members:
         raise HTTPException(status_code=400, detail=f"板块“{name}”没有匹配到成分股")
     if symbols:
@@ -294,19 +301,17 @@ def strategy_run(req: StrategyBacktestRequest, request: Request):
 
 # ── SSE 流式回测 (实时进度 + 可取消 + 支持重连) ───────────────────
 
-import time
-import hashlib
-
 
 class _BacktestJob:
     """单个回测任务的状态, 存模块级供重连使用。"""
-    __slots__ = ("key", "cancel_event", "progress", "result", "error", "done", "finish_ts")
+
+    __slots__ = ("cancel_event", "done", "error", "finish_ts", "key", "progress", "result")
 
     def __init__(self, key: str):
         self.key = key
         self.cancel_event = threading.Event()
-        self.progress: list[dict] = []   # 进度历史 (新连接可回放)
-        self.result = None               # 完成后的结果
+        self.progress: list[dict] = []  # 进度历史 (新连接可回放)
+        self.result = None  # 完成后的结果
         self.error: str | None = None
         self.done = False
         self.finish_ts: float = 0.0
@@ -352,13 +357,25 @@ def _finish_job(job: _BacktestJob, *, result=None, error: str | None = None) -> 
 
 
 def _make_job_key(
-    strategy_id: str, symbols: str | None, start: str | None, end: str | None,
-    matching: str, entry_fill: str | None, exit_fill: str | None,
-    fees_pct: float, slippage_bps: float,
-    max_positions: int, max_exposure_pct: float, initial_capital: float, position_sizing: str,
-    params: str | None, overrides: str | None,
-    mode: str = "position", holding_days: int = 5,
-    commission_pct: float | None = None, stamp_tax_pct: float | None = None,
+    strategy_id: str,
+    symbols: str | None,
+    start: str | None,
+    end: str | None,
+    matching: str,
+    entry_fill: str | None,
+    exit_fill: str | None,
+    fees_pct: float,
+    slippage_bps: float,
+    max_positions: int,
+    max_exposure_pct: float,
+    initial_capital: float,
+    position_sizing: str,
+    params: str | None,
+    overrides: str | None,
+    mode: str = "position",
+    holding_days: int = 5,
+    commission_pct: float | None = None,
+    stamp_tax_pct: float | None = None,
     asset_type: str = "stock",
     minute_fill: bool = False,
     regime_filter: str | None = None,
@@ -435,12 +452,25 @@ async def strategy_stream(
     )
     resolved_symbols_key = ",".join(resolved_symbols) if resolved_symbols else None
     job_key = _make_job_key(
-        strategy_id, resolved_symbols_key, start, end,
-        matching, entry_fill, exit_fill,
-        fees_pct, slippage_bps, max_positions, max_exposure_pct, initial_capital, position_sizing,
-        params, overrides,
-        mode, holding_days,
-        commission_pct, stamp_tax_pct,
+        strategy_id,
+        resolved_symbols_key,
+        start,
+        end,
+        matching,
+        entry_fill,
+        exit_fill,
+        fees_pct,
+        slippage_bps,
+        max_positions,
+        max_exposure_pct,
+        initial_capital,
+        position_sizing,
+        params,
+        overrides,
+        mode,
+        holding_days,
+        commission_pct,
+        stamp_tax_pct,
         asset_type=asset_type,
         minute_fill=minute_fill,
         regime_filter=regime_filter,
@@ -468,15 +498,20 @@ async def strategy_stream(
         if minute_fill:
             capset = request.app.state.capabilities
             from app.tickflow.capabilities import Cap
+
             if not capset.has(Cap.KLINE_MINUTE_BATCH):
                 yield f"event: error\ndata: {json.dumps({'message': '分钟K精确回测需要 Pro+ 权限 (kline.minute.batch)'}, ensure_ascii=False)}\n\n"
                 return
             # 检查本地分钟K历史是否覆盖回测区间
             repo = request.app.state.repo
-            earliest_minute = repo.earliest_minute_date() if hasattr(repo, "earliest_minute_date") else None
+            earliest_minute = (
+                repo.earliest_minute_date() if hasattr(repo, "earliest_minute_date") else None
+            )
             if earliest_minute is not None and start_date < earliest_minute:
-                msg = (f"本地分钟K历史最早到 {earliest_minute}, 无法覆盖回测起始日 {start_date}。"
-                       f"请先用「扩展分钟K历史」功能拉取更多数据, 或缩小回测区间。")
+                msg = (
+                    f"本地分钟K历史最早到 {earliest_minute}, 无法覆盖回测起始日 {start_date}。"
+                    f"请先用「扩展分钟K历史」功能拉取更多数据, 或缩小回测区间。"
+                )
                 yield f"event: error\ndata: {json.dumps({'message': msg}, ensure_ascii=False)}\n\n"
                 return
 
@@ -576,13 +611,17 @@ async def strategy_cancel(request: Request):
     qs = body.get("qs", "")
     # 解析 qs 得到参数
     from urllib.parse import parse_qs
+
     p = parse_qs(qs)
+
     def _get(key: str, default: str = "") -> str:
         return p.get(key, [default])[0]
+
     def _get_opt_float(key: str) -> float | None:
         # 可选成本参数: 缺省或空串 → None (与 stream 侧 float | None 口径一致, 保证 job_key 对齐)。
         v = _get(key)
         return float(v) if v else None
+
     job_key = _make_job_key(
         _get("strategy_id"),
         _get("symbols") or None,
@@ -618,11 +657,13 @@ async def strategy_cancel(request: Request):
 # 参数网格优化器 — 复用 _BacktestJob SSE 框架 (多组参数并行回测 + 排序)
 # ══════════════════════════════════════════════════════════════
 
+
 def _json_safe(obj):
     """递归把 nan/inf 置 None —— json.dumps(default=str) 处理不了它们, 会输出非法 JSON
     字面量 NaN/Infinity 让前端 JSON.parse 崩。优化器/WF 结果嵌套深 (逐组/逐折的
     sortino 等零波动场景可能算出 nan), 序列化前统一清洗。"""
     import math
+
     if isinstance(obj, float):
         return obj if math.isfinite(obj) else None
     if isinstance(obj, dict):
@@ -634,9 +675,17 @@ def _json_safe(obj):
 
 # 透传给每组回测的 StrategyBacktestConfig 字段 (作为 backtest_kwargs)。
 _OPT_BT_FIELDS = [
-    "matching", "fees_pct", "commission_pct", "stamp_tax_pct", "slippage_bps",
-    "max_positions", "max_exposure_pct", "initial_capital", "position_sizing",
-    "mode", "holding_days",
+    "matching",
+    "fees_pct",
+    "commission_pct",
+    "stamp_tax_pct",
+    "slippage_bps",
+    "max_positions",
+    "max_exposure_pct",
+    "initial_capital",
+    "position_sizing",
+    "mode",
+    "holding_days",
 ]
 
 
@@ -661,8 +710,17 @@ def _make_opt_job_key(
 
 
 def _opt_backtest_kwargs(
-    matching, fees_pct, commission_pct, stamp_tax_pct, slippage_bps,
-    max_positions, max_exposure_pct, initial_capital, position_sizing, mode, holding_days,
+    matching,
+    fees_pct,
+    commission_pct,
+    stamp_tax_pct,
+    slippage_bps,
+    max_positions,
+    max_exposure_pct,
+    initial_capital,
+    position_sizing,
+    mode,
+    holding_days,
 ) -> dict:
     return {
         "matching": matching,
@@ -683,13 +741,13 @@ def _opt_backtest_kwargs(
 async def optimize_stream(
     request: Request,
     strategy_id: str,
-    param_grid: str,                 # JSON: {param_id: [values] | {min,max,step}}
+    param_grid: str,  # JSON: {param_id: [values] | {min,max,step}}
     objective: str = "sortino",
     direction: str | None = None,
     max_workers: int = 4,
     matrix_cache_max_mb: int = 512,
-    params: str | None = None,       # JSON: 未扫描参数固定为用户当前值 (base_params)
-    overrides: str | None = None,    # JSON: 策略当前的 basic_filter/signals/风控等覆盖
+    params: str | None = None,  # JSON: 未扫描参数固定为用户当前值 (base_params)
+    overrides: str | None = None,  # JSON: 策略当前的 basic_filter/signals/风控等覆盖
     symbols: str | None = None,
     start: str | None = None,
     end: str | None = None,
@@ -723,14 +781,26 @@ async def optimize_stream(
         start_date = earliest or (end_date - timedelta(days=FACTOR_DEFAULT_DAYS))
 
     guard_violated = False
-    if settings.backtest_range_guard and (end_date - start_date).days + 1 > BACKTEST_MAX_SERVER_DAYS:
+    if (
+        settings.backtest_range_guard
+        and (end_date - start_date).days + 1 > BACKTEST_MAX_SERVER_DAYS
+    ):
         guard_violated = True
 
     # 空串归一为 None, 与 cancel 侧 `_get("direction") or None` 口径一致, 避免 job_key 失配。
     direction = direction or None
     bt_kwargs = _opt_backtest_kwargs(
-        matching, fees_pct, commission_pct, stamp_tax_pct, slippage_bps,
-        max_positions, max_exposure_pct, initial_capital, position_sizing, mode, holding_days,
+        matching,
+        fees_pct,
+        commission_pct,
+        stamp_tax_pct,
+        slippage_bps,
+        max_positions,
+        max_exposure_pct,
+        initial_capital,
+        position_sizing,
+        mode,
+        holding_days,
     )
     bt_sig = "|".join(f"{k}={bt_kwargs[k]}" for k in _OPT_BT_FIELDS)
     job_key = _make_opt_job_key(
@@ -792,7 +862,9 @@ async def optimize_stream(
                     ov = None
                 ocfg = OptimizeConfig(
                     strategy_id=strategy_id,
-                    symbols=[s.strip() for s in symbols.split(",") if s.strip()] if symbols else None,
+                    symbols=[s.strip() for s in symbols.split(",") if s.strip()]
+                    if symbols
+                    else None,
                     start=start_date,
                     end=end_date,
                     param_grid=grid,
@@ -867,6 +939,7 @@ async def optimize_cancel(request: Request):
 # Walk-forward 优化 — 每折训练区间优化 + 测试区间 OOS 验证 (复用优化器 + job_key 回吐)
 # ══════════════════════════════════════════════════════════════
 
+
 def _make_wf_job_key(
     strategy_id,
     symbols,
@@ -900,8 +973,8 @@ async def walkforward_stream(
     step_days: int = 63,
     max_workers: int = 4,
     matrix_cache_max_mb: int = 512,
-    params: str | None = None,       # JSON: 未扫描参数固定为用户当前值 (base_params)
-    overrides: str | None = None,    # JSON: 策略当前的 basic_filter/signals/风控等覆盖
+    params: str | None = None,  # JSON: 未扫描参数固定为用户当前值 (base_params)
+    overrides: str | None = None,  # JSON: 策略当前的 basic_filter/signals/风控等覆盖
     symbols: str | None = None,
     start: str | None = None,
     end: str | None = None,
@@ -934,8 +1007,17 @@ async def walkforward_stream(
         start_date = earliest or (end_date - timedelta(days=STRATEGY_DEFAULT_DAYS))
 
     bt_kwargs = _opt_backtest_kwargs(
-        matching, fees_pct, commission_pct, stamp_tax_pct, slippage_bps,
-        max_positions, max_exposure_pct, initial_capital, position_sizing, mode, holding_days,
+        matching,
+        fees_pct,
+        commission_pct,
+        stamp_tax_pct,
+        slippage_bps,
+        max_positions,
+        max_exposure_pct,
+        initial_capital,
+        position_sizing,
+        mode,
+        holding_days,
     )
     bt_sig = "|".join(f"{k}={bt_kwargs[k]}" for k in _OPT_BT_FIELDS)
     windows = f"{train_days}/{test_days}/{step_days}"
@@ -1000,11 +1082,15 @@ async def walkforward_stream(
                 try:
                     ov = json.loads(overrides) if overrides else None
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning("walkforward: overrides JSON 解析失败, 降级为 None: %r", overrides)
+                    logger.warning(
+                        "walkforward: overrides JSON 解析失败, 降级为 None: %r", overrides
+                    )
                     ov = None
                 wf_cfg = WalkForwardConfig(
                     strategy_id=strategy_id,
-                    symbols=[s.strip() for s in symbols.split(",") if s.strip()] if symbols else None,
+                    symbols=[s.strip() for s in symbols.split(",") if s.strip()]
+                    if symbols
+                    else None,
                     start=start_date,
                     end=end_date,
                     param_grid=grid,

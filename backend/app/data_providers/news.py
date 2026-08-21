@@ -3,6 +3,7 @@
 新闻和行情的时效、字段及失败语义不同, 因此不复用 MarketDataProvider.
 RSS Provider 只保留公开元数据, 不下载或持久化新闻正文.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -177,14 +178,16 @@ def parse_rss_feed(
             _child_text(node, {"description", "summary", "content"}),
             limit=320,
         )
-        items.append(NewsItem(
-            title=title,
-            published_at=published_at,
-            source=_entry_source(node, fallback_source),
-            source_url=source_url,
-            snippet=snippet,
-            provider=provider_name,
-        ))
+        items.append(
+            NewsItem(
+                title=title,
+                published_at=published_at,
+                source=_entry_source(node, fallback_source),
+                source_url=source_url,
+                snippet=snippet,
+                provider=provider_name,
+            )
+        )
     return items
 
 
@@ -343,14 +346,16 @@ class EastmoneyNewsProvider:
                 or not re.fullmatch(r"\d+", code)
             ):
                 continue
-            items.append(NewsItem(
-                title=title,
-                published_at=published_at,
-                source="东方财富",
-                source_url=f"https://finance.eastmoney.com/a/{code}.html",
-                snippet=snippet,
-                provider=EastmoneyNewsProvider.name,
-            ))
+            items.append(
+                NewsItem(
+                    title=title,
+                    published_at=published_at,
+                    source="东方财富",
+                    source_url=f"https://finance.eastmoney.com/a/{code}.html",
+                    snippet=snippet,
+                    provider=EastmoneyNewsProvider.name,
+                )
+            )
         return items
 
     async def fetch_market(self, *, as_of: date, limit: int = 8) -> list[NewsItem]:

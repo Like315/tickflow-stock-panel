@@ -2,6 +2,7 @@
 
 实时全市场报价只在内存中用于聚合;磁盘仅保存聚合后的快照。
 """
+
 from __future__ import annotations
 
 import copy
@@ -78,10 +79,7 @@ REALTIME_SAMPLE: dict[str, str] = {
 
 
 def _data_path(*steps: tuple[str, str, str]) -> list[dict[str, str]]:
-    return [
-        {"label": label, "detail": detail, "status": status}
-        for label, detail, status in steps
-    ]
+    return [{"label": label, "detail": detail, "status": status} for label, detail, status in steps]
 
 
 class UsMarketUnavailableError(RuntimeError):
@@ -292,20 +290,19 @@ def build_live_overview(
 
     breadth, distribution = build_market_statistics(market_rows)
     changes = [row["change_pct"] for row in market_rows]
-    breadth.update({
-        "average_change_pct": fmean(changes),
-        "median_change_pct": median(changes),
-        "advance_decline_ratio": breadth["up"] / breadth["down"] if breadth["down"] else None,
-        "net_advance_ratio": (breadth["up"] - breadth["down"]) / breadth["total"],
-    })
+    breadth.update(
+        {
+            "average_change_pct": fmean(changes),
+            "median_change_pct": median(changes),
+            "advance_decline_ratio": breadth["up"] / breadth["down"] if breadth["down"] else None,
+            "net_advance_ratio": (breadth["up"] - breadth["down"]) / breadth["total"],
+        }
+    )
 
     ranking_rows = [
         row
         for row in market_rows
-        if row["last_price"] >= 1
-        and (row["volume"] or 0) > 0
-        and row["name"]
-        and row["symbol"]
+        if row["last_price"] >= 1 and (row["volume"] or 0) > 0 and row["name"] and row["symbol"]
     ]
     active_rows = [row for row in market_rows if (row["volume"] or 0) > 0]
 
@@ -313,9 +310,7 @@ def build_live_overview(
         (row["timestamp"] for row in normalized.values() if row["timestamp"] is not None),
         default=now_ms or int(time.time() * 1000),
     )
-    sessions = Counter(
-        row["session"] for row in normalized.values() if row["session"] != "unknown"
-    )
+    sessions = Counter(row["session"] for row in normalized.values() if row["session"] != "unknown")
     session = sessions.most_common(1)[0][0] if sessions else "unknown"
 
     def proxies(labels: Mapping[str, str]) -> list[dict[str, Any]]:
@@ -360,7 +355,9 @@ def build_live_overview(
         "rankings": {
             "gainers": [
                 _public_quote(row)
-                for row in sorted(ranking_rows, key=lambda item: item["change_pct"], reverse=True)[:10]
+                for row in sorted(ranking_rows, key=lambda item: item["change_pct"], reverse=True)[
+                    :10
+                ]
             ],
             "losers": [
                 _public_quote(row)
@@ -368,7 +365,9 @@ def build_live_overview(
             ],
             "active": [
                 _public_quote(row)
-                for row in sorted(active_rows, key=lambda item: item["amount"] or 0, reverse=True)[:10]
+                for row in sorted(active_rows, key=lambda item: item["amount"] or 0, reverse=True)[
+                    :10
+                ]
             ],
             "volatile": [
                 _public_quote(row)
@@ -419,7 +418,10 @@ def _daily_proxy_quote(symbol: str, frame: Any) -> dict[str, Any] | None:
     timestamp = _timestamp_ms(latest.get("timestamp") or latest.get("date"))
     return {
         "symbol": symbol,
-        "name": BENCHMARKS.get(symbol) or SECTORS.get(symbol) or THEME_PROXIES.get(symbol) or symbol,
+        "name": BENCHMARKS.get(symbol)
+        or SECTORS.get(symbol)
+        or THEME_PROXIES.get(symbol)
+        or symbol,
         "last_price": last_price,
         "prev_close": prev_close,
         "open": _finite(latest.get("open")),
@@ -454,9 +456,7 @@ def build_proxy_overview(
         (row["timestamp"] for row in normalized.values() if row["timestamp"] is not None),
         default=now_ms or int(time.time() * 1000),
     )
-    sessions = Counter(
-        row["session"] for row in normalized.values() if row["session"] != "unknown"
-    )
+    sessions = Counter(row["session"] for row in normalized.values() if row["session"] != "unknown")
     session = sessions.most_common(1)[0][0] if sessions else "unknown"
 
     def proxies(labels: Mapping[str, str]) -> list[dict[str, Any]]:
@@ -641,7 +641,9 @@ class UsMarketOverviewService:
         return result
 
     def get_market_snapshot(
-        self, *, force: bool = False,
+        self,
+        *,
+        force: bool = False,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """返回聚合摘要和仅驻留内存的全市场规范化行情。"""
         overview = self.get_overview(force=force)
@@ -651,9 +653,9 @@ class UsMarketOverviewService:
 
     def fetch_symbol_quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
         """为主题 ETF 成分补取指定标的行情,不写入 A 股仓库。"""
-        normalized_symbols = list(dict.fromkeys(
-            str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()
-        ))
+        normalized_symbols = list(
+            dict.fromkeys(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip())
+        )
         if not normalized_symbols:
             return []
         client = self._realtime_client_factory()
@@ -678,9 +680,9 @@ class UsMarketOverviewService:
         window: int = 20,
     ) -> dict[str, float]:
         """Return cached daily-return volatility for sector/theme ETF proxies."""
-        normalized_symbols = list(dict.fromkeys(
-            str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()
-        ))
+        normalized_symbols = list(
+            dict.fromkeys(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip())
+        )
         if not normalized_symbols:
             return {}
         now = self._monotonic()
@@ -690,8 +692,7 @@ class UsMarketOverviewService:
                 symbol in self._proxy_volatility_cache for symbol in normalized_symbols
             ):
                 return {
-                    symbol: self._proxy_volatility_cache[symbol]
-                    for symbol in normalized_symbols
+                    symbol: self._proxy_volatility_cache[symbol] for symbol in normalized_symbols
                 }
             cached = {
                 symbol: self._proxy_volatility_cache[symbol]
@@ -729,9 +730,7 @@ class UsMarketOverviewService:
                     )
                 rows = _frame_records(frame)
                 rows.sort(
-                    key=lambda row: _timestamp_ms(
-                        row.get("timestamp") or row.get("date")
-                    ) or 0
+                    key=lambda row: _timestamp_ms(row.get("timestamp") or row.get("date")) or 0
                 )
                 closes = [
                     close
@@ -739,9 +738,7 @@ class UsMarketOverviewService:
                     if (close := _finite(row.get("close"))) is not None and close > 0
                 ]
                 returns = [
-                    current / previous - 1
-                    for previous, current in pairwise(closes)
-                    if previous > 0
+                    current / previous - 1 for previous, current in pairwise(closes) if previous > 0
                 ][-sample_size:]
                 if len(returns) < 5:
                     continue
@@ -756,11 +753,7 @@ class UsMarketOverviewService:
         with self._condition:
             self._proxy_volatility_cache.update(result)
             self._proxy_volatility_cache_at = now
-        return {
-            symbol: result[symbol]
-            for symbol in normalized_symbols
-            if symbol in result
-        }
+        return {symbol: result[symbol] for symbol in normalized_symbols if symbol in result}
 
     def _fetch_realtime_proxies(self) -> dict[str, Any]:
         client = self._realtime_client_factory()

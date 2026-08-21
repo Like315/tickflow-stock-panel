@@ -1,4 +1,5 @@
 """Low-intervention paper trading and evolution orchestrator."""
+
 from __future__ import annotations
 
 import logging
@@ -6,6 +7,7 @@ import math
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -36,9 +38,7 @@ from app.tickflow.rate_limits import resolve_limit
 logger = logging.getLogger(__name__)
 
 
-_OVERNIGHT_US_MODULE_RULES: tuple[
-    tuple[tuple[str, ...], tuple[str, ...], float], ...
-] = (
+_OVERNIGHT_US_MODULE_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...], float], ...] = (
     (("半导体", "集成电路", "芯片"), ("XSD.US", "XLK.US"), 1.00),
     (("软件", "IT服务", "计算机应用", "互联网服务"), ("XSW.US", "XLK.US"), 1.00),
     (("生物科技", "生物制品"), ("XBI.US", "XLV.US"), 1.00),
@@ -65,6 +65,27 @@ _OVERNIGHT_US_MODULE_RULES: tuple[
 )
 
 
+@dataclass(frozen=True, slots=True)
+class DatasetMinuteSourcePlan:
+    """训练数据构建使用的远端与归档分钟源窗口。"""
+
+    start_date: date
+    end_date: date
+    remote_start_date: date | None
+    archive_start: date | None = None
+    archive_end: date | None = None
+    archive_revision: str | None = None
+
+
+@dataclass(slots=True)
+class DatasetBootstrapRunState:
+    """一次训练数据构建任务的持久化进度状态。"""
+
+    plan: DatasetMinuteSourcePlan
+    progress_manifest: dict[str, Any]
+    run_id: str
+
+
 class InvestmentExpertService:
     def __init__(
         self,
@@ -89,8 +110,7 @@ class InvestmentExpertService:
         self.news_sentiment_service = news_sentiment_service
         self.stock_portfolio_service = stock_portfolio_service
         self.historical_minute_archive = (
-            historical_minute_archive
-            or HuggingFaceAshareMinuteArchive(data_dir)
+            historical_minute_archive or HuggingFaceAshareMinuteArchive(data_dir)
         )
         self._trading_day_checker = trading_day_checker
         self.store = PaperAgentStore(data_dir)
@@ -111,7 +131,9 @@ class InvestmentExpertService:
             self.historical_minute_provider,
         )
         self.dataset_root = data_dir / "user_data" / "investment_expert" / "training"
-        self._executor_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="investment-expert")
+        self._executor_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="investment-expert"
+        )
         self._task_lock = threading.RLock()
         self._cycle_lock = threading.Lock()
         self._operation_lock = threading.Lock()
@@ -231,9 +253,7 @@ class InvestmentExpertService:
     def _dataset_window(years: int) -> tuple[date, date]:
         current = cn_now()
         end_date = (
-            current.date()
-            if current.time() >= time(16, 0)
-            else current.date() - timedelta(days=1)
+            current.date() if current.time() >= time(16, 0) else current.date() - timedelta(days=1)
         )
         return InvestmentExpertService._subtract_years(end_date, years), end_date
 
@@ -422,9 +442,7 @@ class InvestmentExpertService:
         self._candidate_context = context
         self._overnight_us_context = overnight_context
         self._news_sentiment_context = news_context
-        self._next_news_refresh_at = now + timedelta(
-            seconds=self._news_refresh_seconds()
-        )
+        self._next_news_refresh_at = now + timedelta(seconds=self._news_refresh_seconds())
         self._prepare_failure_reason = None
         floor = now.replace(second=0, microsecond=0)
         self._next_fetch_at = (
@@ -508,11 +526,7 @@ class InvestmentExpertService:
                     market_date=market_date,
                 )
             market_background_available = available_weight >= 0.60
-            index_return = (
-                weighted_sum / available_weight
-                if market_background_available
-                else 0.0
-            )
+            index_return = weighted_sum / available_weight if market_background_available else 0.0
             breadth = overview.get("breadth") or {}
             up_ratio = float(breadth.get("up_ratio") or 0.0)
             down_ratio = float(breadth.get("down_ratio") or 0.0)
@@ -553,9 +567,7 @@ class InvestmentExpertService:
                 if not math.isfinite(change_pct):
                     continue
                 raw_volatility = float(volatilities.get(symbol) or 0.0)
-                has_observed_volatility = (
-                    math.isfinite(raw_volatility) and raw_volatility > 0
-                )
+                has_observed_volatility = math.isfinite(raw_volatility) and raw_volatility > 0
                 volatility = max(raw_volatility, 0.008) if has_observed_volatility else 0.02
                 data_confidence = 1.0 if has_observed_volatility else 0.75
                 normalized_signal = math.tanh(change_pct / volatility)
@@ -650,10 +662,14 @@ class InvestmentExpertService:
             columns=["symbol", "date", "close"],
         )
         instruments = self.repo.get_instruments()
-        names = {
-            str(row["symbol"]): str(row.get("name") or row["symbol"])
-            for row in instruments.iter_rows(named=True)
-        } if not instruments.is_empty() else {}
+        names = (
+            {
+                str(row["symbol"]): str(row.get("name") or row["symbol"])
+                for row in instruments.iter_rows(named=True)
+            }
+            if not instruments.is_empty()
+            else {}
+        )
         context = {
             symbol: {
                 "source_date": None,
@@ -667,16 +683,18 @@ class InvestmentExpertService:
         if daily.is_empty() or not {"symbol", "date", "close"}.issubset(daily.columns):
             return context
         latest = daily.sort(["symbol", "date"]).group_by("symbol", maintain_order=True).tail(1)
-        context.update({
-            str(row["symbol"]): {
-                "source_date": str(row["date"]),
-                "previous_close": float(row["close"]),
-                "name": names.get(str(row["symbol"]), str(row["symbol"])),
-                "score": None,
-                "daily_momentum_20d": None,
+        context.update(
+            {
+                str(row["symbol"]): {
+                    "source_date": str(row["date"]),
+                    "previous_close": float(row["close"]),
+                    "name": names.get(str(row["symbol"]), str(row["symbol"])),
+                    "score": None,
+                    "daily_momentum_20d": None,
+                }
+                for row in latest.iter_rows(named=True)
             }
-            for row in latest.iter_rows(named=True)
-        })
+        )
         return context
 
     def _restore_executor(self) -> StrictMinuteExecutor:
@@ -709,7 +727,91 @@ class InvestmentExpertService:
             parsed = parsed.astimezone(CN_TZ)
         return min(parsed.date(), today)
 
+    def _normalize_sync_position(
+        self, raw: dict[str, Any], today: date
+    ) -> tuple[dict[str, Any] | None, str | None, str | None]:
+        """规范化单个来源持仓, 分别返回持仓、错误和降级警告。"""
+        symbol = str(raw.get("symbol") or "").strip().upper()
+        name = str(raw.get("name") or "").strip()
+        display_name = name or symbol or "未知股票"
+        try:
+            quantity_value = float(raw.get("quantity"))
+            entry_price = float(raw.get("buy_price"))
+        except (TypeError, ValueError):
+            return None, f"{display_name} 的数量或成本价无效", None
+        quantity = round(quantity_value)
+        invalid = (
+            not symbol
+            or quantity <= 0
+            or not math.isclose(quantity_value, quantity, abs_tol=1e-6)
+            or entry_price <= 0
+        )
+        if invalid:
+            return None, f"{display_name} 的持仓数据不完整", None
+        if quantity % self.constitution.lot_size != 0:
+            message = f"{display_name} 的数量不是 {self.constitution.lot_size} 股整数倍"
+            return None, message, None
+        current_price = self._sync_position_current_price(raw)
+        warning = None
+        if current_price is None or current_price <= 0:
+            current_price = entry_price
+            warning = f"{display_name} 缺少最新价, 暂以成本价建立同步基线"
+        position = {
+            "symbol": symbol,
+            "name": name,
+            "quantity": quantity,
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "acquired_date": self._synced_acquired_date(raw, today).isoformat(),
+            "cost_amount": round(entry_price * quantity, 2),
+            "market_value": round(current_price * quantity, 2),
+        }
+        return position, None, warning
+
+    @staticmethod
+    def _sync_position_current_price(raw: dict[str, Any]) -> float | None:
+        """读取来源持仓最新价, 无效值返回空。"""
+        value = raw.get("current_price")
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _portfolio_sync_blocked_reason(
+        self,
+        positions: list[dict[str, Any]],
+        errors: list[str],
+    ) -> str | None:
+        """按运行状态和来源数据确定同步阻断原因。"""
+        future = self._active_future
+        running = bool(self._poll_thread and self._poll_thread.is_alive())
+        busy = bool(future is not None and not future.done())
+        if running:
+            return "runtime_running"
+        if busy:
+            return "background_task_running"
+        if errors:
+            return "invalid_source_positions"
+        if not positions:
+            return "source_portfolio_empty"
+        return None
+
+    @staticmethod
+    def _portfolio_sync_position_metrics(
+        positions: list[dict[str, Any]],
+        executor: StrictMinuteExecutor,
+    ) -> dict[str, int | float]:
+        """汇总预检持仓金额和即将替换的账户规模。"""
+        return {
+            "position_count": len(positions),
+            "source_total_cost_amount": round(sum(item["cost_amount"] for item in positions), 2),
+            "source_total_market_value": round(sum(item["market_value"] for item in positions), 2),
+            "replace_position_count": sum(lot.remaining_shares > 0 for lot in executor.lots),
+            "current_available_cash": round(float(executor.cash), 2),
+        }
+
     def stock_portfolio_sync_preview(self) -> dict[str, Any]:
+        """预检股票持仓并返回规范化同步计划。"""
         if self.stock_portfolio_service is None:
             return {
                 "can_sync": False,
@@ -719,90 +821,142 @@ class InvestmentExpertService:
                 "warnings": [],
             }
         source = self.stock_portfolio_service.get_portfolio()
-        today = cn_now().date()
         positions: list[dict[str, Any]] = []
         errors: list[str] = []
         warnings: list[str] = []
+        today = cn_now().date()
         for raw in source.get("positions") or []:
-            symbol = str(raw.get("symbol") or "").strip().upper()
-            name = str(raw.get("name") or "").strip()
-            try:
-                quantity_value = float(raw.get("quantity"))
-                entry_price = float(raw.get("buy_price"))
-            except (TypeError, ValueError):
-                errors.append(f"{name or symbol or '未知股票'} 的数量或成本价无效")
-                continue
-            quantity = round(quantity_value)
-            if (
-                not symbol
-                or quantity <= 0
-                or not math.isclose(quantity_value, quantity, abs_tol=1e-6)
-                or entry_price <= 0
-            ):
-                errors.append(f"{name or symbol or '未知股票'} 的持仓数据不完整")
-                continue
-            if quantity % self.constitution.lot_size != 0:
-                errors.append(
-                    f"{name or symbol} 的数量不是 {self.constitution.lot_size} 股整数倍"
-                )
-                continue
-            current_price_value = raw.get("current_price")
-            try:
-                current_price = (
-                    float(current_price_value)
-                    if current_price_value is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                current_price = None
-            if current_price is None or current_price <= 0:
-                current_price = entry_price
-                warnings.append(f"{name or symbol} 缺少最新价, 暂以成本价建立同步基线")
-            positions.append({
-                "symbol": symbol,
-                "name": name,
-                "quantity": quantity,
-                "entry_price": entry_price,
-                "current_price": current_price,
-                "acquired_date": self._synced_acquired_date(raw, today).isoformat(),
-                "cost_amount": round(entry_price * quantity, 2),
-                "market_value": round(current_price * quantity, 2),
-            })
-
+            position, error, warning = self._normalize_sync_position(raw, today)
+            if position is not None:
+                positions.append(position)
+            if error is not None:
+                errors.append(error)
+            if warning is not None:
+                warnings.append(warning)
         executor = self._executor or self._restore_executor()
-        future = self._active_future
-        running = bool(self._poll_thread and self._poll_thread.is_alive())
-        busy = bool(future is not None and not future.done())
-        blocked_reason = None
-        if running:
-            blocked_reason = "runtime_running"
-        elif busy:
-            blocked_reason = "background_task_running"
-        elif errors:
-            blocked_reason = "invalid_source_positions"
-        elif not positions:
-            blocked_reason = "source_portfolio_empty"
+        blocked_reason = self._portfolio_sync_blocked_reason(positions, errors)
         return {
             "can_sync": blocked_reason is None,
             "blocked_reason": blocked_reason,
             "source": "stock_portfolio",
             "source_updated_at": source.get("updated_at"),
             "positions": positions,
-            "position_count": len(positions),
-            "source_total_cost_amount": round(
-                sum(item["cost_amount"] for item in positions),
-                2,
-            ),
-            "source_total_market_value": round(
-                sum(item["market_value"] for item in positions),
-                2,
-            ),
-            "replace_position_count": len([
-                lot for lot in executor.lots if lot.remaining_shares > 0
-            ]),
-            "current_available_cash": round(float(executor.cash), 2),
+            **self._portfolio_sync_position_metrics(positions, executor),
             "errors": errors,
             "warnings": warnings,
+        }
+
+    @staticmethod
+    def _validate_portfolio_sync_request(
+        confirm_replace: bool,
+        available_cash: float | None,
+    ) -> None:
+        """在加锁和读取持仓前校验覆盖确认与现金参数。"""
+        if not confirm_replace:
+            raise ValueError("同步会覆盖 AI 当前持仓, 必须明确确认")
+        if available_cash is not None and (not math.isfinite(available_cash) or available_cash < 0):
+            raise ValueError("可用现金必须是大于或等于 0 的有效数字")
+
+    @staticmethod
+    def _require_syncable_preview(preview: dict[str, Any]) -> None:
+        """把预检阻断状态转换为稳定的业务异常。"""
+        if preview.get("can_sync"):
+            return
+        messages = {
+            "runtime_running": "请先停止 AI 投资专家盯盘, 再同步持仓",
+            "background_task_running": "后台任务进行中, 请完成后再同步持仓",
+            "source_portfolio_empty": "股票持仓为空, 无法同步",
+            "invalid_source_positions": "股票持仓包含无法同步的数据",
+            "stock_portfolio_service_unavailable": "股票持仓服务尚未初始化",
+        }
+        detail = messages.get(str(preview.get("blocked_reason")), "当前无法同步股票持仓")
+        if preview.get("errors"):
+            detail += f": {'; '.join(preview['errors'])}"
+        raise RuntimeError(detail)
+
+    def _build_synced_executor(
+        self,
+        preview: dict[str, Any],
+        cash: float,
+    ) -> StrictMinuteExecutor:
+        """从预检持仓建立新的严格分钟执行器。"""
+        executor = StrictMinuteExecutor(self.constitution)
+        executor.cash = cash
+        executor.lots = [
+            PositionLot(
+                lot_id=f"synced_{uuid4().hex}",
+                symbol=str(item["symbol"]),
+                acquired_date=date.fromisoformat(str(item["acquired_date"])),
+                shares=int(item["quantity"]),
+                remaining_shares=int(item["quantity"]),
+                entry_price=float(item["entry_price"]),
+                entry_cost=0.0,
+            )
+            for item in preview["positions"]
+        ]
+        executor.last_prices = {
+            str(item["symbol"]): float(item["current_price"]) for item in preview["positions"]
+        }
+        return executor
+
+    def _save_portfolio_sync(
+        self,
+        executor: StrictMinuteExecutor,
+        preview: dict[str, Any],
+        available_cash: float | None,
+    ) -> dict[str, Any]:
+        """保存覆盖同步事件和可恢复的执行器状态。"""
+        equity = executor.equity()
+        payload = {
+            "source": "stock_portfolio",
+            "source_updated_at": preview.get("source_updated_at"),
+            "position_count": len(executor.lots),
+            "replaced_position_count": preview["replace_position_count"],
+            "cash_source": "not_provided" if available_cash is None else "user_input",
+            "baseline_equity": equity,
+            "lots": [lot.model_dump(mode="json") for lot in executor.lots],
+            "last_prices": executor.last_prices,
+            "executor_state": executor.export_state(),
+        }
+        return self.store.save_portfolio_sync(
+            source="stock_portfolio",
+            mode="replace",
+            cash=executor.cash,
+            equity=equity,
+            payload=payload,
+        )
+
+    def _reset_runtime_after_portfolio_sync(self) -> None:
+        """清除旧持仓派生的运行态, 下次启动时从同步快照恢复。"""
+        self._executor = None
+        self._runtime = None
+        self._session = None
+        self._candidates = []
+        self._market_symbols = []
+        self._candidate_context = {}
+        self._last_processed_bar = None
+        self._next_fetch_at = None
+        self._risk_trip_reason = None
+        self._last_error = None
+
+    @staticmethod
+    def _portfolio_sync_response(
+        event: dict[str, Any],
+        executor: StrictMinuteExecutor,
+    ) -> dict[str, Any]:
+        """构造对外稳定的同步成功摘要。"""
+        return {
+            "status": "succeeded",
+            "sync": {
+                "id": event["id"],
+                "source": event["source"],
+                "mode": event["mode"],
+                "created_at": event["created_at"],
+                "position_count": len(executor.lots),
+                "cash": round(executor.cash, 2),
+                "equity": round(executor.equity(), 2),
+                "payload_hash": event["payload_hash"],
+            },
         }
 
     def sync_stock_portfolio(
@@ -811,97 +965,17 @@ class InvestmentExpertService:
         confirm_replace: bool,
         available_cash: float | None = None,
     ) -> dict[str, Any]:
-        if not confirm_replace:
-            raise ValueError("同步会覆盖 AI 当前持仓, 必须明确确认")
-        if available_cash is not None and (
-            not math.isfinite(available_cash) or available_cash < 0
-        ):
-            raise ValueError("可用现金必须是大于或等于 0 的有效数字")
+        """在互斥锁保护下用股票持仓覆盖 AI 投资专家账户。"""
+        self._validate_portfolio_sync_request(confirm_replace, available_cash)
         if not self._operation_lock.acquire(blocking=False):
             raise RuntimeError("AI 投资专家正在执行其他任务, 请稍后重试")
         try:
             preview = self.stock_portfolio_sync_preview()
-            if not preview.get("can_sync"):
-                reason = preview.get("blocked_reason")
-                messages = {
-                    "runtime_running": "请先停止 AI 投资专家盯盘, 再同步持仓",
-                    "background_task_running": "后台任务进行中, 请完成后再同步持仓",
-                    "source_portfolio_empty": "股票持仓为空, 无法同步",
-                    "invalid_source_positions": "股票持仓包含无法同步的数据",
-                    "stock_portfolio_service_unavailable": "股票持仓服务尚未初始化",
-                }
-                detail = messages.get(str(reason), "当前无法同步股票持仓")
-                if preview.get("errors"):
-                    detail += f": {'; '.join(preview['errors'])}"
-                raise RuntimeError(detail)
-
-            cash = (
-                0.0 if available_cash is None else float(available_cash)
-            )
-            lots = [
-                PositionLot(
-                    lot_id=f"synced_{uuid4().hex}",
-                    symbol=str(item["symbol"]),
-                    acquired_date=date.fromisoformat(str(item["acquired_date"])),
-                    shares=int(item["quantity"]),
-                    remaining_shares=int(item["quantity"]),
-                    entry_price=float(item["entry_price"]),
-                    entry_cost=0.0,
-                )
-                for item in preview["positions"]
-            ]
-            last_prices = {
-                str(item["symbol"]): float(item["current_price"])
-                for item in preview["positions"]
-            }
-            executor = StrictMinuteExecutor(self.constitution)
-            executor.cash = cash
-            executor.lots = lots
-            executor.last_prices = last_prices
-            equity = executor.equity()
-            payload = {
-                "source": "stock_portfolio",
-                "source_updated_at": preview.get("source_updated_at"),
-                "position_count": len(lots),
-                "replaced_position_count": preview["replace_position_count"],
-                "cash_source": (
-                    "not_provided" if available_cash is None else "user_input"
-                ),
-                "baseline_equity": equity,
-                "lots": [lot.model_dump(mode="json") for lot in lots],
-                "last_prices": last_prices,
-                "executor_state": executor.export_state(),
-            }
-            event = self.store.save_portfolio_sync(
-                source="stock_portfolio",
-                mode="replace",
-                cash=cash,
-                equity=equity,
-                payload=payload,
-            )
-            self._executor = None
-            self._runtime = None
-            self._session = None
-            self._candidates = []
-            self._market_symbols = []
-            self._candidate_context = {}
-            self._last_processed_bar = None
-            self._next_fetch_at = None
-            self._risk_trip_reason = None
-            self._last_error = None
-            return {
-                "status": "succeeded",
-                "sync": {
-                    "id": event["id"],
-                    "source": event["source"],
-                    "mode": event["mode"],
-                    "created_at": event["created_at"],
-                    "position_count": len(lots),
-                    "cash": round(cash, 2),
-                    "equity": round(equity, 2),
-                    "payload_hash": event["payload_hash"],
-                },
-            }
+            self._require_syncable_preview(preview)
+            executor = self._build_synced_executor(preview, float(available_cash or 0.0))
+            event = self._save_portfolio_sync(executor, preview, available_cash)
+            self._reset_runtime_after_portfolio_sync()
+            return self._portfolio_sync_response(event, executor)
         finally:
             self._operation_lock.release()
 
@@ -942,9 +1016,9 @@ class InvestmentExpertService:
             try:
                 industry_frame = pl.read_parquet(industry_path)
                 if {"symbol", "所属同花顺行业"}.issubset(industry_frame.columns):
-                    for row in industry_frame.select(
-                        "symbol", "所属同花顺行业"
-                    ).iter_rows(named=True):
+                    for row in industry_frame.select("symbol", "所属同花顺行业").iter_rows(
+                        named=True
+                    ):
                         key = self._canonical_cn_symbol(str(row["symbol"]))
                         industry = str(row.get("所属同花顺行业") or "").strip()
                         if industry:
@@ -1010,36 +1084,30 @@ class InvestmentExpertService:
         overnight_context: dict[str, Any] | None,
     ) -> None:
         instruments = self.repo.get_instruments()
-        instrument_map = {
-            str(row["symbol"]): row
-            for row in instruments.iter_rows(named=True)
-        } if not instruments.is_empty() and "symbol" in instruments.columns else {}
+        instrument_map = (
+            {str(row["symbol"]): row for row in instruments.iter_rows(named=True)}
+            if not instruments.is_empty() and "symbol" in instruments.columns
+            else {}
+        )
         factors = self._score_candidate_overnight_modules(
             instrument_map,
             overnight_context,
         )
         factors_by_symbol = {
-            self._canonical_cn_symbol(symbol): factor
-            for symbol, factor in factors.items()
+            self._canonical_cn_symbol(symbol): factor for symbol, factor in factors.items()
         }
         market_score = float((overnight_context or {}).get("score") or 0.0)
         for symbol, row in context.items():
             factor = factors_by_symbol.get(self._canonical_cn_symbol(symbol))
             row["overnight_us_market_score"] = market_score
             row["overnight_us_available"] = factor is not None
-            row["overnight_us_score"] = (
-                float(factor["change_pct"]) if factor is not None else None
-            )
+            row["overnight_us_score"] = float(factor["change_pct"]) if factor is not None else None
             row["overnight_us_tilt"] = (
                 float(factor["normalized_signal"]) if factor is not None else 0.0
             )
-            row["overnight_us_factor"] = (
-                float(factor["factor"]) if factor is not None else 0.0
-            )
+            row["overnight_us_factor"] = float(factor["factor"]) if factor is not None else 0.0
             row["overnight_us_module"] = factor.get("name") if factor else None
-            row["overnight_us_module_symbol"] = (
-                factor.get("symbol") if factor else None
-            )
+            row["overnight_us_module_symbol"] = factor.get("symbol") if factor else None
             row["overnight_us_match_confidence"] = (
                 float(factor["match_confidence"]) if factor is not None else 0.0
             )
@@ -1071,8 +1139,15 @@ class InvestmentExpertService:
                 end_date,
                 symbols=symbols,
                 columns=[
-                    "symbol", "date", "open", "high", "low", "close",
-                    "volume", "amount", "raw_close",
+                    "symbol",
+                    "date",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "amount",
+                    "raw_close",
                 ],
             )
         if history is None or history.is_empty():
@@ -1080,9 +1155,7 @@ class InvestmentExpertService:
                 symbols,
                 start_date,
                 end_date,
-                columns=[
-                    "symbol", "date", "open", "high", "low", "close", "volume", "amount"
-                ],
+                columns=["symbol", "date", "open", "high", "low", "close", "volume", "amount"],
             )
         if history.is_empty():
             return [], {}
@@ -1104,16 +1177,12 @@ class InvestmentExpertService:
         latest = history.filter(pl.col("date") == latest_date).drop_nulls(["_momentum"])
         if latest.is_empty():
             return [], {}
-        instrument_map = {
-            str(row["symbol"]): row for row in instruments.iter_rows(named=True)
-        }
+        instrument_map = {str(row["symbol"]): row for row in instruments.iter_rows(named=True)}
         name_map = {
-            symbol: str(row.get("name") or symbol)
-            for symbol, row in instrument_map.items()
+            symbol: str(row.get("name") or symbol) for symbol, row in instrument_map.items()
         }
         eligible_symbols = [
-            symbol for symbol in symbols
-            if not is_risk_warning_name(name_map.get(str(symbol), ""))
+            symbol for symbol in symbols if not is_risk_warning_name(name_map.get(str(symbol), ""))
         ]
         latest = latest.filter(pl.col("symbol").is_in(eligible_symbols))
         if latest.is_empty():
@@ -1129,20 +1198,21 @@ class InvestmentExpertService:
             (
                 0.7 * (1 - (pl.col("_mom_rank") - 1) / pl.col("_count"))
                 + 0.3 * (1 - (pl.col("_amount_rank") - 1) / pl.col("_count"))
-            ).alias("_score")
+            ).alias("_score"),
         )
         strategy_scores = self._strategy_consensus_scores(latest_date)
         if strategy_scores:
-            strategy_frame = pl.DataFrame({
-                "symbol": list(strategy_scores),
-                "_strategy_score": list(strategy_scores.values()),
-            })
+            strategy_frame = pl.DataFrame(
+                {
+                    "symbol": list(strategy_scores),
+                    "_strategy_score": list(strategy_scores.values()),
+                }
+            )
             latest = latest.join(strategy_frame, on="symbol", how="left").with_columns(
                 pl.col("_strategy_score").fill_null(0.0),
-                (
-                    0.75 * pl.col("_score")
-                    + 0.25 * pl.col("_strategy_score").fill_null(0.0)
-                ).alias("_score"),
+                (0.75 * pl.col("_score") + 0.25 * pl.col("_strategy_score").fill_null(0.0)).alias(
+                    "_score"
+                ),
             )
         else:
             latest = latest.with_columns(pl.lit(0.0).alias("_strategy_score"))
@@ -1151,29 +1221,29 @@ class InvestmentExpertService:
             overnight_context,
         )
         if module_factors:
-            module_frame = pl.DataFrame({
-                "symbol": list(module_factors),
-                "_overnight_us_factor": [
-                    float(value["factor"]) for value in module_factors.values()
-                ],
-                "_overnight_us_score": [
-                    float(value["change_pct"]) for value in module_factors.values()
-                ],
-                "_overnight_us_tilt": [
-                    float(value["normalized_signal"])
-                    for value in module_factors.values()
-                ],
-                "_overnight_us_module": [
-                    str(value["name"]) for value in module_factors.values()
-                ],
-                "_overnight_us_module_symbol": [
-                    str(value["symbol"]) for value in module_factors.values()
-                ],
-                "_overnight_us_match_confidence": [
-                    float(value["match_confidence"])
-                    for value in module_factors.values()
-                ],
-            })
+            module_frame = pl.DataFrame(
+                {
+                    "symbol": list(module_factors),
+                    "_overnight_us_factor": [
+                        float(value["factor"]) for value in module_factors.values()
+                    ],
+                    "_overnight_us_score": [
+                        float(value["change_pct"]) for value in module_factors.values()
+                    ],
+                    "_overnight_us_tilt": [
+                        float(value["normalized_signal"]) for value in module_factors.values()
+                    ],
+                    "_overnight_us_module": [
+                        str(value["name"]) for value in module_factors.values()
+                    ],
+                    "_overnight_us_module_symbol": [
+                        str(value["symbol"]) for value in module_factors.values()
+                    ],
+                    "_overnight_us_match_confidence": [
+                        float(value["match_confidence"]) for value in module_factors.values()
+                    ],
+                }
+            )
             latest = latest.join(module_frame, on="symbol", how="left")
         else:
             latest = latest.with_columns(
@@ -1182,9 +1252,7 @@ class InvestmentExpertService:
                 pl.lit(None, dtype=pl.Float64).alias("_overnight_us_tilt"),
                 pl.lit(None, dtype=pl.Utf8).alias("_overnight_us_module"),
                 pl.lit(None, dtype=pl.Utf8).alias("_overnight_us_module_symbol"),
-                pl.lit(None, dtype=pl.Float64).alias(
-                    "_overnight_us_match_confidence"
-                ),
+                pl.lit(None, dtype=pl.Float64).alias("_overnight_us_match_confidence"),
             )
         applied_weight = min(max(overnight_weight, 0.0), 0.5)
         latest = latest.with_columns(
@@ -1192,13 +1260,10 @@ class InvestmentExpertService:
             pl.col("_overnight_us_tilt").fill_null(0.0),
             pl.col("_overnight_us_match_confidence").fill_null(0.0),
         ).with_columns(
-            (applied_weight * pl.col("_overnight_us_factor")).alias(
-                "_overnight_us_adjustment"
-            ),
-            (
-                pl.col("_score")
-                + applied_weight * pl.col("_overnight_us_factor")
-            ).clip(0.0, 1.0).alias("_score"),
+            (applied_weight * pl.col("_overnight_us_factor")).alias("_overnight_us_adjustment"),
+            (pl.col("_score") + applied_weight * pl.col("_overnight_us_factor"))
+            .clip(0.0, 1.0)
+            .alias("_score"),
             pl.col("_momentum_score").alias("_news_momentum_preference"),
             pl.col("_defensive_score").alias("_news_defensive_preference"),
         )
@@ -1213,17 +1278,17 @@ class InvestmentExpertService:
         )
         candidate_news = self._score_candidate_news(news_context or {}, instrument_map)
         if candidate_news:
-            news_frame = pl.DataFrame({
-                "symbol": list(candidate_news),
-                "_candidate_news_score": [
-                    float(value.get("score") or 0.0)
-                    for value in candidate_news.values()
-                ],
-                "_candidate_news_matches": [
-                    int(value.get("matched_count") or 0)
-                    for value in candidate_news.values()
-                ],
-            })
+            news_frame = pl.DataFrame(
+                {
+                    "symbol": list(candidate_news),
+                    "_candidate_news_score": [
+                        float(value.get("score") or 0.0) for value in candidate_news.values()
+                    ],
+                    "_candidate_news_matches": [
+                        int(value.get("matched_count") or 0) for value in candidate_news.values()
+                    ],
+                }
+            )
             latest = latest.join(news_frame, on="symbol", how="left")
         else:
             latest = latest.with_columns(
@@ -1241,14 +1306,12 @@ class InvestmentExpertService:
         else:
             news_preference = pl.lit(0.5)
         latest = latest.with_columns(
-            (
-                0.4 * news_preference
-                + 0.6 * ((pl.col("_candidate_news_score") + 1) / 2)
-            ).alias("_news_fit"),
-            (
-                0.4 * global_news_score
-                + 0.6 * pl.col("_candidate_news_score")
-            ).alias("_news_factor_score"),
+            (0.4 * news_preference + 0.6 * ((pl.col("_candidate_news_score") + 1) / 2)).alias(
+                "_news_fit"
+            ),
+            (0.4 * global_news_score + 0.6 * pl.col("_candidate_news_score")).alias(
+                "_news_factor_score"
+            ),
         ).with_columns(
             (
                 (1 - applied_news_weight) * pl.col("_score")
@@ -1271,9 +1334,7 @@ class InvestmentExpertService:
                 "momentum_score": float(row["_news_momentum_preference"]),
                 "defensive_score": float(row["_news_defensive_preference"]),
                 "overnight_us_available": row["_overnight_us_score"] is not None,
-                "overnight_us_market_score": float(
-                    (overnight_context or {}).get("score") or 0.0
-                ),
+                "overnight_us_market_score": float((overnight_context or {}).get("score") or 0.0),
                 "overnight_us_score": (
                     float(row["_overnight_us_score"])
                     if row["_overnight_us_score"] is not None
@@ -1283,12 +1344,8 @@ class InvestmentExpertService:
                 "overnight_us_factor": float(row["_overnight_us_factor"]),
                 "overnight_us_module": row["_overnight_us_module"],
                 "overnight_us_module_symbol": row["_overnight_us_module_symbol"],
-                "overnight_us_match_confidence": float(
-                    row["_overnight_us_match_confidence"]
-                ),
-                "overnight_us_adjustment": float(
-                    row["_overnight_us_adjustment"]
-                ),
+                "overnight_us_match_confidence": float(row["_overnight_us_match_confidence"]),
+                "overnight_us_adjustment": float(row["_overnight_us_adjustment"]),
                 "news_sentiment_available": news_available,
                 "news_sentiment_score": global_news_score,
                 "news_sentiment_confidence": news_confidence,
@@ -1353,11 +1410,10 @@ class InvestmentExpertService:
             return
         context = self._load_news_sentiment_context(now)
         self._news_sentiment_context = context
-        self._next_news_refresh_at = now + timedelta(
-            seconds=self._news_refresh_seconds()
-        )
+        self._next_news_refresh_at = now + timedelta(seconds=self._news_refresh_seconds())
         candidate_metadata = {
-            symbol: row for symbol, row in self._candidate_context.items()
+            symbol: row
+            for symbol, row in self._candidate_context.items()
             if symbol in self._candidates
         }
         scored = self._score_candidate_news(context, candidate_metadata)
@@ -1378,17 +1434,19 @@ class InvestmentExpertService:
             news_fit = 0.4 * preference + 0.6 * ((candidate_score + 1) / 2)
             news_factor_score = 0.4 * global_score + 0.6 * candidate_score
             market_score = float(row.get("market_score") or row.get("score") or 0.0)
-            row.update({
-                "score": (1 - applied_weight) * market_score + applied_weight * news_fit,
-                "news_sentiment_available": available,
-                "news_sentiment_score": global_score,
-                "news_sentiment_confidence": confidence,
-                "candidate_news_sentiment": candidate_score,
-                "candidate_news_matches": int(candidate.get("matched_count") or 0),
-                "news_factor_score": news_factor_score,
-                "news_fit": news_fit,
-                "news_applied_weight": applied_weight,
-            })
+            row.update(
+                {
+                    "score": (1 - applied_weight) * market_score + applied_weight * news_fit,
+                    "news_sentiment_available": available,
+                    "news_sentiment_score": global_score,
+                    "news_sentiment_confidence": confidence,
+                    "candidate_news_sentiment": candidate_score,
+                    "candidate_news_matches": int(candidate.get("matched_count") or 0),
+                    "news_factor_score": news_factor_score,
+                    "news_fit": news_fit,
+                    "news_applied_weight": applied_weight,
+                }
+            )
         self._runtime.candidate_context = self._candidate_context
 
     def _process_new_minute_bars(self, now: datetime) -> dict[str, Any]:
@@ -1461,9 +1519,7 @@ class InvestmentExpertService:
                 raw_close=float(row.get("raw_close", row["close"])),
                 volume=float(row["volume"]),
                 amount=float(row["amount"]),
-                is_suspended=(
-                    float(row["volume"]) <= 0 or context.get("previous_close") is None
-                ),
+                is_suspended=(float(row["volume"]) <= 0 or context.get("previous_close") is None),
                 is_limit_up=is_limit_up,
                 is_limit_down=is_limit_down,
             )
@@ -1529,15 +1585,15 @@ class InvestmentExpertService:
             previous = float(previous_close)
         except (TypeError, ValueError):
             return False, False
-        pct = price_limit_pct(
-            symbol, trade_date, is_risk_warning=is_risk_warning_name(name)
-        )
+        pct = price_limit_pct(symbol, trade_date, is_risk_warning=is_risk_warning_name(name))
         cents = math.floor(previous * 100 + 0.5)
         up_factor = round((1 + pct) * 100)
         down_factor = round((1 - pct) * 100)
         up_price = ((cents * up_factor + 50) // 100) / 100
         down_price = ((cents * down_factor + 50) // 100) / 100
-        prices = [float(row.get(f"raw_{key}", row[key])) for key in ("open", "high", "low", "close")]
+        prices = [
+            float(row.get(f"raw_{key}", row[key])) for key in ("open", "high", "low", "close")
+        ]
         one_price = max(prices) - min(prices) <= max(abs(prices[-1]) * 1e-4, 0.01)
         return (
             one_price and abs(prices[-1] - up_price) < 0.005,
@@ -1574,7 +1630,9 @@ class InvestmentExpertService:
                 sum(value < 0 for value in realized) / len(realized) if realized else 0.5
             ),
             "realized_pnl": sum(realized),
-            "lesson": "insufficient evidence" if not realized else "learn from realized after-cost outcomes",
+            "lesson": "insufficient evidence"
+            if not realized
+            else "learn from realized after-cost outcomes",
         }
         self.store.save_reflection(session_id, reflection)
         rollback = None
@@ -1654,9 +1712,7 @@ class InvestmentExpertService:
                 reason=reason,
             )
             if outcome == "promoted":
-                self.store.promote(
-                    candidate.id, reason=reason, metrics=candidate_metrics.as_dict()
-                )
+                self.store.promote(candidate.id, reason=reason, metrics=candidate_metrics.as_dict())
             return {"status": outcome, "reason": reason, "candidate": candidate.id}
         except Exception as exc:
             self._last_error = str(exc)[:500]
@@ -1692,156 +1748,223 @@ class InvestmentExpertService:
             )
         return {"status": "started", "task": "dataset_bootstrap"}
 
+    def _dataset_minute_source_plan(
+        self,
+        years: int,
+        download_minutes: bool,
+    ) -> DatasetMinuteSourcePlan:
+        """计算远端分钟源与归档回退各自负责的日期窗口。"""
+        start_date, end_date = self._dataset_window(years)
+        remote_start = self._remote_minute_start_date(
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if not download_minutes or (remote_start is not None and remote_start <= start_date):
+            return DatasetMinuteSourcePlan(start_date, end_date, remote_start)
+        coverage = self.historical_minute_archive.coverage()
+        archive_end = end_date if remote_start is None else remote_start - timedelta(days=1)
+        if remote_start is None:
+            end_date = min(end_date, coverage.last_date)
+            start_date = self._subtract_years(end_date, years)
+            archive_end = end_date
+        if start_date < coverage.first_date or archive_end > coverage.last_date:
+            raise RuntimeError(
+                "Hugging Face minute archive does not cover the requested "
+                f"fallback window {start_date} to {archive_end}; published "
+                f"coverage is {coverage.first_date} to {coverage.last_date}"
+            )
+        return DatasetMinuteSourcePlan(
+            start_date=start_date,
+            end_date=end_date,
+            remote_start_date=remote_start,
+            archive_start=start_date,
+            archive_end=archive_end,
+            archive_revision=coverage.revision,
+        )
+
+    def _dataset_source_manifest(
+        self,
+        plan: DatasetMinuteSourcePlan,
+    ) -> dict[str, Any]:
+        """构造可持久化的分钟数据源计划和初始进度。"""
+        remote_name = getattr(self.historical_minute_provider, "name", "unknown")
+        return {
+            "minute_source": remote_name,
+            "progress": {"current": 0, "total": 0, "label": None, "pct": 0.0},
+            "minute_source_plan": {
+                "remote_source": remote_name,
+                "remote_start_date": (
+                    plan.remote_start_date.isoformat()
+                    if plan.remote_start_date is not None
+                    else None
+                ),
+                "fallback_source": (
+                    self.historical_minute_archive.name if plan.archive_start is not None else None
+                ),
+                "fallback_revision": plan.archive_revision,
+                "fallback_start_date": (
+                    plan.archive_start.isoformat() if plan.archive_start is not None else None
+                ),
+                "fallback_end_date": (
+                    plan.archive_end.isoformat() if plan.archive_end is not None else None
+                ),
+            },
+        }
+
+    def _start_dataset_run(
+        self,
+        plan: DatasetMinuteSourcePlan,
+    ) -> DatasetBootstrapRunState:
+        """创建运行中数据集记录并返回可更新状态。"""
+        progress_manifest = self._dataset_source_manifest(plan)
+        run_id = self.store.record_dataset_run(
+            start_date=plan.start_date,
+            end_date=plan.end_date,
+            status="running",
+            manifest=progress_manifest,
+        )
+        return DatasetBootstrapRunState(plan, progress_manifest, run_id)
+
+    def _dataset_progress_reporter(
+        self,
+        state: DatasetBootstrapRunState,
+    ) -> Callable[[int, int, str], None]:
+        """创建同时更新内存状态与持久化记录的进度回调。"""
+
+        def report(current: int, total: int, label: str) -> None:
+            """持久化单次数据集构建进度。"""
+            self._dataset_progress(current, total, label)
+            state.progress_manifest["progress"] = {
+                "current": current,
+                "total": total,
+                "label": label,
+                "pct": round(current * 100 / max(total, 1), 2),
+            }
+            self.store.record_dataset_run(
+                start_date=state.plan.start_date,
+                end_date=state.plan.end_date,
+                status="running",
+                manifest=state.progress_manifest,
+                run_id=state.run_id,
+            )
+
+        return report
+
+    def _backfill_archive_window(
+        self,
+        state: DatasetBootstrapRunState,
+        candidate_limit: int,
+        progress_cb: Callable[[int, int, str], None],
+    ) -> None:
+        """先生成候选池, 再补齐归档分钟源负责的窗口。"""
+        plan = state.plan
+        if plan.archive_start is None or plan.archive_end is None:
+            return
+        self.dataset_builder.build(
+            start_date=plan.start_date,
+            end_date=plan.end_date,
+            candidate_limit=candidate_limit,
+            download_minutes=False,
+        )
+        self.historical_minute_archive.backfill_candidates(
+            candidate_dir=self.dataset_root / "candidates",
+            start_date=plan.archive_start,
+            end_date=plan.archive_end,
+            progress_cb=progress_cb,
+        )
+
+    def _build_dataset_from_plan(
+        self,
+        state: DatasetBootstrapRunState,
+        candidate_limit: int,
+        download_minutes: bool,
+        progress_cb: Callable[[int, int, str], None],
+    ) -> dict[str, Any]:
+        """按已审计的数据源计划构建最终训练数据集。"""
+        plan = state.plan
+        return self.dataset_builder.build(
+            start_date=plan.start_date,
+            end_date=plan.end_date,
+            candidate_limit=candidate_limit,
+            download_minutes=download_minutes,
+            remote_minutes_enabled=plan.remote_start_date is not None,
+            remote_minute_start_date=plan.remote_start_date,
+            fallback_minute_source=(
+                self.historical_minute_archive.name if plan.archive_start is not None else None
+            ),
+            fallback_minute_revision=plan.archive_revision,
+            progress_cb=progress_cb,
+        )
+
+    def _finish_dataset_run(
+        self,
+        state: DatasetBootstrapRunState,
+        manifest: dict[str, Any],
+    ) -> None:
+        """把数据集任务标记为成功并持久化最终清单。"""
+        self.store.record_dataset_run(
+            start_date=state.plan.start_date,
+            end_date=state.plan.end_date,
+            status="succeeded",
+            manifest=manifest,
+            run_id=state.run_id,
+            finished=True,
+        )
+
+    def _fail_dataset_run(
+        self,
+        state: DatasetBootstrapRunState | None,
+        error: str,
+    ) -> None:
+        """在已有运行记录时持久化数据集构建失败状态。"""
+        if state is None:
+            return
+        self.store.record_dataset_run(
+            start_date=state.plan.start_date,
+            end_date=state.plan.end_date,
+            status="failed",
+            manifest=state.progress_manifest,
+            run_id=state.run_id,
+            error=error,
+            finished=True,
+        )
+
+    def _train_after_dataset(self, download_minutes: bool) -> dict[str, Any]:
+        """在已下载分钟数据时训练初始模型, 失败不回滚数据集。"""
+        if not download_minutes:
+            return {"status": "skipped", "reason": "minute_download_disabled"}
+        try:
+            return self._train_model_locked()
+        except Exception as exc:
+            self._last_error = str(exc)[:500]
+            logger.exception("dataset succeeded but initial model training failed")
+            return {"status": "failed", "error": self._last_error}
+
     def _run_dataset_bootstrap(
         self,
         years: int,
         candidate_limit: int,
         download_minutes: bool,
     ) -> dict[str, Any]:
-        start_date, end_date = self._dataset_window(years)
-        remote_minute_start_date = self._remote_minute_start_date(
-            start_date=start_date,
-            end_date=end_date,
-        )
+        """互斥执行训练数据构建、归档回填和可选初始训练。"""
         if not self._operation_lock.acquire(blocking=False):
             return {"status": "reused"}
-        run_id: str | None = None
-        progress_manifest: dict[str, Any] = {
-            "minute_source": getattr(self.historical_minute_provider, "name", "unknown"),
-            "progress": {"current": 0, "total": 0, "label": None, "pct": 0.0},
-        }
+        state: DatasetBootstrapRunState | None = None
         try:
-            archive_start: date | None = None
-            archive_end: date | None = None
-            archive_revision: str | None = None
-            if download_minutes and (
-                remote_minute_start_date is None
-                or remote_minute_start_date > start_date
-            ):
-                coverage = self.historical_minute_archive.coverage()
-                archive_revision = coverage.revision
-                if remote_minute_start_date is None:
-                    end_date = min(end_date, coverage.last_date)
-                    start_date = self._subtract_years(end_date, years)
-                    archive_end = end_date
-                else:
-                    archive_end = remote_minute_start_date - timedelta(days=1)
-                archive_start = start_date
-                if (
-                    archive_start < coverage.first_date
-                    or archive_end > coverage.last_date
-                ):
-                    raise RuntimeError(
-                        "Hugging Face minute archive does not cover the requested "
-                        f"fallback window {archive_start} to {archive_end}; published "
-                        f"coverage is {coverage.first_date} to {coverage.last_date}"
-                    )
-            progress_manifest["minute_source_plan"] = {
-                "remote_source": getattr(
-                    self.historical_minute_provider,
-                    "name",
-                    "unknown",
-                ),
-                "remote_start_date": (
-                    remote_minute_start_date.isoformat()
-                    if remote_minute_start_date is not None
-                    else None
-                ),
-                "fallback_source": (
-                    self.historical_minute_archive.name
-                    if archive_start is not None
-                    else None
-                ),
-                "fallback_revision": archive_revision,
-                "fallback_start_date": (
-                    archive_start.isoformat() if archive_start is not None else None
-                ),
-                "fallback_end_date": (
-                    archive_end.isoformat() if archive_end is not None else None
-                ),
-            }
-            run_id = self.store.record_dataset_run(
-                start_date=start_date,
-                end_date=end_date,
-                status="running",
-                manifest=progress_manifest,
+            plan = self._dataset_minute_source_plan(years, download_minutes)
+            state = self._start_dataset_run(plan)
+            self._ensure_daily_history(plan.start_date - timedelta(days=40), plan.end_date)
+            report_progress = self._dataset_progress_reporter(state)
+            self._backfill_archive_window(state, candidate_limit, report_progress)
+            manifest = self._build_dataset_from_plan(
+                state, candidate_limit, download_minutes, report_progress
             )
-            self._ensure_daily_history(start_date - timedelta(days=40), end_date)
-
-            def report_progress(current_step: int, total_steps: int, label: str) -> None:
-                self._dataset_progress(current_step, total_steps, label)
-                progress_manifest["progress"] = {
-                    "current": current_step,
-                    "total": total_steps,
-                    "label": label,
-                    "pct": round(current_step * 100 / max(total_steps, 1), 2),
-                }
-                self.store.record_dataset_run(
-                    start_date=start_date,
-                    end_date=end_date,
-                    status="running",
-                    manifest=progress_manifest,
-                    run_id=run_id,
-                )
-
-            if archive_start is not None and archive_end is not None:
-                self.dataset_builder.build(
-                    start_date=start_date,
-                    end_date=end_date,
-                    candidate_limit=candidate_limit,
-                    download_minutes=False,
-                )
-                self.historical_minute_archive.backfill_candidates(
-                    candidate_dir=self.dataset_root / "candidates",
-                    start_date=archive_start,
-                    end_date=archive_end,
-                    progress_cb=report_progress,
-                )
-
-            manifest = self.dataset_builder.build(
-                start_date=start_date,
-                end_date=end_date,
-                candidate_limit=candidate_limit,
-                download_minutes=download_minutes,
-                remote_minutes_enabled=remote_minute_start_date is not None,
-                remote_minute_start_date=remote_minute_start_date,
-                fallback_minute_source=(
-                    self.historical_minute_archive.name
-                    if archive_start is not None
-                    else None
-                ),
-                fallback_minute_revision=archive_revision,
-                progress_cb=report_progress,
-            )
-            self.store.record_dataset_run(
-                start_date=start_date,
-                end_date=end_date,
-                status="succeeded",
-                manifest=manifest,
-                run_id=run_id,
-                finished=True,
-            )
-            training: dict[str, Any] = {"status": "skipped", "reason": "minute_download_disabled"}
-            if download_minutes:
-                try:
-                    training = self._train_model_locked()
-                except Exception as exc:
-                    self._last_error = str(exc)[:500]
-                    logger.exception("dataset succeeded but initial model training failed")
-                    training = {"status": "failed", "error": self._last_error}
+            self._finish_dataset_run(state, manifest)
+            training = self._train_after_dataset(download_minutes)
             return {"status": "succeeded", "manifest": manifest, "training": training}
         except Exception as exc:
             self._last_error = str(exc)[:500]
-            if run_id is not None:
-                self.store.record_dataset_run(
-                    start_date=start_date,
-                    end_date=end_date,
-                    status="failed",
-                    manifest=progress_manifest,
-                    run_id=run_id,
-                    error=self._last_error,
-                    finished=True,
-                )
+            self._fail_dataset_run(state, self._last_error)
             logger.exception("investment expert dataset bootstrap failed")
             return {"status": "failed", "error": self._last_error}
         finally:
@@ -1913,9 +2036,7 @@ class InvestmentExpertService:
     def _train_model_locked(self) -> dict[str, Any]:
         models = self.store.list_models(limit=500)
         next_version = max((model.version for model in models), default=0) + 1
-        model = ExpertModelTrainer(self.dataset_root, self.constitution).train(
-            version=next_version
-        )
+        model = ExpertModelTrainer(self.dataset_root, self.constitution).train(version=next_version)
         self.store.save_model(model)
         protected = model.metrics["protected_test"]
         validation = model.metrics["validation"]
@@ -1930,11 +2051,9 @@ class InvestmentExpertService:
         )
         if active is not None and promoted:
             active_metrics = active.metrics.get("protected_test", {})
-            promoted = (
-                protected["brier"] < float(active_metrics.get("brier", 1.0))
-                and (protected["selected_mean_net_return"] or float("-inf"))
-                >= float(active_metrics.get("selected_mean_net_return") or float("-inf"))
-            )
+            promoted = protected["brier"] < float(active_metrics.get("brier", 1.0)) and (
+                protected["selected_mean_net_return"] or float("-inf")
+            ) >= float(active_metrics.get("selected_mean_net_return") or float("-inf"))
             if not promoted:
                 reason = "active_model_did_not_improve"
         elif not promoted:
@@ -1942,6 +2061,49 @@ class InvestmentExpertService:
         if promoted:
             self.store.promote_model(model.id, reason=reason, metrics=model.metrics)
         return {"status": "promoted" if promoted else "shadow", "model": model.id, "reason": reason}
+
+    def list_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """返回最近的模拟交易会话。"""
+
+        return self.store.list_sessions(limit=limit)
+
+    def list_execution_events(
+        self,
+        *,
+        session_id: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """返回执行事件，可按会话过滤。"""
+
+        return self.store.list_execution_events(session_id=session_id, limit=limit)
+
+    def list_trade_history(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """返回带决策上下文的成交历史。"""
+
+        return self.store.list_trade_history(limit=limit)
+
+    def policy_catalog(self) -> dict[str, Any]:
+        """返回策略版本目录及当前冠军策略。"""
+
+        champion = self.store.get_champion()
+        return {
+            "champion_id": champion.id if champion else None,
+            "policies": [policy.model_dump(mode="json") for policy in self.store.list_policies()],
+        }
+
+    def model_catalog(self) -> dict[str, Any]:
+        """返回模型版本目录及当前启用模型。"""
+
+        active = self.store.get_active_model()
+        return {
+            "active_model_id": active.id if active else None,
+            "models": [model.model_dump(mode="json") for model in self.store.list_models()],
+        }
+
+    def list_experiments(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """返回最近的策略进化实验。"""
+
+        return self.store.list_experiments(limit=limit)
 
     @staticmethod
     def _position_views(
@@ -1958,17 +2120,13 @@ class InvestmentExpertService:
             remaining_shares = int(row.get("remaining_shares") or 0)
             entry_price = float(row.get("entry_price") or 0.0)
             entry_cost = float(row.get("entry_cost") or 0.0)
-            allocated_entry_cost = (
-                entry_cost * remaining_shares / shares if shares > 0 else 0.0
-            )
+            allocated_entry_cost = entry_cost * remaining_shares / shares if shares > 0 else 0.0
             cost_basis = remaining_shares * entry_price + allocated_entry_cost
             try:
                 market_price = float(last_prices[symbol])
             except (KeyError, TypeError, ValueError):
                 market_price = None
-            if market_price is not None and (
-                not math.isfinite(market_price) or market_price <= 0
-            ):
+            if market_price is not None and (not math.isfinite(market_price) or market_price <= 0):
                 market_price = None
 
             if market_price is None:
@@ -1982,24 +2140,22 @@ class InvestmentExpertService:
                 unrealized_pnl_pct = unrealized_pnl / cost_basis if cost_basis > 0 else None
                 priced_unrealized_pnl += unrealized_pnl
 
-            row.update({
-                "entry_cost": round(entry_cost, 2),
-                "cost_basis": round(cost_basis, 2),
-                "market_price": round(market_price, 4) if market_price is not None else None,
-                "market_value": round(market_value, 2) if market_value is not None else None,
-                "unrealized_pnl": (
-                    round(unrealized_pnl, 2) if unrealized_pnl is not None else None
-                ),
-                "unrealized_pnl_pct": (
-                    round(unrealized_pnl_pct, 6)
-                    if unrealized_pnl_pct is not None else None
-                ),
-            })
+            row.update(
+                {
+                    "entry_cost": round(entry_cost, 2),
+                    "cost_basis": round(cost_basis, 2),
+                    "market_price": round(market_price, 4) if market_price is not None else None,
+                    "market_value": round(market_value, 2) if market_value is not None else None,
+                    "unrealized_pnl": (
+                        round(unrealized_pnl, 2) if unrealized_pnl is not None else None
+                    ),
+                    "unrealized_pnl_pct": (
+                        round(unrealized_pnl_pct, 6) if unrealized_pnl_pct is not None else None
+                    ),
+                }
+            )
             rows.append(row)
-        unrealized_pnl = (
-            round(priced_unrealized_pnl, 2)
-            if unpriced_count == 0 else None
-        )
+        unrealized_pnl = round(priced_unrealized_pnl, 2) if unpriced_count == 0 else None
         return rows, unrealized_pnl, unpriced_count
 
     def status(self) -> dict[str, Any]:
@@ -2020,17 +2176,15 @@ class InvestmentExpertService:
             pending_order_count = len(executor.pending)
         else:
             cash = (
-                round(float(snapshot["cash"]), 2)
-                if snapshot else self.constitution.initial_capital
+                round(float(snapshot["cash"]), 2) if snapshot else self.constitution.initial_capital
             )
             equity = (
                 round(float(snapshot["equity"]), 2)
-                if snapshot else self.constitution.initial_capital
+                if snapshot
+                else self.constitution.initial_capital
             )
             raw_positions = list(
-                snapshot_payload.get("lots")
-                or snapshot_executor_state.get("lots")
-                or []
+                snapshot_payload.get("lots") or snapshot_executor_state.get("lots") or []
             )
             last_prices = dict(
                 snapshot_payload.get("last_prices")
@@ -2050,13 +2204,14 @@ class InvestmentExpertService:
         )
         total_pnl = round(equity - portfolio_baseline_equity, 2)
         total_return = (
-            total_pnl / portfolio_baseline_equity
-            if portfolio_baseline_equity > 0
-            else 0.0
+            total_pnl / portfolio_baseline_equity if portfolio_baseline_equity > 0 else 0.0
         )
         valuation_as_of = (
-            snapshot.get("as_of") if snapshot
-            else self._last_processed_bar.isoformat() if self._last_processed_bar else None
+            snapshot.get("as_of")
+            if snapshot
+            else self._last_processed_bar.isoformat()
+            if self._last_processed_bar
+            else None
         )
         performance = {
             **execution_statistics,
@@ -2088,79 +2243,81 @@ class InvestmentExpertService:
                 **self._news_sentiment_context,
                 "items": list(self._news_sentiment_context.get("items") or [])[:8],
             }
-        base.update({
-            "running": bool(self._poll_thread and self._poll_thread.is_alive()),
-            "active_task": self._active_task if future is not None and not future.done() else None,
-            "last_error": self._last_error,
-            "session_id": self._session["id"] if self._session else None,
-            "candidate_count": len(self._candidates),
-            "market_symbol_count": len(self._market_symbols),
-            "cash": cash,
-            "equity": equity,
-            "positions": positions,
-            "performance": performance,
-            "portfolio_baseline_equity": round(portfolio_baseline_equity, 2),
-            "portfolio_sync": (
-                {
-                    "id": latest_portfolio_sync["id"],
-                    "source": latest_portfolio_sync["source"],
-                    "mode": latest_portfolio_sync["mode"],
-                    "created_at": latest_portfolio_sync["created_at"],
-                    "source_updated_at": (
-                        latest_portfolio_sync.get("payload") or {}
-                    ).get("source_updated_at"),
-                    "position_count": int(
-                        (latest_portfolio_sync.get("payload") or {}).get(
-                            "position_count",
-                            0,
-                        )
-                    ),
-                    "cash": round(float(latest_portfolio_sync["cash"]), 2),
-                    "equity": round(float(latest_portfolio_sync["equity"]), 2),
-                }
-                if latest_portfolio_sync is not None
-                else None
-            ),
-            "pending_order_count": pending_order_count,
-            "entries_enabled": bool(
-                self._runtime is None or self._runtime.entries_enabled
-            ),
-            "risk_trip_reason": self._risk_trip_reason,
-            "overnight_us_market": self._overnight_us_context,
-            "news_sentiment": news_sentiment,
-            "session_prepare_error": self._prepare_failure_reason,
-            "minute_capable": bool(
-                self.capset is None or self.capset.has(Cap.KLINE_MINUTE_BATCH)
-            ),
-            "live_minute_source": getattr(self.minute_provider, "name", "unknown"),
-            "historical_minute_source": getattr(
-                self.historical_minute_provider,
-                "name",
-                "unknown",
-            ),
-            "historical_minute_error": self._historical_minute_provider_error,
-            "historical_minute_capable": historical_capable,
-            "historical_minute_max_years": max_history_years,
-            "historical_minute_remote_three_year_capable": remote_three_year_capable,
-            "historical_minute_archive_fallback_capable": archive_fallback_capable,
-            "historical_minute_archive_fallback_source": getattr(
-                self.historical_minute_archive,
-                "name",
-                None,
-            ),
-            "historical_minute_local_coverage": {
-                asset_type: {
-                    "start": start.isoformat() if start else None,
-                    "end": end.isoformat() if end else None,
-                }
-                for asset_type, (start, end) in local_minute_bounds.items()
-            },
-            "historical_minute_three_year_capable": three_year_capable,
-            "historical_minute_three_year_error": three_year_error,
-            "live_minute_mode": (
-                "intraday_batch"
-                if self.capset is not None and self.capset.has(Cap.INTRADAY_BATCH)
-                else "historical_batch_fallback"
-            ),
-        })
+        base.update(
+            {
+                "running": bool(self._poll_thread and self._poll_thread.is_alive()),
+                "active_task": self._active_task
+                if future is not None and not future.done()
+                else None,
+                "last_error": self._last_error,
+                "session_id": self._session["id"] if self._session else None,
+                "candidate_count": len(self._candidates),
+                "market_symbol_count": len(self._market_symbols),
+                "cash": cash,
+                "equity": equity,
+                "positions": positions,
+                "performance": performance,
+                "portfolio_baseline_equity": round(portfolio_baseline_equity, 2),
+                "portfolio_sync": (
+                    {
+                        "id": latest_portfolio_sync["id"],
+                        "source": latest_portfolio_sync["source"],
+                        "mode": latest_portfolio_sync["mode"],
+                        "created_at": latest_portfolio_sync["created_at"],
+                        "source_updated_at": (latest_portfolio_sync.get("payload") or {}).get(
+                            "source_updated_at"
+                        ),
+                        "position_count": int(
+                            (latest_portfolio_sync.get("payload") or {}).get(
+                                "position_count",
+                                0,
+                            )
+                        ),
+                        "cash": round(float(latest_portfolio_sync["cash"]), 2),
+                        "equity": round(float(latest_portfolio_sync["equity"]), 2),
+                    }
+                    if latest_portfolio_sync is not None
+                    else None
+                ),
+                "pending_order_count": pending_order_count,
+                "entries_enabled": bool(self._runtime is None or self._runtime.entries_enabled),
+                "risk_trip_reason": self._risk_trip_reason,
+                "overnight_us_market": self._overnight_us_context,
+                "news_sentiment": news_sentiment,
+                "session_prepare_error": self._prepare_failure_reason,
+                "minute_capable": bool(
+                    self.capset is None or self.capset.has(Cap.KLINE_MINUTE_BATCH)
+                ),
+                "live_minute_source": getattr(self.minute_provider, "name", "unknown"),
+                "historical_minute_source": getattr(
+                    self.historical_minute_provider,
+                    "name",
+                    "unknown",
+                ),
+                "historical_minute_error": self._historical_minute_provider_error,
+                "historical_minute_capable": historical_capable,
+                "historical_minute_max_years": max_history_years,
+                "historical_minute_remote_three_year_capable": remote_three_year_capable,
+                "historical_minute_archive_fallback_capable": archive_fallback_capable,
+                "historical_minute_archive_fallback_source": getattr(
+                    self.historical_minute_archive,
+                    "name",
+                    None,
+                ),
+                "historical_minute_local_coverage": {
+                    asset_type: {
+                        "start": start.isoformat() if start else None,
+                        "end": end.isoformat() if end else None,
+                    }
+                    for asset_type, (start, end) in local_minute_bounds.items()
+                },
+                "historical_minute_three_year_capable": three_year_capable,
+                "historical_minute_three_year_error": three_year_error,
+                "live_minute_mode": (
+                    "intraday_batch"
+                    if self.capset is not None and self.capset.has(Cap.INTRADAY_BATCH)
+                    else "historical_batch_fallback"
+                ),
+            }
+        )
         return base

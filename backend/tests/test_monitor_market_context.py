@@ -54,10 +54,12 @@ def test_build_overnight_us_context_rejects_stale_session() -> None:
 class _Repo:
     @staticmethod
     def get_instruments() -> pl.DataFrame:
-        return pl.DataFrame({
-            "symbol": ["300750.SZ"],
-            "name": ["宁德时代"],
-        })
+        return pl.DataFrame(
+            {
+                "symbol": ["300750.SZ"],
+                "name": ["宁德时代"],
+            }
+        )
 
 
 class _UsMarket:
@@ -80,12 +82,14 @@ class _News:
             "status": "live",
             "as_of": as_of.isoformat(),
             "score": 1.0,
-            "items": [{
-                "title": "宁德时代获批重大项目",
-                "snippet": "",
-                "sentiment": 1.0,
-                "recency_weight": 1.0,
-            }],
+            "items": [
+                {
+                    "title": "宁德时代获批重大项目",
+                    "snippet": "",
+                    "sentiment": 1.0,
+                    "recency_weight": 1.0,
+                }
+            ],
         }
 
 
@@ -95,7 +99,7 @@ def test_snapshot_for_scores_news_without_refreshing_network() -> None:
     service = MonitorMarketContextService(
         _Repo(),
         us_market,
-        news,  # type: ignore[arg-type]
+        news,
     )
     service.refresh_once(datetime(2026, 8, 21, 9, 15, tzinfo=CN_TZ))
 

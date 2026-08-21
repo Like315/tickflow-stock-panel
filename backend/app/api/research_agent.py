@@ -1,4 +1,5 @@
 """AI 研究 Agent HTTP API。"""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request

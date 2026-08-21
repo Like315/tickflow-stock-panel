@@ -12,12 +12,13 @@
   - 字段白名单复用 custom_signals.ALLOWED_FIELDS (阈值条件) + 信号列清单 (布尔条件)
   - id 正则与 custom_signals 一致,保证可纳入同一索引体系
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.strategy.custom_signals import ALLOWED_FIELDS
@@ -149,16 +150,13 @@ def validate(rule: dict) -> None:
         if news_mode not in NEWS_CONTEXT_MODES:
             raise ValueError(f"news.mode 必须是 {NEWS_CONTEXT_MODES} 之一")
         if context_filters.get("unavailable_action", "degrade") not in CONTEXT_UNAVAILABLE_ACTIONS:
-            raise ValueError(
-                f"unavailable_action 必须是 {CONTEXT_UNAVAILABLE_ACTIONS} 之一"
-            )
+            raise ValueError(f"unavailable_action 必须是 {CONTEXT_UNAVAILABLE_ACTIONS} 之一")
         for label, item in (("overnight_us", overnight), ("news", news)):
             threshold = item.get("threshold")
             if not isinstance(threshold, (int, float)) or not -1 <= threshold <= 1:
                 raise ValueError(f"{label}.threshold 必须在 -1 到 1 之间")
-        if (
-            rule.get("asset_type", "stock") != "stock"
-            and (overnight_mode != "off" or news_mode != "off")
+        if rule.get("asset_type", "stock") != "stock" and (
+            overnight_mode != "off" or news_mode != "off"
         ):
             raise ValueError("市场增强条件首版仅支持股票策略监控")
     elif rule.get("type") == "ladder":
@@ -166,7 +164,9 @@ def validate(rule: dict) -> None:
         if rule.get("metric", "sealed_vol") not in LADDER_METRICS:
             raise ValueError(f"metric 必须是 {LADDER_METRICS} 之一")
         if rule.get("direction", "up") not in LADDER_DIRECTIONS:
-            raise ValueError(f"direction 必须是 {LADDER_DIRECTIONS} 之一 (up=涨停炸板, down=跌停翘板)")
+            raise ValueError(
+                f"direction 必须是 {LADDER_DIRECTIONS} 之一 (up=涨停炸板, down=跌停翘板)"
+            )
         thr = rule.get("threshold")
         if not isinstance(thr, (int, float)) or thr < 0:
             raise ValueError("threshold 必须是非负数字 (封单 ≤ 此值时报警)")
@@ -191,7 +191,10 @@ def validate(rule: dict) -> None:
         threshold_pct = rule.get("threshold_pct")
         if not isinstance(threshold_pct, (int, float)) or not 0 < threshold_pct <= 20:
             raise ValueError("板块监控阈值必须大于 0 且不超过 20%")
-        if rule.get("sector_trigger") == "momentum" and rule.get("window_minutes") not in SECTOR_WINDOWS:
+        if (
+            rule.get("sector_trigger") == "momentum"
+            and rule.get("window_minutes") not in SECTOR_WINDOWS
+        ):
             raise ValueError(f"板块异动窗口必须是 {sorted(SECTOR_WINDOWS)} 分钟之一")
     else:
         # 信号/价格/市场类型: 需要 conditions
@@ -204,21 +207,23 @@ def validate(rule: dict) -> None:
             raise ValueError(f"logic 必须是 {LOGICS} 之一")
         for i, c in enumerate(conds):
             if not isinstance(c, dict):
-                raise ValueError(f"第 {i+1} 个条件格式错误")
+                raise ValueError(f"第 {i + 1} 个条件格式错误")
             field = c.get("field", "")
             op = c.get("op", "")
             if op == "truth":
                 # 布尔信号: field 必须是 signal_/csg_ 前缀
                 if not _is_signal_field(field):
-                    raise ValueError(f"第 {i+1} 个条件: op=truth 时 field 必须是信号列 (signal_/csg_ 前缀): {field!r}")
+                    raise ValueError(
+                        f"第 {i + 1} 个条件: op=truth 时 field 必须是信号列 (signal_/csg_ 前缀): {field!r}"
+                    )
             elif op in OPS:
                 # 阈值比较: field 必须在白名单, 需要 value
                 if field not in ALLOWED_FIELDS:
-                    raise ValueError(f"第 {i+1} 个条件: 阈值字段 {field!r} 不在白名单")
+                    raise ValueError(f"第 {i + 1} 个条件: 阈值字段 {field!r} 不在白名单")
                 if not isinstance(c.get("value"), (int, float)):
-                    raise ValueError(f"第 {i+1} 个条件: value 必须是数字")
+                    raise ValueError(f"第 {i + 1} 个条件: value 必须是数字")
             else:
-                raise ValueError(f"第 {i+1} 个条件: op {op!r} 非法 (应为 truth 或 {OPS})")
+                raise ValueError(f"第 {i + 1} 个条件: op {op!r} 非法 (应为 truth 或 {OPS})")
 
     # scope 校验
     if rule.get("scope", "symbols") not in SCOPES:
@@ -233,7 +238,9 @@ def validate(rule: dict) -> None:
     # 一条本意针对某板块的规则会对全市场每只命中都触发(告警风暴)。在板块 JOIN
     # 落地前, 拒绝创建 sector 规则(fail-closed), 避免用户建出会刷屏的规则。
     if rule.get("scope") == "sector":
-        raise ValueError("scope=sector 暂未支持(板块 JOIN 未实现),请改用 scope=symbols 指定标的或 scope=all")
+        raise ValueError(
+            "scope=sector 暂未支持(板块 JOIN 未实现),请改用 scope=symbols 指定标的或 scope=all"
+        )
 
     # 其余枚举
     if rule.get("severity", "info") not in SEVERITIES:
@@ -309,7 +316,7 @@ def normalize(rule: dict) -> dict:
     else:
         # 防御性过滤, 只保留合法渠道
         r["webhook_channels"] = [c for c in r["webhook_channels"] if c in ("feishu", "wecom")]
-    r.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    r.setdefault("created_at", datetime.now(UTC).isoformat())
     return r
 
 
@@ -322,7 +329,9 @@ def strategy_rule_id(strategy_id: str) -> str:
     return f"{STRATEGY_RULE_PREFIX}{strategy_id}"
 
 
-def migrate_strategy_monitors(data_dir: Path, strategy_ids: list[str], strategy_names: dict[str, str]) -> list[dict]:
+def migrate_strategy_monitors(
+    data_dir: Path, strategy_ids: list[str], strategy_names: dict[str, str]
+) -> list[dict]:
     """把 preferences.strategy_monitor_ids 里的策略,同步生成/更新 type=strategy 规则。
 
     幂等: 已存在的策略规则会被更新 (方向/名称),不会重复创建。
@@ -342,7 +351,7 @@ def migrate_strategy_monitors(data_dir: Path, strategy_ids: list[str], strategy_
     for r in existing:
         rid = r.get("id", "")
         if rid.startswith(STRATEGY_RULE_PREFIX):
-            sid = rid[len(STRATEGY_RULE_PREFIX):]
+            sid = rid[len(STRATEGY_RULE_PREFIX) :]
             if sid:
                 existing_strategy_rules[sid] = r
 
@@ -353,18 +362,20 @@ def migrate_strategy_monitors(data_dir: Path, strategy_ids: list[str], strategy_
         name = strategy_names.get(sid, sid)
         rule = existing_strategy_rules.get(sid)
         if rule is None:
-            rule = normalize({
-                "id": rule_id,
-                "name": f"策略监控 · {name}",
-                "type": "strategy",
-                "scope": "all",
-                "strategy_id": sid,
-                "direction": "entry",
-                "notify_events": ["pool_entry", "pool_exit"],
-                "conditions": [],
-                "cooldown_seconds": 3600,
-                "enabled": True,
-            })
+            rule = normalize(
+                {
+                    "id": rule_id,
+                    "name": f"策略监控 · {name}",
+                    "type": "strategy",
+                    "scope": "all",
+                    "strategy_id": sid,
+                    "direction": "entry",
+                    "notify_events": ["pool_entry", "pool_exit"],
+                    "conditions": [],
+                    "cooldown_seconds": 3600,
+                    "enabled": True,
+                }
+            )
         else:
             rule = dict(rule)
             rule["enabled"] = True

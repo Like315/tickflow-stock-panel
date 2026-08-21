@@ -59,20 +59,22 @@ def test_all_builtin_matrix_formulas_accept_base_market_matrix():
     start = date(2024, 1, 1)
     for offset in range(80):
         close = 10.0 + offset * 0.04
-        rows.append({
-            "symbol": "000001.SZ",
-            "name": "测试股票",
-            "date": start + timedelta(days=offset),
-            "open": close - 0.05,
-            "high": close + 0.15,
-            "low": close - 0.15,
-            "close": close,
-            "volume": 1000.0 + offset * 5.0,
-            "amount": 100000.0,
-            "raw_close": close,
-            "turnover_rate": 5.0,
-            "consecutive_limit_ups": 0,
-        })
+        rows.append(
+            {
+                "symbol": "000001.SZ",
+                "name": "测试股票",
+                "date": start + timedelta(days=offset),
+                "open": close - 0.05,
+                "high": close + 0.15,
+                "low": close - 0.15,
+                "close": close,
+                "volume": 1000.0 + offset * 5.0,
+                "amount": 100000.0,
+                "raw_close": close,
+                "turnover_rate": 5.0,
+                "consecutive_limit_ups": 0,
+            }
+        )
     panel = pl.DataFrame(rows)
     engine = _engine()
     from app.backtest.matrix import build_market_data_matrix
@@ -96,10 +98,17 @@ def test_limit_up_strategies_are_stock_only():
 def test_pure_technical_strategies_support_etf():
     engine = _engine()
     for sid in (
-        "trend_breakout", "ma_golden_cross", "macd_golden",
-        "volume_price_surge", "low_volatility_leader", "oversold_bounce",
-        "boll_breakout", "bullish_alignment", "pullback_to_support",
-        "n_day_low_reversal", "volume_dry_breakout",
+        "trend_breakout",
+        "ma_golden_cross",
+        "macd_golden",
+        "volume_price_surge",
+        "low_volatility_leader",
+        "oversold_bounce",
+        "boll_breakout",
+        "bullish_alignment",
+        "pullback_to_support",
+        "n_day_low_reversal",
+        "volume_dry_breakout",
     ):
         assert "etf" in engine.get(sid).meta["asset_types"], sid
 
@@ -107,9 +116,9 @@ def test_pure_technical_strategies_support_etf():
 def test_custom_strategy_defaults_to_stock_and_daily(tmp_path):
     path = tmp_path / "custom_default.py"
     path.write_text(
-        'import polars as pl\n'
+        "import polars as pl\n"
         'META = {"id": "custom_default", "name": "x"}\n'
-        'def filter(df, params):\n    return pl.lit(True)\n',
+        "def filter(df, params):\n    return pl.lit(True)\n",
         encoding="utf-8",
     )
     strategy = StrategyEngine._load_file(path)
@@ -135,20 +144,30 @@ def test_etf_strategy_runs_through_engine_context(tmp_path):
         trade_date = date(2025, 11, 3) + timedelta(days=offset)
         leader_close = 3.0 + offset / 60.0
         weak_close = 3.0 - offset / 60.0
-        rows.extend([
-            {
-                "symbol": "510300", "name": "沪深300ETF", "date": trade_date,
-                "open": leader_close - 0.01, "high": leader_close + 0.01,
-                "low": leader_close - 0.02, "close": leader_close,
-                "volume": 300.0 if offset == 60 else 100.0,
-            },
-            {
-                "symbol": "159915", "name": "创业板ETF", "date": trade_date,
-                "open": weak_close + 0.01, "high": weak_close + 0.02,
-                "low": weak_close - 0.01, "close": weak_close,
-                "volume": 50.0 if offset == 60 else 100.0,
-            },
-        ])
+        rows.extend(
+            [
+                {
+                    "symbol": "510300",
+                    "name": "沪深300ETF",
+                    "date": trade_date,
+                    "open": leader_close - 0.01,
+                    "high": leader_close + 0.01,
+                    "low": leader_close - 0.02,
+                    "close": leader_close,
+                    "volume": 300.0 if offset == 60 else 100.0,
+                },
+                {
+                    "symbol": "159915",
+                    "name": "创业板ETF",
+                    "date": trade_date,
+                    "open": weak_close + 0.01,
+                    "high": weak_close + 0.02,
+                    "low": weak_close - 0.01,
+                    "close": weak_close,
+                    "volume": 50.0 if offset == 60 else 100.0,
+                },
+            ]
+        )
     history = pl.DataFrame(rows)
     target_date = history["date"].max()
     current = history.filter(pl.col("date") == target_date)

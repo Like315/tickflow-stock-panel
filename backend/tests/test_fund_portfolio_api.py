@@ -59,7 +59,9 @@ class FakeMarketResearchService:
         return {
             "scope": "fund_market",
             "as_of": "2026-08-12",
-            "funds": [{"code": codes[0] if codes else "110020", "recommendation": {"tier": "观望"}}],
+            "funds": [
+                {"code": codes[0] if codes else "110020", "recommendation": {"tier": "观望"}}
+            ],
             "data_gaps": [],
         }
 

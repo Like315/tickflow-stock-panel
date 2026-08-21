@@ -6,7 +6,7 @@
  *  - 摘要数据:GET /api/overview/market
  *  - 报告流式:POST /api/market-recap/analyze
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -102,12 +102,18 @@ export function Review() {
   // ===== 定时复盘 =====
   const [showSchedule, setShowSchedule] = useState(false)
   const prefs = usePreferences()
-  const reviewSched = prefs.data?.review_schedule ?? { enabled: false, hour: 15, minute: 10 }
+  const reviewSched = useMemo(
+    () => prefs.data?.review_schedule ?? { enabled: false, hour: 15, minute: 10 },
+    [prefs.data?.review_schedule],
+  )
   const feishuConfigured = !!(prefs.data?.feishu_webhook_url)
   const wecomConfigured = !!(prefs.data?.wecom_webhook_url)
   // 推送渠道是独立的顶层偏好(多选), 与定时 / 实时行情无关, 常驻可单独设置
   // []=不推送, ['feishu']=飞书, ['wecom']=企业微信
-  const reviewPushChannels = prefs.data?.review_push_channels ?? []
+  const reviewPushChannels = useMemo(
+    () => prefs.data?.review_push_channels ?? [],
+    [prefs.data?.review_push_channels],
+  )
   // 弹窗内的本地草稿: 开关和时间都在本地改, 点「保存」才真正提交(避免开关一拨就关弹窗)
   const [draft, setDraft] = useState(reviewSched)
   const openSchedule = useCallback(() => {

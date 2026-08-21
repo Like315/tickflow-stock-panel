@@ -12,6 +12,19 @@ type RequestOptions = RequestInit & {
   quiet?: boolean
 }
 
+/** 后端返回的动态对象，具体字段应由调用方在领域类型中继续收窄。 */
+export type ApiRecord = Record<string, unknown>
+
+/** 策略参数支持的基础值类型。 */
+export type StrategyParamValue = string | number | boolean
+
+/** 从 FastAPI 校验错误项中提取可读消息。 */
+function validationErrorMessage(error: unknown): string {
+  if (typeof error !== 'object' || error === null || !('msg' in error)) return String(error)
+  const message = (error as { msg?: unknown }).msg
+  return typeof message === 'string' ? message : String(error)
+}
+
 async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   const { quiet, ...fetchInit } = init ?? {}
   const isFormData = fetchInit.body instanceof FormData
@@ -27,7 +40,7 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
       const raw = j.detail ?? j.message ?? ''
       if (Array.isArray(raw)) {
         // FastAPI 422 校验错误: [{type, loc, msg, input}, ...] → 取 msg 拼接
-        detail = raw.map((e: any) => e?.msg || String(e)).join('; ')
+        detail = raw.map(validationErrorMessage).join('; ')
       } else if (typeof raw === 'string') {
         detail = raw
       } else if (raw && typeof raw === 'object') {
@@ -95,7 +108,7 @@ export interface FinancialMetricRecord {
   net_income_yoy?: number | null
   operating_cash_to_revenue?: number | null
   inventory_turnover?: number | null
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface FinancialIncomeRecord {
@@ -110,7 +123,7 @@ export interface FinancialIncomeRecord {
   net_income_attributable?: number | null
   basic_eps?: number | null
   diluted_eps?: number | null
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface FinancialBalanceSheetRecord {
@@ -123,7 +136,7 @@ export interface FinancialBalanceSheetRecord {
   total_liabilities?: number | null
   total_equity?: number | null
   equity_attributable?: number | null
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface FinancialCashFlowRecord {
@@ -135,7 +148,7 @@ export interface FinancialCashFlowRecord {
   net_financing_cash_flow?: number | null
   capex?: number | null
   net_cash_change?: number | null
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface FinancialSharesRecord {
@@ -144,7 +157,7 @@ export interface FinancialSharesRecord {
   announce_date?: string | null
   total_shares?: number | null
   float_shares?: number | null
-  [key: string]: any
+  [key: string]: unknown
 }
 
 /** AI 财务分析历史报告 */
@@ -238,7 +251,10 @@ export interface KlineRow {
   macd_hist?: number | null
   rsi_14?: number | null
   vol_ratio_5d?: number | null
-  [key: string]: any
+  consecutive_limit_ups?: number | null
+  signal_broken_limit_up?: boolean
+  signal_limit_up?: boolean
+  [key: string]: unknown
 }
 
 // ===== Watchlist =====
@@ -271,7 +287,7 @@ export interface Quote {
   pct?: number
   close?: number
   change_pct?: number
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface IndexInstrument {
@@ -279,7 +295,7 @@ export interface IndexInstrument {
   name?: string | null
   code?: string | null
   asset_type?: 'index'
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface IndexQuote {
@@ -296,7 +312,7 @@ export interface IndexQuote {
   volume?: number | null
   amount?: number | null
   timestamp?: number | null
-  [key: string]: any
+  [key: string]: unknown
 }
 
 // ===== Screener =====
@@ -312,10 +328,32 @@ export interface StrategyLoadError {
   error: string
 }
 
+/** 筛选、自选和扩展数据表共用的动态行情行。 */
+export interface ScreenerRow {
+  symbol: string
+  name?: string | null
+  asset_type?: 'stock' | 'etf' | 'index'
+  close?: number | null
+  prev_close?: number | null
+  change_pct?: number | null
+  amount?: number | null
+  rt_price?: number | null
+  rt_pct?: number | null
+  rt_name?: string | null
+  rt_amount?: number | null
+  turnover_rate?: number | null
+  vol_ratio_5d?: number | null
+  rsi_14?: number | null
+  consecutive_limit_ups?: number | null
+  score?: number | null
+  _expired?: boolean
+  [key: string]: unknown
+}
+
 export interface ScreenerResult {
   as_of: string
   strategy: string | null
-  rows: any[]
+  rows: ScreenerRow[]
   total: number
   elapsed_ms: number
 }
@@ -334,7 +372,7 @@ export interface ScreenerCachedSummary {
 
 export interface ScreenerCachedResult {
   result: ScreenerResult | null
-  today_ever_rows: Record<string, any> | null
+  today_ever_rows: Record<string, ScreenerRow> | null
   strategy_ids_by_symbol: Record<string, string[]>
   updated_at: number | null
 }
@@ -353,7 +391,7 @@ export interface MarketSnapshotRow {
   market_cap?: number | null
   float_market_cap?: number | null
   consecutive_limit_ups?: number | null
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface OverviewDimensionRankItem {
@@ -377,7 +415,8 @@ export interface OverviewMarket {
     running?: boolean
     quote_age_ms?: number | null
     is_trading_hours?: boolean
-    [key: string]: any
+    watchlist_symbol_count?: number
+    [key: string]: unknown
   }
   indices: IndexQuote[]
   breadth: {
@@ -588,9 +627,9 @@ export interface StrategyDetail {
   asset_types: string[]
   timeframes: string[]
   version: string
-  basic_filter: Record<string, any>
+  basic_filter: ApiRecord
   params: StrategyParamDef[]
-  params_defaults: Record<string, any>
+  params_defaults: Record<string, StrategyParamValue>
   scoring: Record<string, number>
   entry_signals: string[]
   exit_signals: string[]
@@ -612,7 +651,7 @@ export interface StrategyDetail {
 
 export interface StrategyBuildResult {
   code: string
-  meta: Record<string, any>
+  meta: ApiRecord
   valid: boolean
   error: string | null
 }
@@ -628,7 +667,7 @@ export interface StrategyCodeSaveResult {
   strategy_id: string
   source: 'ai' | 'custom' | 'composite'
   path: string
-  meta: Record<string, any>
+  meta: ApiRecord
 }
 
 // ===== Custom Signals (自定义信号) =====
@@ -839,10 +878,10 @@ export interface LimitLadderResult {
 // ===== Backtest =====
 export interface BacktestResult {
   run_id: string
-  config: any
-  stats: Record<string, any>
+  config: ApiRecord
+  stats: ApiRecord
   equity_curve: { date: string; value: number }[]
-  trades: any[]
+  trades: ApiRecord[]
   per_symbol_stats: { symbol: string; total_return: number }[]
 }
 
@@ -866,15 +905,21 @@ export interface GroupStat {
 
 export interface FactorBacktestResult {
   run_id: string
-  config: Record<string, any>
+  config: ApiRecord
   ic_mean: number | null
   ic_std: number | null
   ir: number | null
   ic_win_rate: number | null
   ic_series: { date: string; ic: number }[]
   group_stats: GroupStat[]
-  group_nav: Record<string, any>[]
-  long_short_stats: Record<string, any>
+  group_nav: Array<ApiRecord & { date: string }>
+  long_short_stats: {
+    total_return?: number | null
+    max_drawdown?: number | null
+    top_group?: number | string | null
+    bottom_group?: number | string | null
+    [key: string]: unknown
+  }
   long_short_nav: { date: string; value: number }[]
   elapsed_ms: number
   n_symbols: number
@@ -909,8 +954,37 @@ export interface StrategyBacktestTrade {
 
 export interface StrategyBacktestResult {
   run_id: string
-  config: Record<string, any>
-  stats: Record<string, any>
+  config: {
+    start?: string | null
+    end?: string | null
+    holding_days?: number | null
+    [key: string]: unknown
+  }
+  stats: {
+    mode?: string
+    full_kind?: string
+    execution_backend?: string
+    error?: string | null
+    avg_return?: number | null
+    median_return?: number | null
+    win_rate?: number | null
+    profit_factor?: number | null
+    excess?: number | null
+    sharpe?: number | null
+    max_drawdown?: number | null
+    total_return?: number | null
+    n_candidates?: number | null
+    n_days?: number | null
+    avg_daily_candidates?: number | null
+    best?: number | null
+    worst?: number | null
+    benchmark_return?: number | null
+    n_trades?: number | null
+    selection?: Record<string, number | boolean>
+    execution?: Record<string, number>
+    return_distribution?: Array<{ range: string; count: number; ratio: number }>
+    [key: string]: unknown
+  }
   equity_curve: { date: string; value: number; cash?: number; positions?: number; exposure?: number }[]
   drawdown_curve: { date: string; value: number }[]
   benchmark_curve?: { date: string; value: number; close?: number; name?: string; symbol?: string }[]
@@ -1742,8 +1816,9 @@ export interface InvestmentExpertPortfolioSyncPosition {
 
 export interface InvestmentExpertPortfolioSyncPreview {
   can_sync: boolean
-  blocked_reason?: string | null
-  source?: string
+  blocked_reason?: 'runtime_running' | 'background_task_running' | 'source_portfolio_empty'
+    | 'invalid_source_positions' | 'stock_portfolio_service_unavailable' | null
+  source?: 'stock_portfolio' | null
   source_updated_at?: string | null
   positions: InvestmentExpertPortfolioSyncPosition[]
   position_count?: number
@@ -1756,11 +1831,11 @@ export interface InvestmentExpertPortfolioSyncPreview {
 }
 
 export interface InvestmentExpertPortfolioSyncResult {
-  status: string
+  status: 'succeeded'
   sync: {
     id: string
-    source: string
-    mode: string
+    source: 'stock_portfolio'
+    mode: 'replace'
     created_at: string
     position_count: number
     cash: number
@@ -2126,7 +2201,7 @@ export const api = {
       body: JSON.stringify({ api_key }),
     }),
   clearTickflowKey: () =>
-    request<any>('/api/settings/tickflow-key', { method: 'DELETE' }),
+    request<SaveTickflowKeyResult>('/api/settings/tickflow-key', { method: 'DELETE' }),
 
   /** 标记首次使用向导完成（持久化到后端 preferences） */
   completeOnboarding: () =>
@@ -2391,19 +2466,19 @@ export const api = {
     }),
 
   // 自选列表列配置
-  watchlistColumns: () =>
-    request<{ columns: any[] | null }>('/api/settings/preferences/watchlist-columns'),
-  updateWatchlistColumns: (columns: any[]) =>
-    request<{ columns: any[] }>('/api/settings/preferences/watchlist-columns', {
+  watchlistColumns: <T>() =>
+    request<{ columns: T[] | null }>('/api/settings/preferences/watchlist-columns'),
+  updateWatchlistColumns: <T>(columns: T[]) =>
+    request<{ columns: T[] }>('/api/settings/preferences/watchlist-columns', {
       method: 'PUT',
       body: JSON.stringify({ columns }),
     }),
 
   // 策略结果列表列配置
-  screenerResultColumns: () =>
-    request<{ columns: any[] | null }>('/api/settings/preferences/screener-result-columns'),
-  updateScreenerResultColumns: (columns: any[]) =>
-    request<{ columns: any[] }>('/api/settings/preferences/screener-result-columns', {
+  screenerResultColumns: <T>() =>
+    request<{ columns: T[] | null }>('/api/settings/preferences/screener-result-columns'),
+  updateScreenerResultColumns: <T>(columns: T[]) =>
+    request<{ columns: T[] }>('/api/settings/preferences/screener-result-columns', {
       method: 'PUT',
       body: JSON.stringify({ columns }),
     }),
@@ -2567,7 +2642,7 @@ export const api = {
     request<{ removed: number }>('/api/watchlist', { method: 'DELETE' }),
   watchlistQuotes: () => request<{ quotes: Quote[] }>('/api/watchlist/quotes'),
   watchlistEnriched: (extColumns?: string) =>
-    request<{ rows: any[]; as_of: string | null; elapsed_ms: number }>(
+    request<{ rows: ScreenerRow[]; as_of: string | null; elapsed_ms: number }>(
       extColumns
         ? `/api/watchlist/enriched?ext_columns=${encodeURIComponent(extColumns)}`
         : '/api/watchlist/enriched',
@@ -2602,7 +2677,7 @@ export const api = {
         : `/api/screener/cached-result/${encodeURIComponent(strategyId)}`,
     ),
   screenerCached: (extColumns?: string) =>
-    request<{ as_of: string | null; results: Record<string, { total: number; as_of: string; rows: any[] }>; today_ever_matched: Record<string, string[]> | null; today_ever_rows: Record<string, Record<string, any>> | null; updated_at: number | null }>(
+    request<{ as_of: string | null; results: Record<string, { total: number; as_of: string; rows: ScreenerRow[] }>; today_ever_matched: Record<string, string[]> | null; today_ever_rows: Record<string, Record<string, ScreenerRow>> | null; updated_at: number | null }>(
       extColumns
         ? `/api/screener/cached?ext_columns=${encodeURIComponent(extColumns)}`
         : '/api/screener/cached',
@@ -2695,8 +2770,8 @@ export const api = {
     symbols?: string[] | null
     start?: string | null
     end?: string | null
-    params?: Record<string, any> | null
-    overrides?: Record<string, any> | null
+    params?: Record<string, StrategyParamValue> | null
+    overrides?: ApiRecord | null
     matching?: 'close_t' | 'open_t+1'
     entry_fill?: 'close_t' | 'open_t+1' | null
     exit_fill?: 'close_t' | 'open_t+1' | 'signal_next_minute' | null
@@ -3180,7 +3255,7 @@ export const api = {
   strategyGet: (id: string) =>
     request<StrategyDetail>(`/api/strategies/${id}`),
 
-  strategyRun: (strategyId: string, params?: Record<string, any>, asOf?: string, pool?: string[]) =>
+  strategyRun: (strategyId: string, params?: Record<string, StrategyParamValue>, asOf?: string, pool?: string[]) =>
     request<ScreenerResult>('/api/strategies/run', {
       method: 'POST',
       body: JSON.stringify({ strategy_id: strategyId, params, as_of: asOf ?? null, pool }),
@@ -3192,7 +3267,7 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ as_of: asOf ?? null }) },
     ),
 
-  strategySaveConfig: (strategyId: string, overrides: Record<string, any>) =>
+  strategySaveConfig: (strategyId: string, overrides: ApiRecord) =>
     request<{ ok: boolean }>('/api/strategies/config', {
       method: 'POST',
       body: JSON.stringify({ strategy_id: strategyId, overrides }),
@@ -3309,13 +3384,13 @@ export const api = {
   /** 获取策略源文件内容 */
   strategyGetSource: (id: string) =>
     request<{ code: string; source: string }>(`/api/strategies/${id}/source`),
-  strategyBuild: (step: number, payload: Record<string, any>) =>
+  strategyBuild: (step: number, payload: ApiRecord) =>
     request<StrategyBuildResult>(
       '/api/strategies/build',
       { method: 'POST', body: JSON.stringify({ step, ...payload }) },
     ),
 
-  async *strategyBuildStream(step: number, payload: Record<string, any>): AsyncGenerator<StrategyBuildStreamEvent> {
+  async *strategyBuildStream(step: number, payload: ApiRecord): AsyncGenerator<StrategyBuildStreamEvent> {
     const res = await fetch('/api/strategies/build/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3590,7 +3665,7 @@ export interface ExtDataRowsResult {
   total: number
   limit: number
   fields: ExtDataField[]
-  rows: Record<string, any>[]
+  rows: ApiRecord[]
 }
 
 export interface DimensionMembersResult {
@@ -3601,7 +3676,7 @@ export interface DimensionMembersResult {
   value: string
   total: number
   limit: number
-  rows: Record<string, any>[]
+  rows: ApiRecord[]
 }
 
 export interface AnalysisColumn {

@@ -60,9 +60,34 @@ def _snapshot(
     }
 
 
-STRONG = _snapshot("005827", "易方达蓝筹精选混合", performance={"1m": 3.0, "3m": 6.0, "6m": 12.0, "1y": 20.0}, volatility=20.0, max_drawdown=-10.0, positive_ratio=56.0, trend="up")
-WEAK = _snapshot("161725", "招商中证白酒指数A", performance={"1m": -2.0, "3m": -6.0, "6m": -10.0, "1y": -5.0}, volatility=28.0, max_drawdown=-22.0, positive_ratio=42.0, trend="down")
-DEFAULT = _snapshot("110020", "易方达沪深300ETF联接A", performance={"1m": 0.5, "3m": 1.0, "6m": 2.0, "1y": 4.0}, volatility=15.0, max_drawdown=-8.0, positive_ratio=52.0, trend="up", category="宽基指数")
+STRONG = _snapshot(
+    "005827",
+    "易方达蓝筹精选混合",
+    performance={"1m": 3.0, "3m": 6.0, "6m": 12.0, "1y": 20.0},
+    volatility=20.0,
+    max_drawdown=-10.0,
+    positive_ratio=56.0,
+    trend="up",
+)
+WEAK = _snapshot(
+    "161725",
+    "招商中证白酒指数A",
+    performance={"1m": -2.0, "3m": -6.0, "6m": -10.0, "1y": -5.0},
+    volatility=28.0,
+    max_drawdown=-22.0,
+    positive_ratio=42.0,
+    trend="down",
+)
+DEFAULT = _snapshot(
+    "110020",
+    "易方达沪深300ETF联接A",
+    performance={"1m": 0.5, "3m": 1.0, "6m": 2.0, "1y": 4.0},
+    volatility=15.0,
+    max_drawdown=-8.0,
+    positive_ratio=52.0,
+    trend="up",
+    category="宽基指数",
+)
 
 
 class FakeMarketProvider:
@@ -99,7 +124,9 @@ def _full_provider() -> FakeMarketProvider:
         elif item["code"] == "161725":
             snapshots[item["code"]] = WEAK
         else:
-            snapshots[item["code"]] = dict(DEFAULT, code=item["code"], name=item["name"], _category=item["category"])
+            snapshots[item["code"]] = dict(
+                DEFAULT, code=item["code"], name=item["name"], _category=item["category"]
+            )
     return FakeMarketProvider(snapshots)
 
 
@@ -108,7 +135,12 @@ def test_market_regime_labels() -> None:
     assert _market_regime([up])["regime"] == "上行"
     down = {"symbol": "000300.SH", "trend": "下行", "return_20d_pct": -3.0, "as_of": "2026-08-12"}
     assert _market_regime([down])["regime"] == "下行"
-    mixed = {"symbol": "000300.SH", "trend": "震荡或方向不明", "return_20d_pct": 0.4, "as_of": "2026-08-12"}
+    mixed = {
+        "symbol": "000300.SH",
+        "trend": "震荡或方向不明",
+        "return_20d_pct": 0.4,
+        "as_of": "2026-08-12",
+    }
     assert _market_regime([mixed])["regime"] == "震荡"
     assert _market_regime([])["regime"] == "未知"
 
@@ -161,8 +193,14 @@ def test_run_research_sorts_and_classifies_without_positions() -> None:
 def test_run_research_with_custom_codes_and_invalid_input() -> None:
     provider = _full_provider()
     provider._snapshots["000171"] = _snapshot(
-        "000171", "易方达裕丰回报债券", performance={"1m": 0.2, "3m": 0.4, "6m": -0.5, "1y": 4.0},
-        volatility=4.0, max_drawdown=-1.0, positive_ratio=55.0, trend="up", category="债券",
+        "000171",
+        "易方达裕丰回报债券",
+        performance={"1m": 0.2, "3m": 0.4, "6m": -0.5, "1y": 4.0},
+        volatility=4.0,
+        max_drawdown=-1.0,
+        positive_ratio=55.0,
+        trend="up",
+        category="债券",
     )
     service = FundMarketResearchService(FakeRepo(), market_provider=provider)
     try:
@@ -205,15 +243,25 @@ def test_run_research_marks_held_funds_without_consuming_buy_cap() -> None:
     assert result["held_count"] == 1
     # 外部市场买入名单仍被截断到 5 只：外部 5 + 持有 1
     assert result["summary"]["可买入"] == 6
-    external_buys = [fund for fund in result["funds"] if fund["recommendation"]["tier"] == "可买入" and not fund["held"]]
+    external_buys = [
+        fund
+        for fund in result["funds"]
+        if fund["recommendation"]["tier"] == "可买入" and not fund["held"]
+    ]
     assert len(external_buys) == 5
 
 
 def test_run_research_includes_held_fund_outside_universe() -> None:
     provider = _full_provider()
     provider._snapshots["000001"] = _snapshot(
-        "000001", "华夏成长混合", performance={"1m": 0.5, "3m": 1.0, "6m": 2.0, "1y": 4.0},
-        volatility=15.0, max_drawdown=-8.0, positive_ratio=52.0, trend="up", category="主动权益",
+        "000001",
+        "华夏成长混合",
+        performance={"1m": 0.5, "3m": 1.0, "6m": 2.0, "1y": 4.0},
+        volatility=15.0,
+        max_drawdown=-8.0,
+        positive_ratio=52.0,
+        trend="up",
+        category="主动权益",
     )
     service = FundMarketResearchService(FakeRepo(), market_provider=provider)
     try:

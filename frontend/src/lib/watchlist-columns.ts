@@ -125,7 +125,7 @@ export async function loadColumnConfig(): Promise<ColumnConfig[]> {
   // 1. 尝试从后端加载
   try {
     const { api } = await import('@/lib/api')
-    const res = await api.watchlistColumns()
+    const res = await api.watchlistColumns<ColumnConfig>()
     if (res.columns && res.columns.length > 0) {
       const merged = mergeColumns(res.columns, BUILTIN_COLUMNS)
       // 同步到 localStorage

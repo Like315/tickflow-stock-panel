@@ -81,7 +81,7 @@ export function StockPositionDialog({ position, positions, onClose }: StockPosit
   useEffect(() => setHighlighted(0), [searchTerm, results.length])
 
   const ocrStatus = useQuery({
-    queryKey: ['stock-portfolio-ocr-status'],
+    queryKey: QK.stockPortfolioOcrStatus,
     queryFn: api.stockPortfolioOcrStatus,
     enabled: !position && mode === 'image',
     staleTime: 60_000,

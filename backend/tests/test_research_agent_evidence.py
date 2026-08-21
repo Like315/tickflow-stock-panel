@@ -30,7 +30,8 @@ class FakeRepo:
         latest_date = self.frame["date"].max()
         latest = (
             self.frame.filter(pl.col("date") == latest_date)
-            if latest_date is not None else self.frame
+            if latest_date is not None
+            else self.frame
         )
         return latest, latest_date
 
@@ -49,17 +50,19 @@ class FakeRepo:
 
 def test_evidence_records_units_signals_and_missing_dimensions(tmp_path) -> None:
     start = date(2026, 5, 1)
-    frame = pl.DataFrame({
-        "symbol": ["600000.SH"] * 70,
-        "date": [start + timedelta(days=i) for i in range(70)],
-        "close": [10 + i * 0.01 for i in range(70)],
-        "raw_close": [10 + i * 0.01 for i in range(70)],
-        "change_pct": [0.01] * 70,
-        "ma20": [10.2] * 70,
-        "ma60": [9.8] * 70,
-        "rsi_14": [56.0] * 70,
-        "signal_macd_golden": [False] * 69 + [True],
-    })
+    frame = pl.DataFrame(
+        {
+            "symbol": ["600000.SH"] * 70,
+            "date": [start + timedelta(days=i) for i in range(70)],
+            "close": [10 + i * 0.01 for i in range(70)],
+            "raw_close": [10 + i * 0.01 for i in range(70)],
+            "change_pct": [0.01] * 70,
+            "ma20": [10.2] * 70,
+            "ma60": [9.8] * 70,
+            "rsi_14": [56.0] * 70,
+            "signal_macd_golden": [False] * 69 + [True],
+        }
+    )
     evidence = build_stock_evidence(
         FakeRepo(frame, tmp_path),
         "600000.sh",
@@ -79,21 +82,27 @@ def test_evidence_adds_local_dimension_strength(tmp_path) -> None:
     industries = tmp_path / "ext_data" / "ext_hy_ths"
     concepts.mkdir(parents=True)
     industries.mkdir(parents=True)
-    pl.DataFrame({
-        "symbol": ["600000.SH", "000001.SZ"],
-        "所属概念": ["银行;金融科技", "银行"],
-    }).write_parquet(concepts / "part.parquet")
-    pl.DataFrame({
-        "symbol": ["600000.SH", "000001.SZ"],
-        "所属同花顺行业": ["金融-银行", "金融-银行"],
-    }).write_parquet(industries / "part.parquet")
-    latest = pl.DataFrame({
-        "symbol": ["600000.SH", "000001.SZ"],
-        "date": [date(2026, 8, 11)] * 2,
-        "close": [10.0, 11.0],
-        "raw_close": [10.0, 11.0],
-        "change_pct": [0.02, -0.01],
-    })
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "000001.SZ"],
+            "所属概念": ["银行;金融科技", "银行"],
+        }
+    ).write_parquet(concepts / "part.parquet")
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "000001.SZ"],
+            "所属同花顺行业": ["金融-银行", "金融-银行"],
+        }
+    ).write_parquet(industries / "part.parquet")
+    latest = pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "000001.SZ"],
+            "date": [date(2026, 8, 11)] * 2,
+            "close": [10.0, 11.0],
+            "raw_close": [10.0, 11.0],
+            "change_pct": [0.02, -0.01],
+        }
+    )
     evidence = build_stock_evidence(
         FakeRepo(latest, tmp_path),
         "600000.SH",
@@ -121,18 +130,22 @@ def test_evidence_fails_closed_without_history(tmp_path) -> None:
 def test_historical_evidence_excludes_future_cross_section_and_financials(tmp_path) -> None:
     financial_dir = tmp_path / "financials" / "metrics"
     financial_dir.mkdir(parents=True)
-    pl.DataFrame({
-        "symbol": ["600000.SH", "600000.SH"],
-        "ann_date": ["2026-08-09", "2026-08-12"],
-        "roe": [0.08, 0.99],
-    }).write_parquet(financial_dir / "part.parquet")
-    frame = pl.DataFrame({
-        "symbol": ["600000.SH", "000001.SZ", "600000.SH", "000001.SZ"],
-        "date": [date(2026, 8, 10)] * 2 + [date(2026, 8, 12)] * 2,
-        "close": [10.0, 11.0, 10.5, 11.5],
-        "raw_close": [10.0, 11.0, 10.5, 11.5],
-        "change_pct": [-0.02, -0.01, 0.20, 0.30],
-    })
+    pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "600000.SH"],
+            "ann_date": ["2026-08-09", "2026-08-12"],
+            "roe": [0.08, 0.99],
+        }
+    ).write_parquet(financial_dir / "part.parquet")
+    frame = pl.DataFrame(
+        {
+            "symbol": ["600000.SH", "000001.SZ", "600000.SH", "000001.SZ"],
+            "date": [date(2026, 8, 10)] * 2 + [date(2026, 8, 12)] * 2,
+            "close": [10.0, 11.0, 10.5, 11.5],
+            "raw_close": [10.0, 11.0, 10.5, 11.5],
+            "change_pct": [-0.02, -0.01, 0.20, 0.30],
+        }
+    )
     evidence = build_stock_evidence(
         FakeRepo(frame, tmp_path),
         "600000.SH",

@@ -1,10 +1,10 @@
 """自选股 API。"""
+
 from __future__ import annotations
 
 import logging
-import math
 import time
-from datetime import date
+from typing import Annotated
 
 import anyio
 import polars as pl
@@ -29,7 +29,7 @@ _IMPORT_IMAGE_TYPES = {
     "image/bmp",
     "image/gif",
 }
-# OCR 独立并发上限：避免多张大图同时解码 + 多 Tesseract 子进程
+# OCR 独立并发上限: 避免多张大图同时解码 + 多 Tesseract 子进程
 _OCR_LIMITER = anyio.CapacityLimiter(2)
 
 
@@ -52,7 +52,7 @@ def _with_names(rows: list[dict], request: Request) -> list[dict]:
         if not name_by_symbol:
             return rows
         return [{**row, "name": name_by_symbol.get(row.get("symbol"))} for row in rows]
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("attach watchlist names failed: %s", e)
         return rows
 
@@ -60,9 +60,7 @@ def _with_names(rows: list[dict], request: Request) -> list[dict]:
 def _sync_monitor_watchlist(request: Request, rows: list[dict]) -> None:
     engine = getattr(request.app.state, "monitor_engine", None)
     if engine is not None:
-        engine.set_watchlist_symbols([
-            str(row.get("symbol")) for row in rows if row.get("symbol")
-        ])
+        engine.set_watchlist_symbols([str(row.get("symbol")) for row in rows if row.get("symbol")])
 
 
 @router.get("")
@@ -93,17 +91,17 @@ def add_batch(req: BatchAddRequest, request: Request):
 
 @router.get("/ocr-status")
 def ocr_status():
-    """当前 OCR 引擎是否可用（前端可据此提示安装依赖）。"""
+    """当前 OCR 引擎是否可用 (前端可据此提示安装依赖)。"""
     provider = get_ocr_provider()
     return {"provider": provider.name, "available": provider.available()}
 
 
 @router.post("/import-image")
-async def import_from_image(request: Request, file: UploadFile = File(...)):
-    """从自选截图识别股票代码，返回候选列表（不自动写入自选）。"""
+async def import_from_image(request: Request, file: Annotated[UploadFile, File()]):
+    """从自选截图识别股票代码, 返回候选列表 (不自动写入自选)。"""
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     filename = (file.filename or "").lower()
-    # 严格白名单：不接受任意 image/*（如 image/svg+xml）
+    # 严格白名单: 不接受任意 image/* (如 image/svg+xml)
     ok_type = content_type in _IMPORT_IMAGE_TYPES
     ok_ext = filename.endswith((".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"))
     if not ok_type and not ok_ext:
@@ -113,12 +111,12 @@ async def import_from_image(request: Request, file: UploadFile = File(...)):
     if not data:
         raise HTTPException(400, "空文件")
     if len(data) > _MAX_IMPORT_IMAGE_BYTES:
-        raise HTTPException(400, "图片过大（上限 12MB）")
+        raise HTTPException(400, "图片过大 (上限 12MB)")
 
     existing = {r["symbol"] for r in watchlist.list_symbols()}
     data_dir = request.app.state.repo.store.data_dir
     try:
-        # OCR 为同步 CPU/子进程；独立 limiter 限制并发，避免卡住事件循环（行情 SSE 等）
+        # OCR 为同步 CPU/子进程; 独立 limiter 限制并发, 避免卡住事件循环 (行情 SSE 等)
         result = await anyio.to_thread.run_sync(
             lambda: import_watchlist_image(data, data_dir, existing_symbols=existing),
             limiter=_OCR_LIMITER,
@@ -127,11 +125,11 @@ async def import_from_image(request: Request, file: UploadFile = File(...)):
         raise HTTPException(400, str(e)) from e
     except RuntimeError as e:
         raise HTTPException(503, str(e)) from e
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.exception("watchlist import-image failed")
         raise HTTPException(500, f"识别失败: {e}") from e
 
-    # 响应不回传整段 raw_text（可能很长）；调试时可开 query，这里默认省略
+    # 响应不回传整段 raw_text (可能很长); 调试时可开 query, 这里默认省略
     result.pop("raw_text", None)
     return result
 
@@ -159,25 +157,55 @@ def clear_all(request: Request):
 
 # 自选页需要的列
 _WATCHLIST_COLS = [
-    "symbol", "close", "change_pct", "change_amount", "amount",
+    "symbol",
+    "close",
+    "change_pct",
+    "change_amount",
+    "amount",
     "turnover_rate",
-    "amplitude", "annual_vol_20d",
+    "amplitude",
+    "annual_vol_20d",
     "vol_ratio_5d",
-    "ma5", "ma10", "ma20", "ma60",
-    "vol_ma5", "vol_ma10",
-    "high_60d", "low_60d",
-    "rsi_6", "rsi_14", "rsi_24",
-    "macd_dif", "macd_dea", "macd_hist",
-    "kdj_k", "kdj_d", "kdj_j",
-    "boll_upper", "boll_lower",
+    "ma5",
+    "ma10",
+    "ma20",
+    "ma60",
+    "vol_ma5",
+    "vol_ma10",
+    "high_60d",
+    "low_60d",
+    "rsi_6",
+    "rsi_14",
+    "rsi_24",
+    "macd_dif",
+    "macd_dea",
+    "macd_hist",
+    "kdj_k",
+    "kdj_d",
+    "kdj_j",
+    "boll_upper",
+    "boll_lower",
     "atr_14",
-    "momentum_5d", "momentum_10d", "momentum_20d", "momentum_30d", "momentum_60d",
-    "consecutive_limit_ups", "consecutive_limit_downs",
-    "signal_limit_up", "signal_limit_down", "signal_volume_surge",
-    "signal_ma_golden_5_20", "signal_macd_golden", "signal_n_day_high",
-    "signal_boll_breakout_upper", "signal_ma20_breakout",
-    "signal_ma_dead_5_20", "signal_macd_dead", "signal_n_day_low",
-    "signal_boll_breakdown_lower", "signal_ma20_breakdown",
+    "momentum_5d",
+    "momentum_10d",
+    "momentum_20d",
+    "momentum_30d",
+    "momentum_60d",
+    "consecutive_limit_ups",
+    "consecutive_limit_downs",
+    "signal_limit_up",
+    "signal_limit_down",
+    "signal_volume_surge",
+    "signal_ma_golden_5_20",
+    "signal_macd_golden",
+    "signal_n_day_high",
+    "signal_boll_breakout_upper",
+    "signal_ma20_breakout",
+    "signal_ma_dead_5_20",
+    "signal_macd_dead",
+    "signal_n_day_low",
+    "signal_boll_breakdown_lower",
+    "signal_ma20_breakdown",
 ]
 
 
@@ -214,10 +242,7 @@ def watchlist_enriched(
     # 会把不在缓存 universe 里的自选股静默丢弃.
     if stock_symbols:
         watchlist_df = pl.DataFrame({"symbol": stock_symbols})
-        if df_e.is_empty():
-            df = watchlist_df
-        else:
-            df = watchlist_df.join(df_e, on="symbol", how="left")
+        df = watchlist_df if df_e.is_empty() else watchlist_df.join(df_e, on="symbol", how="left")
     else:
         df = pl.DataFrame()
 
@@ -245,7 +270,9 @@ def watchlist_enriched(
         df = df_idx if df.is_empty() else pl.concat([df, df_idx], how="diagonal_relaxed")
 
     # as_of 取三类缓存中较旧者
-    dates = [d for d in (cache_date if stock_symbols else None, etf_date, index_date) if d is not None]
+    dates = [
+        d for d in (cache_date if stock_symbols else None, etf_date, index_date) if d is not None
+    ]
     as_of = min(dates) if dates else None
     if df.is_empty():
         return {"rows": [], "as_of": str(as_of) if as_of else None, "elapsed_ms": 0}
@@ -262,11 +289,17 @@ def watchlist_enriched(
     # 标注资产类型: 前端据此渲染徽标/豁免板块筛选/分时列降级
     asset_map = {**{s: "etf" for s in etf_symbols}, **{s: "index" for s in index_symbols}}
     df = df.with_columns(
-        pl.col("symbol").replace_strict(asset_map, default="stock", return_dtype=pl.Utf8).alias("asset_type")
+        pl.col("symbol")
+        .replace_strict(asset_map, default="stock", return_dtype=pl.Utf8)
+        .alias("asset_type")
     )
 
     # 选择内置需要的列
-    keep = [c for c in _WATCHLIST_COLS + ["name", "float_shares", "asset_type"] if c in df.columns]
+    keep = [
+        column
+        for column in [*_WATCHLIST_COLS, "name", "float_shares", "asset_type"]
+        if column in df.columns
+    ]
     df = df.select(keep)
 
     # 动态 JOIN 扩展数据表
@@ -274,8 +307,8 @@ def watchlist_enriched(
     if ext_specs:
         db = repo.store.db
         data_dir = repo.store.data_dir
-        from app.services.ext_data import ExtConfigStore
         from app.api.ext_data import _read_ext_dataframe
+        from app.services.ext_data import ExtConfigStore
 
         ext_store = ExtConfigStore(data_dir)
         configs = {c.id: c for c in ext_store.load_all()}
@@ -284,53 +317,65 @@ def watchlist_enriched(
             view_name = f"ext_{config_id}"
             ext_col_name = f"{config_id}__{field_name}"
             try:
-                # 扩展时序数据必须只取最新分区；否则一个 symbol 会按历史分区数被 JOIN 放大。
+                # 扩展时序数据必须只取最新分区; 否则一个 symbol 会按历史分区数被 JOIN 放大。
                 cfg = configs.get(config_id)
                 if cfg:
                     ext_df, _ = _read_ext_dataframe(cfg, data_dir)
                 else:
-                    ext_df = pl.from_arrow(db.query(
-                        f"SELECT symbol, {quote_ident(field_name)} FROM {view_name}"
-                    ).arrow())
+                    ext_df = pl.from_arrow(
+                        db.query(
+                            f"SELECT symbol, {quote_ident(field_name)} FROM {view_name}"
+                        ).arrow()
+                    )
                 if not ext_df.is_empty() and "symbol" in ext_df.columns:
                     ext_df = (
-                        ext_df
-                        .select(["symbol", field_name])
+                        ext_df.select(["symbol", field_name])
                         .unique(subset=["symbol"], keep="last")
                         .rename({field_name: ext_col_name})
                     )
                     df = df.join(ext_df.select(["symbol", ext_col_name]), on="symbol", how="left")
             except Exception:
-                # view 不存在或字段不存在，尝试直接读 parquet
+                # view 不存在或字段不存在, 尝试直接读 parquet
                 cfg = configs.get(config_id)
                 if cfg:
                     try:
                         ext_df, _ = _read_ext_dataframe(cfg, data_dir)
-                        if not ext_df.is_empty() and "symbol" in ext_df.columns and field_name in ext_df.columns:
+                        if (
+                            not ext_df.is_empty()
+                            and "symbol" in ext_df.columns
+                            and field_name in ext_df.columns
+                        ):
                             ext_df = (
-                                ext_df
-                                .select(["symbol", field_name])
+                                ext_df.select(["symbol", field_name])
                                 .unique(subset=["symbol"], keep="last")
                                 .rename({field_name: ext_col_name})
                             )
                             df = df.join(ext_df, on="symbol", how="left")
                     except Exception as e2:
-                        logger.debug("ext join fallback failed for %s.%s: %s", config_id, field_name, e2)
+                        logger.debug(
+                            "ext join fallback failed for %s.%s: %s", config_id, field_name, e2
+                        )
 
     # sanitize NaN / Inf
     float_cols = [c for c in df.columns if df[c].dtype.is_float()]
     if float_cols:
-        df = df.with_columns([
-            pl.when(pl.col(c).is_nan() | pl.col(c).is_infinite())
-              .then(None)
-              .otherwise(pl.col(c))
-              .alias(c)
-            for c in float_cols
-        ])
+        df = df.with_columns(
+            [
+                pl.when(pl.col(c).is_nan() | pl.col(c).is_infinite())
+                .then(None)
+                .otherwise(pl.col(c))
+                .alias(c)
+                for c in float_cols
+            ]
+        )
 
-    # 按自选添加顺序（新加的在前）重排行
+    # 按自选添加顺序 (新加的在前) 重排行
     order_map = {s: i for i, s in enumerate(symbols)}
-    df = df.with_columns(pl.col("symbol").map_elements(lambda s: order_map.get(s, len(symbols)), return_dtype=pl.Int32).alias("_sort_order"))
+    df = df.with_columns(
+        pl.col("symbol")
+        .map_elements(lambda s: order_map.get(s, len(symbols)), return_dtype=pl.Int32)
+        .alias("_sort_order")
+    )
     df = df.sort("_sort_order").drop("_sort_order")
 
     rows = df.to_dicts()

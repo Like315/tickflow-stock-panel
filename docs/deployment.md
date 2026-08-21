@@ -69,6 +69,24 @@ docker compose up --build -d
 
 ---
 
+## 方式 C:Windows 免安装发布包
+
+在 64 位 Windows 构建机上双击项目根目录的 `build_windows.bat`。脚本会检查 `uv`、Node.js 和 `pnpm`，随后构建前端、封装 Python 后端，并生成：
+
+```text
+release-packages/TickFlowStockPanel-windows-x64.zip
+```
+
+发布包已经包含 Python 运行时和前端静态资源，使用方无需安装 Python、Node.js 或 pnpm。解压 ZIP 后：
+
+- 双击 `start.bat` 启动服务和桌面窗口；
+- 双击 `close.bat` 关闭当前解压目录启动的服务，不会关闭其他目录中的 TickFlow 实例；
+- 用户数据位于发布包顶层的 `data/`，运行日志位于 `data/desktop.log`。
+
+构建机仍需具备本页顶部列出的开发依赖。发布包必须在 Windows x64 上原生构建，不支持从 macOS 或 Linux 交叉构建。
+
+---
+
 ## 老 CPU 兼容(avx2/fma 缺失)
 
 如果运行时报 `avx2`/`fma` 缺失,或进程 `exit 132`,说明 CPU 不支持 AVX2 指令集(常见于老 VPS)。解决:

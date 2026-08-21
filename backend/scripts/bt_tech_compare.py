@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 科技股非打板策略横向对比回测（防作弊版 v2）
 防作弊口径：
@@ -8,13 +7,25 @@
   4) 涨停开盘不可买入；跌停开盘卖出顺延（简化）
 正式区间：2025-12-01 ~ 2026-08-13（warmup 足够 MA60）
 """
-import sys, io, json
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import sys
+from datetime import date
+from pathlib import Path
+
 import numpy as np
 import polars as pl
-from datetime import date
 
-DATA = r"D:\MyTickFlowStockPanel\data"
+from app.config import settings
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+DATA = settings.data_dir
+OUTPUT_DIR = Path(os.environ.get("TICKFLOW_RESEARCH_OUTPUT_DIR", DATA.parent / "output")).resolve()
 START = date(2025, 12, 1)
 END = date(2026, 8, 13)
 WARMUP_END = date(2025, 11, 28)
@@ -26,12 +37,51 @@ COST_BUY = COMM + SLIP
 COST_SELL = COMM + TAX + SLIP
 
 TECH_KEYWORDS = [
-    "人工智能", "AI", "AIGC", "大模型", "ChatGPT", "DeepSeek", "芯片", "半导体",
-    "集成电路", "存储芯片", "先进封装", "光刻机", "算力", "服务器", "液冷", "CPO",
-    "光模块", "数据中心", "IDC", "机器人", "人形机器人", "机器视觉", "消费电子",
-    "华为概念", "苹果概念", "折叠屏", "智能穿戴", "国产软件", "信创", "操作系统",
-    "数据库", "数据要素", "数字经济", "云计算", "大数据", "5G", "6G", "卫星互联网",
-    "卫星导航", "PCB", "GPU", "智能驾驶", "无人驾驶", "车联网", "低空经济",
+    "人工智能",
+    "AI",
+    "AIGC",
+    "大模型",
+    "ChatGPT",
+    "DeepSeek",
+    "芯片",
+    "半导体",
+    "集成电路",
+    "存储芯片",
+    "先进封装",
+    "光刻机",
+    "算力",
+    "服务器",
+    "液冷",
+    "CPO",
+    "光模块",
+    "数据中心",
+    "IDC",
+    "机器人",
+    "人形机器人",
+    "机器视觉",
+    "消费电子",
+    "华为概念",
+    "苹果概念",
+    "折叠屏",
+    "智能穿戴",
+    "国产软件",
+    "信创",
+    "操作系统",
+    "数据库",
+    "数据要素",
+    "数字经济",
+    "云计算",
+    "大数据",
+    "5G",
+    "6G",
+    "卫星互联网",
+    "卫星导航",
+    "PCB",
+    "GPU",
+    "智能驾驶",
+    "无人驾驶",
+    "车联网",
+    "低空经济",
 ]
 
 print("loading data...")
@@ -87,6 +137,7 @@ close_m = pivot_close.select(pool).to_numpy().astype(np.float64)
 open_m = pivot_open.select(pool).to_numpy().astype(np.float64)
 raw_m = pivot_raw.select(pool).to_numpy().astype(np.float64)
 
+
 # 缺失数据(停牌)处理: close 为 nan 时收益记 0
 def _finite_ret(cur, prev):
     out = np.full(cur.shape, 0.0)
@@ -94,17 +145,23 @@ def _finite_ret(cur, prev):
     out = np.where(ok, cur / np.maximum(prev, 1e-9) - 1.0, 0.0)
     return out
 
+
 r_cc = _finite_ret(close_m[1:], close_m[:-1])
 r_cc = np.vstack([np.zeros((1, n_a)), r_cc])
 prev_raw = np.roll(raw_m, 1, axis=0)
 prev_raw[0] = np.nan
-open_chg = np.where(np.isfinite(raw_m) & np.isfinite(prev_raw) & (prev_raw > 0),
-                    raw_m / np.maximum(prev_raw, 1e-9) - 1.0, np.nan)
+open_chg = np.where(
+    np.isfinite(raw_m) & np.isfinite(prev_raw) & (prev_raw > 0),
+    raw_m / np.maximum(prev_raw, 1e-9) - 1.0,
+    np.nan,
+)
+
 
 def index_close(sym):
     d = idx.filter(pl.col("symbol") == sym)
     m = {str(r["date"])[:10]: r["close"] for r in d.iter_rows(named=True)}
     return np.array([m.get(str(x)[:10], np.nan) for x in dates_arr])
+
 
 sh_close = index_close("000001.SH")
 kc_close = index_close("000688.SH")
@@ -121,9 +178,17 @@ dates_f = [str(x)[:10] for x in dates_arr[i0:i1]]
 ma20 = np.full_like(close_m, np.nan)
 ma60 = np.full_like(close_m, np.nan)
 for t in range(20, len(dates_arr)):
-    ma20[t] = np.where(np.isfinite(close_m[t - 19 : t + 1]).all(axis=0), close_m[t - 19 : t + 1].mean(axis=0), np.nan)
+    ma20[t] = np.where(
+        np.isfinite(close_m[t - 19 : t + 1]).all(axis=0),
+        close_m[t - 19 : t + 1].mean(axis=0),
+        np.nan,
+    )
 for t in range(60, len(dates_arr)):
-    ma60[t] = np.where(np.isfinite(close_m[t - 59 : t + 1]).all(axis=0), close_m[t - 59 : t + 1].mean(axis=0), np.nan)
+    ma60[t] = np.where(
+        np.isfinite(close_m[t - 59 : t + 1]).all(axis=0),
+        close_m[t - 59 : t + 1].mean(axis=0),
+        np.nan,
+    )
 
 ret20 = np.full_like(close_m, np.nan)
 for t in range(20, len(dates_arr)):
@@ -140,6 +205,7 @@ for t in range(20, len(sh_close)):
 
 results = {}
 
+
 def index_bh(close_arr):
     eq = close_arr[i0:i1] / close_arr[i0] * 1_000_000.0
     rets = eq[1:] / eq[:-1] - 1.0
@@ -147,11 +213,20 @@ def index_bh(close_arr):
     ann = (1 + total) ** (242 / max(len(eq) - 1, 1)) - 1
     peak = np.maximum.accumulate(eq)
     sharpe = rets.mean() / rets.std() * np.sqrt(242) if rets.std() > 0 else 0
-    return {"total": total, "annual": ann, "max_dd": (eq / peak - 1).min(),
-            "sharpe": sharpe, "daily_win": (rets > 0).mean(), "trades": 0, "equity": eq.tolist()}
+    return {
+        "total": total,
+        "annual": ann,
+        "max_dd": (eq / peak - 1).min(),
+        "sharpe": sharpe,
+        "daily_win": (rets > 0).mean(),
+        "trades": 0,
+        "equity": eq.tolist(),
+    }
+
 
 results["上证指数持有"] = index_bh(sh_close)
 results["科创50持有"] = index_bh(kc_close)
+
 
 # ---- 统一模拟器（全量再平衡：调仓日先卖后买，目标名单制，T 日开盘成交）----
 class Sim:
@@ -184,14 +259,14 @@ class Sim:
         # 日终收益
         day_r = np.where(self.hold, r_cc_f[t], 0.0)
         day_r = np.where(np.isfinite(day_r), day_r, 0.0)
-        self.mv *= (1.0 + day_r)
+        self.mv *= 1.0 + day_r
         self.equity.append(self.cash + self.mv.sum())
 
     def hold_day(self, t):
         """非调仓日：仅日终收益。"""
         day_r = np.where(self.hold, r_cc_f[t], 0.0)
         day_r = np.where(np.isfinite(day_r), day_r, 0.0)
-        self.mv *= (1.0 + day_r)
+        self.mv *= 1.0 + day_r
         self.equity.append(self.cash + self.mv.sum())
 
     def stats(self):
@@ -203,8 +278,16 @@ class Sim:
         dd = eq / peak - 1.0
         sharpe = rets.mean() / rets.std() * np.sqrt(242) if rets.std() > 0 else 0.0
         win = (rets > 0).mean() if len(rets) else 0.0
-        return {"total": total, "annual": ann, "max_dd": dd.min(), "sharpe": sharpe,
-                "daily_win": win, "trades": self.trades, "equity": eq.tolist()}
+        return {
+            "total": total,
+            "annual": ann,
+            "max_dd": dd.min(),
+            "sharpe": sharpe,
+            "daily_win": win,
+            "trades": self.trades,
+            "equity": eq.tolist(),
+        }
+
 
 # 月初边界（正式区间内）
 month_boundaries = []
@@ -255,7 +338,12 @@ sim = Sim()
 for t in range(len(dates_f)):
     if t in week_bound:
         sig = i0 + t - 1
-        cond_up = np.isfinite(ma20[sig]) & np.isfinite(ma60[sig]) & (close_m[sig] > ma20[sig]) & (ma20[sig] > ma60[sig])
+        cond_up = (
+            np.isfinite(ma20[sig])
+            & np.isfinite(ma60[sig])
+            & (close_m[sig] > ma20[sig])
+            & (ma20[sig] > ma60[sig])
+        )
         sim.rebalance(t, cond_up)
     else:
         sim.hold_day(t)
@@ -302,7 +390,12 @@ eq = []
 for t in range(len(dates_f)):
     tt = i0 + t
     sig = tt - 1
-    if sig >= 0 and np.isfinite(ma60_ew[sig]) and np.isfinite(ma20_ew[sig]) and np.isfinite(tech_ew_n[sig]):
+    if (
+        sig >= 0
+        and np.isfinite(ma60_ew[sig])
+        and np.isfinite(ma20_ew[sig])
+        and np.isfinite(tech_ew_n[sig])
+    ):
         bias = tech_ew_n[sig] / ma60_ew[sig] - 1.0
         if state == 0 and bias <= -0.08:
             spend = 500_000.0
@@ -324,17 +417,33 @@ ann = (1 + total) ** (242 / max(len(eq) - 1, 1)) - 1
 peak = np.maximum.accumulate(eq)
 sharpe = rets.mean() / rets.std() * np.sqrt(242) if rets.std() > 0 else 0
 results["科技低吸(乖离-8%/MA20离场)"] = {
-    "total": total, "annual": ann, "max_dd": (eq / peak - 1).min(),
-    "sharpe": sharpe, "daily_win": (rets > 0).mean(), "trades": 0, "equity": eq.tolist()}
+    "total": total,
+    "annual": ann,
+    "max_dd": (eq / peak - 1).min(),
+    "sharpe": sharpe,
+    "daily_win": (rets > 0).mean(),
+    "trades": 0,
+    "equity": eq.tolist(),
+}
 
 print()
 print("=" * 104)
-print(f"科技股非打板策略横向对比（{START} ~ {END}, {len(dates_f)} 交易日, 全成本含印花税滑点, T-1信号/T日开盘成交）")
+print(
+    f"科技股非打板策略横向对比（{START} ~ {END}, {len(dates_f)} 交易日, 全成本含印花税滑点, T-1信号/T日开盘成交）"
+)
 print("=" * 104)
 for name, r in results.items():
-    print(f"{name:24s} 总收益{r['total']*100:8.2f}% 年化{r['annual']*100:8.2f}% 最大回撤{r['max_dd']*100:8.2f}% 夏普{r['sharpe']:6.2f} 日胜率{r['daily_win']*100:5.1f}% 换手{r['trades']:5d}")
+    print(
+        f"{name:24s} 总收益{r['total'] * 100:8.2f}% 年化{r['annual'] * 100:8.2f}% 最大回撤{r['max_dd'] * 100:8.2f}% 夏普{r['sharpe']:6.2f} 日胜率{r['daily_win'] * 100:5.1f}% 换手{r['trades']:5d}"
+    )
 
-out = {"period": [str(START), str(END)], "n_days": len(dates_f), "pool_size": n_a, "results": results}
-with open(r"D:\MyTickFlowStockPanel\output\tech_compare.json", "w", encoding="utf-8") as f:
-    json.dump(out, f, ensure_ascii=False, default=float)
+out = {
+    "period": [str(START), str(END)],
+    "n_days": len(dates_f),
+    "pool_size": n_a,
+    "results": results,
+}
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+with (OUTPUT_DIR / "tech_compare.json").open("w", encoding="utf-8") as output_file:
+    json.dump(out, output_file, ensure_ascii=False, default=float)
 print("saved output/tech_compare.json")

@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import polars as pl
 
-from app.api.investment_expert import status as investment_expert_status
+from app.api.investment_expert import (
+    InvestmentExpertStatusResponse,
+)
+from app.api.investment_expert import (
+    status as investment_expert_status,
+)
 from app.data_providers.huggingface_archive import ArchiveCoverage
 from app.market_time import CN_TZ
 from app.paper_agent.execution import StrictMinuteExecutor
@@ -18,26 +23,30 @@ from app.tickflow.capabilities import Cap, CapabilityLimits, CapabilitySet
 class _Repo:
     def __init__(self, trade_date: date) -> None:
         self.symbols = [f"SH.{600000 + index}" for index in range(10)]
-        self.instruments = pl.DataFrame({
-            "symbol": self.symbols,
-            "name": [f"Company {index}" for index in range(10)],
-            "industry": ["半导体"] * 5 + ["银行"] * 5,
-        })
+        self.instruments = pl.DataFrame(
+            {
+                "symbol": self.symbols,
+                "name": [f"Company {index}" for index in range(10)],
+                "industry": ["半导体"] * 5 + ["银行"] * 5,
+            }
+        )
         rows = []
         for symbol_index, symbol in enumerate(self.symbols):
             for day_index in range(35):
                 day = trade_date - timedelta(days=35 - day_index)
                 close = 10 + symbol_index * 0.1 + day_index * 0.02
-                rows.append({
-                    "symbol": symbol,
-                    "date": day,
-                    "open": close - 0.02,
-                    "high": close + 0.05,
-                    "low": close - 0.05,
-                    "close": close,
-                    "volume": 100_000.0,
-                    "amount": close * 10_000_000,
-                })
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "date": day,
+                        "open": close - 0.02,
+                        "high": close + 0.05,
+                        "low": close - 0.05,
+                        "close": close,
+                        "volume": 100_000.0,
+                        "amount": close * 10_000_000,
+                    }
+                )
         self.daily = pl.DataFrame(rows)
 
     def get_instruments(self) -> pl.DataFrame:
@@ -51,9 +60,7 @@ class _Repo:
         columns: list[str] | None = None,
     ) -> pl.DataFrame:
         frame = self.daily.filter(
-            pl.col("symbol").is_in(symbols)
-            & (pl.col("date") >= start)
-            & (pl.col("date") <= end)
+            pl.col("symbol").is_in(symbols) & (pl.col("date") >= start) & (pl.col("date") <= end)
         )
         return frame.select(columns) if columns else frame
 
@@ -71,22 +78,24 @@ class _MinuteProvider:
         for symbol in symbols:
             for minute in (31, 32):
                 price = 10 + minute / 100
-                rows.append({
-                    "symbol": symbol,
-                    "datetime": datetime.combine(
-                        trade_date, datetime.min.time()
-                    ).replace(hour=9, minute=minute),
-                    "open": price,
-                    "high": price + 0.02,
-                    "low": price - 0.02,
-                    "close": price,
-                    "raw_open": price,
-                    "raw_high": price + 0.02,
-                    "raw_low": price - 0.02,
-                    "raw_close": price,
-                    "volume": 1_000.0,
-                    "amount": price * 100_000,
-                })
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "datetime": datetime.combine(trade_date, datetime.min.time()).replace(
+                            hour=9, minute=minute
+                        ),
+                        "open": price,
+                        "high": price + 0.02,
+                        "low": price - 0.02,
+                        "close": price,
+                        "raw_open": price,
+                        "raw_high": price + 0.02,
+                        "raw_low": price - 0.02,
+                        "raw_close": price,
+                        "volume": 1_000.0,
+                        "amount": price * 100_000,
+                    }
+                )
         self.frame = pl.DataFrame(rows)
 
     def get_minute(self, symbols: list[str], **kwargs) -> pl.DataFrame:
@@ -118,8 +127,10 @@ class _UsMarketService:
                 {"symbol": "DIA.US", "change_pct": 0.008 * direction},
                 {"symbol": "IWM.US", "change_pct": 0.010 * direction},
             ],
-            "breadth": {"up_ratio": 0.68 if direction > 0 else 0.25,
-                        "down_ratio": 0.25 if direction > 0 else 0.68},
+            "breadth": {
+                "up_ratio": 0.68 if direction > 0 else 0.25,
+                "down_ratio": 0.25 if direction > 0 else 0.68,
+            },
             "sectors": [
                 {"symbol": "XLK.US", "name": "信息技术", "change_pct": 0.02 * direction},
                 {"symbol": "XLF.US", "name": "金融", "change_pct": -0.015 * direction},
@@ -220,9 +231,7 @@ def test_service_recovers_when_global_cursor_was_not_committed(tmp_path: Path) -
 
     assert first["processed_bars"] == len(repo.symbols)
     assert retried["processed_bars"] == 0
-    assert service._last_processed_bar == now.replace(
-        hour=9, minute=32, second=0, microsecond=0
-    )
+    assert service._last_processed_bar == now.replace(hour=9, minute=32, second=0, microsecond=0)
 
 
 def test_service_skips_duplicate_and_already_processed_minutes(tmp_path: Path) -> None:
@@ -253,9 +262,7 @@ def test_runtime_tick_is_not_reentrant(tmp_path: Path) -> None:
     service = InvestmentExpertService(_Repo(trade_date), tmp_path)
     service._cycle_lock.acquire()
     try:
-        result = service.run_paper_cycle_once(
-            datetime(2026, 8, 18, 9, 33, tzinfo=CN_TZ)
-        )
+        result = service.run_paper_cycle_once(datetime(2026, 8, 18, 9, 33, tzinfo=CN_TZ))
     finally:
         service._cycle_lock.release()
         service.close()
@@ -272,9 +279,7 @@ def test_runtime_stays_idle_on_exchange_holiday(tmp_path: Path) -> None:
         us_market_service=us_market,
     )
     try:
-        result = service.run_paper_cycle_once(
-            datetime(2026, 10, 1, 9, 20, tzinfo=CN_TZ)
-        )
+        result = service.run_paper_cycle_once(datetime(2026, 10, 1, 9, 20, tzinfo=CN_TZ))
     finally:
         service.close()
 
@@ -398,17 +403,16 @@ def test_overnight_us_module_mapping_uses_a_share_industry_snapshot(tmp_path: Pa
     repo.instruments = repo.instruments.drop("industry")
     industry_path = tmp_path / "ext_data" / "ext_hy_ths" / "part.parquet"
     industry_path.parent.mkdir(parents=True)
-    pl.DataFrame({
-        "symbol": repo.symbols,
-        "所属同花顺行业": ["电子-半导体"] * 5 + ["金融-银行"] * 5,
-    }).write_parquet(industry_path)
+    pl.DataFrame(
+        {
+            "symbol": repo.symbols,
+            "所属同花顺行业": ["电子-半导体"] * 5 + ["金融-银行"] * 5,
+        }
+    ).write_parquet(industry_path)
     service = InvestmentExpertService(repo, tmp_path)
     try:
         factors = service._score_candidate_overnight_modules(
-            {
-                str(row["symbol"]): row
-                for row in repo.instruments.iter_rows(named=True)
-            },
+            {str(row["symbol"]): row for row in repo.instruments.iter_rows(named=True)},
             {
                 "modules": {
                     "XSD.US": {
@@ -492,9 +496,7 @@ def test_session_preparation_degrades_without_us_overnight_data(tmp_path: Path) 
         us_market_service=_UnavailableUsMarketService(),
     )
     try:
-        result = service.run_paper_cycle_once(
-            datetime(2026, 8, 20, 9, 20, tzinfo=CN_TZ)
-        )
+        result = service.run_paper_cycle_once(datetime(2026, 8, 20, 9, 20, tzinfo=CN_TZ))
     finally:
         service.close()
 
@@ -511,8 +513,7 @@ def test_session_preparation_degrades_without_us_overnight_data(tmp_path: Path) 
         "modules": {},
     }
     assert all(
-        row["overnight_us_available"] is False
-        for row in service._candidate_context.values()
+        row["overnight_us_available"] is False for row in service._candidate_context.values()
     )
 
 
@@ -550,9 +551,11 @@ def test_runtime_fails_closed_without_minute_capability(tmp_path: Path) -> None:
 
 def test_runtime_uses_intraday_endpoint_when_batch_capability_exists(tmp_path: Path) -> None:
     trade_date = date(2026, 8, 18)
-    capset = CapabilitySet({
-        Cap.INTRADAY_BATCH: CapabilityLimits(rpm=30, batch=100),
-    })
+    capset = CapabilitySet(
+        {
+            Cap.INTRADAY_BATCH: CapabilityLimits(rpm=30, batch=100),
+        }
+    )
     repo = _Repo(trade_date)
     service = InvestmentExpertService(repo, tmp_path, capset=capset)
     provider = _IntradayMinuteProvider(repo.symbols, trade_date)
@@ -573,9 +576,11 @@ def test_three_year_dataset_uses_archive_fallback_for_tickflow_pro(
     monkeypatch,
 ) -> None:
     trade_date = date(2026, 8, 18)
-    capset = CapabilitySet({
-        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
-    })
+    capset = CapabilitySet(
+        {
+            Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
+        }
+    )
     monkeypatch.setattr(
         "app.services.investment_expert.base_tier_name",
         lambda: "pro",
@@ -586,8 +591,7 @@ def test_three_year_dataset_uses_archive_fallback_for_tickflow_pro(
         service._executor_pool,
         "submit",
         lambda function, *args: (
-            submitted.append((function, args))
-            or SimpleNamespace(done=lambda: True)
+            submitted.append((function, args)) or SimpleNamespace(done=lambda: True)
         ),
     )
     try:
@@ -610,9 +614,11 @@ def test_three_year_dataset_routes_old_dates_to_archive_and_recent_dates_to_tick
     monkeypatch,
 ) -> None:
     now = datetime(2026, 8, 21, 17, 0, tzinfo=CN_TZ)
-    capset = CapabilitySet({
-        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
-    })
+    capset = CapabilitySet(
+        {
+            Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
+        }
+    )
     monkeypatch.setattr(
         "app.services.investment_expert.base_tier_name",
         lambda: "pro",
@@ -732,9 +738,11 @@ def test_three_year_dataset_prefers_permitted_tickflow_without_archive(
     monkeypatch,
 ) -> None:
     trade_date = date(2026, 8, 18)
-    capset = CapabilitySet({
-        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
-    })
+    capset = CapabilitySet(
+        {
+            Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
+        }
+    )
     monkeypatch.setattr(
         "app.services.investment_expert.base_tier_name",
         lambda: "enterprise",
@@ -746,8 +754,7 @@ def test_three_year_dataset_prefers_permitted_tickflow_without_archive(
         service._executor_pool,
         "submit",
         lambda function, *args: (
-            submitted.append((function, args))
-            or SimpleNamespace(done=lambda: True)
+            submitted.append((function, args)) or SimpleNamespace(done=lambda: True)
         ),
     )
     try:
@@ -771,54 +778,59 @@ def test_status_exposes_position_profit_and_execution_performance(tmp_path: Path
         mode="paper",
         candidates=["SH.600000"],
     )
-    service.store.save_execution_events(session["id"], [
-        ExecutionEvent(
-            id="evt_buy",
-            event_type="order_filled",
-            occurred_at=occurred_at,
-            order_id="order_buy",
-            symbol="SH.600000",
-            side="buy",
-            shares=100,
-            price=10,
-            fees=5,
-        ),
-        ExecutionEvent(
-            id="evt_win",
-            event_type="order_filled",
-            occurred_at=occurred_at + timedelta(minutes=1),
-            order_id="order_win",
-            symbol="SH.600001",
-            side="sell",
-            shares=100,
-            price=11,
-            fees=6,
-            realized_pnl=100,
-        ),
-        ExecutionEvent(
-            id="evt_loss",
-            event_type="order_filled",
-            occurred_at=occurred_at + timedelta(minutes=2),
-            order_id="order_loss",
-            symbol="SH.600002",
-            side="sell",
-            shares=100,
-            price=9,
-            fees=6,
-            realized_pnl=-40,
-        ),
-    ])
+    service.store.save_execution_events(
+        session["id"],
+        [
+            ExecutionEvent(
+                id="evt_buy",
+                event_type="order_filled",
+                occurred_at=occurred_at,
+                order_id="order_buy",
+                symbol="SH.600000",
+                side="buy",
+                shares=100,
+                price=10,
+                fees=5,
+            ),
+            ExecutionEvent(
+                id="evt_win",
+                event_type="order_filled",
+                occurred_at=occurred_at + timedelta(minutes=1),
+                order_id="order_win",
+                symbol="SH.600001",
+                side="sell",
+                shares=100,
+                price=11,
+                fees=6,
+                realized_pnl=100,
+            ),
+            ExecutionEvent(
+                id="evt_loss",
+                event_type="order_filled",
+                occurred_at=occurred_at + timedelta(minutes=2),
+                order_id="order_loss",
+                symbol="SH.600002",
+                side="sell",
+                shares=100,
+                price=9,
+                fees=6,
+                realized_pnl=-40,
+            ),
+        ],
+    )
     executor = StrictMinuteExecutor(service.constitution)
     executor.cash = 999_055
-    executor.lots = [PositionLot(
-        lot_id="lot_current",
-        symbol="SH.600000",
-        acquired_date=trade_date,
-        shares=100,
-        remaining_shares=100,
-        entry_price=10,
-        entry_cost=5,
-    )]
+    executor.lots = [
+        PositionLot(
+            lot_id="lot_current",
+            symbol="SH.600000",
+            acquired_date=trade_date,
+            shares=100,
+            remaining_shares=100,
+            entry_price=10,
+            entry_cost=5,
+        )
+    ]
     executor.last_prices = {"SH.600000": 12}
     service._executor = executor
 
@@ -860,19 +872,27 @@ def test_status_exposes_position_profit_and_execution_performance(tmp_path: Path
 def test_status_uses_live_app_capabilities_after_key_refresh(tmp_path: Path) -> None:
     trade_date = date(2026, 8, 18)
     service = InvestmentExpertService(_Repo(trade_date), tmp_path, capset=CapabilitySet())
-    live_capset = CapabilitySet({
-        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(batch=100, rpm=30),
-    })
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
-        investment_expert_service=service,
-        capabilities=live_capset,
-    )))
+    live_capset = CapabilitySet(
+        {
+            Cap.KLINE_MINUTE_BATCH: CapabilityLimits(batch=100, rpm=30),
+        }
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                investment_expert_service=service,
+                capabilities=live_capset,
+            )
+        )
+    )
     try:
         result = investment_expert_status(request)
+        validated = InvestmentExpertStatusResponse.model_validate(result)
     finally:
         service.close()
 
     assert result["minute_capable"] is True
+    assert validated.minute_capable is True
     assert service.capset is live_capset
 
 
@@ -925,14 +945,16 @@ def test_stock_portfolio_sync_replaces_positions_and_rebases_account(
         def get_portfolio() -> dict:
             return {
                 "updated_at": "2026-08-20T01:00:00+00:00",
-                "positions": [{
-                    "symbol": "600000.SH",
-                    "name": "浦发银行",
-                    "buy_price": 10.0,
-                    "quantity": 10_000.0,
-                    "current_price": 11.0,
-                    "created_at": "2026-08-19T01:00:00+00:00",
-                }],
+                "positions": [
+                    {
+                        "symbol": "600000.SH",
+                        "name": "浦发银行",
+                        "buy_price": 10.0,
+                        "quantity": 10_000.0,
+                        "current_price": 11.0,
+                        "created_at": "2026-08-19T01:00:00+00:00",
+                    }
+                ],
             }
 
     service = InvestmentExpertService(
@@ -942,15 +964,17 @@ def test_stock_portfolio_sync_replaces_positions_and_rebases_account(
     )
     previous = StrictMinuteExecutor(service.constitution)
     previous.cash = 123_456.0
-    previous.lots = [PositionLot(
-        lot_id="old_lot",
-        symbol="000001.SZ",
-        acquired_date=date(2026, 8, 18),
-        shares=1_000,
-        remaining_shares=1_000,
-        entry_price=9.0,
-        entry_cost=0.0,
-    )]
+    previous.lots = [
+        PositionLot(
+            lot_id="old_lot",
+            symbol="000001.SZ",
+            acquired_date=date(2026, 8, 18),
+            shares=1_000,
+            remaining_shares=1_000,
+            entry_price=9.0,
+            entry_cost=0.0,
+        )
+    ]
     service._executor = previous
     try:
         preview = service.stock_portfolio_sync_preview()
@@ -958,9 +982,7 @@ def test_stock_portfolio_sync_replaces_positions_and_rebases_account(
             confirm_replace=True,
         )
         restored = service._restore_executor()
-        prepared = service._prepare_session(
-            datetime(2026, 8, 21, 9, 15, tzinfo=CN_TZ)
-        )
+        prepared = service._prepare_session(datetime(2026, 8, 21, 9, 15, tzinfo=CN_TZ))
         status = service.status()
     finally:
         service.close()
@@ -989,14 +1011,16 @@ def test_stock_portfolio_sync_requires_stopped_runtime(tmp_path: Path) -> None:
         def get_portfolio() -> dict:
             return {
                 "updated_at": None,
-                "positions": [{
-                    "symbol": "600000.SH",
-                    "name": "浦发银行",
-                    "buy_price": 10.0,
-                    "quantity": 1_000.0,
-                    "current_price": 10.0,
-                    "created_at": "2026-08-19T01:00:00+00:00",
-                }],
+                "positions": [
+                    {
+                        "symbol": "600000.SH",
+                        "name": "浦发银行",
+                        "buy_price": 10.0,
+                        "quantity": 1_000.0,
+                        "current_price": 10.0,
+                        "created_at": "2026-08-19T01:00:00+00:00",
+                    }
+                ],
             }
 
     service = InvestmentExpertService(

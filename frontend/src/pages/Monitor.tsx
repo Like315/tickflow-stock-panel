@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AlertTriangle, RadioTower, Plus, Trash2, Settings2, Zap, Bell, ListChecks, BellRing, TrendingUp, TrendingDown, Flame, Tags } from 'lucide-react'
+import { AlertTriangle, RadioTower, Plus, Trash2, Settings2, Zap, Bell, ListChecks, BellRing, TrendingUp, TrendingDown, Flame, Tags, type LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { Skeleton } from '@/components/data/Skeleton'
@@ -25,7 +25,7 @@ const TYPE_LABEL: Record<string, string> = {
 }
 
 /** 严重级别 → 左侧色条 + 图标 */
-const SEVERITY_CONFIG: Record<string, { bar: string; icon: any; iconCls: string }> = {
+const SEVERITY_CONFIG: Record<string, { bar: string; icon: LucideIcon; iconCls: string }> = {
   info:     { bar: 'bg-accent/40',       icon: Bell,        iconCls: 'text-accent' },
   warn:     { bar: 'bg-warning',          icon: TrendingUp,  iconCls: 'text-warning' },
   critical: { bar: 'bg-danger',           icon: Flame,       iconCls: 'text-danger' },
@@ -69,7 +69,7 @@ function getExtTags(ev: Record<string, unknown>, item: MonitorExtFieldItem | nul
   if (v == null) return []
   const str = String(v)
   if (!str) return []
-  let tags = str.split(/[、,，;；\-]/).map(s => s.trim()).filter(Boolean)
+  let tags = str.split(/[-、,，;；]/).map(s => s.trim()).filter(Boolean)
   const maxTags = item.maxTags ?? 0
   if (maxTags > 0) tags = tags.slice(0, maxTags)
   const hidden = item.hiddenIndices
@@ -124,10 +124,13 @@ export function Monitor() {
 
   // 全局 ext 字段配置 (监控中心个股通知带行业/概念标签)
   const { data: prefs } = usePreferences()
-  const monitorExtFields = prefs?.monitor_ext_fields ?? {
-    concept: { field: 'ext_gn_ths.所属概念' },
-    industry: { field: 'ext_hy_ths.所属同花顺行业' },
-  }
+  const monitorExtFields = useMemo(
+    () => prefs?.monitor_ext_fields ?? {
+      concept: { field: 'ext_gn_ths.所属概念' },
+      industry: { field: 'ext_hy_ths.所属同花顺行业' },
+    },
+    [prefs?.monitor_ext_fields],
+  )
   const [extConfigOpen, setExtConfigOpen] = useState(false)
   const extColumnsParam = useMemo(() => {
     const parts = [monitorExtFields.concept?.field, monitorExtFields.industry?.field].filter(Boolean) as string[]
@@ -160,13 +163,13 @@ export function Monitor() {
   const relationSymbolsKey = relationSymbols?.join(',') ?? 'all-relations'
 
   const alertsQuery = useQuery({
-    queryKey: [
-      ...QK.alerts(filter === 'all' ? undefined : filter),
-      directionFilter ?? 'all-directions',
-      relationFilter ?? 'all-relations',
-      relationSymbolsKey,
-      extColumnsParam ?? '',
-    ],
+    queryKey: QK.alertsFiltered({
+      source: filter === 'all' ? undefined : filter,
+      direction: directionFilter ?? undefined,
+      relation: relationFilter ?? undefined,
+      symbols: relationSymbolsKey,
+      extColumns: extColumnsParam,
+    }),
     queryFn: () => api.alertsList({
       days: 7,
       limit: 500,
@@ -203,7 +206,6 @@ export function Monitor() {
     enterTsRef.current = Date.now()
     markSeen()
     return () => leaveMonitorPage()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
@@ -371,7 +373,7 @@ export function Monitor() {
   )
 }
 
-function SectionHeader({ icon: Icon, title }: { icon: any; title: string }) {
+function SectionHeader({ icon: Icon, title }: { icon: LucideIcon; title: string }) {
   return (
     <div className="flex items-center gap-1.5 shrink-0">
       <Icon className="h-4 w-4 text-accent" />
@@ -382,7 +384,7 @@ function SectionHeader({ icon: Icon, title }: { icon: any; title: string }) {
 
 // ── 触发记录列表 ──────────────────────────────────────
 function AlertsList({ alertsQuery, confirmClear, setConfirmClear, total, enterTs, monitorExtFields }: {
-  alertsQuery: ReturnType<typeof useQuery>
+  alertsQuery: UseQueryResult<Awaited<ReturnType<typeof api.alertsList>>, Error>
   confirmClear: boolean
   setConfirmClear: (v: boolean) => void
   total: number
@@ -421,7 +423,7 @@ function AlertsList({ alertsQuery, confirmClear, setConfirmClear, total, enterTs
     }
   }
 
-  const events = (alertsQuery.data as any)?.alerts ?? []
+  const events = alertsQuery.data?.alerts ?? []
 
   return (
     <div className="space-y-3">
@@ -439,7 +441,7 @@ function AlertsList({ alertsQuery, confirmClear, setConfirmClear, total, enterTs
         />
       ) : (
         <div className="space-y-2">
-              {events.map((ev: any, i: number) => {
+              {events.map((ev, i) => {
             const sev = SEVERITY_CONFIG[ev.severity ?? 'info'] ?? SEVERITY_CONFIG.info
             const SevIcon = sev.icon
             const isNew = ev.ts > enterTs
@@ -708,7 +710,10 @@ function RulesList({ rulesQuery, onEdit }: {
   const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const rules: MonitorRule[] = (rulesQuery.data as any)?.rules ?? []
+  const rules = useMemo(
+    () => (rulesQuery.data as { rules?: MonitorRule[] } | undefined)?.rules ?? [],
+    [rulesQuery.data],
+  )
 
   // 收集所有规则的股票代码, 批量查名称
   const allSymbols = useMemo(() => {
@@ -719,7 +724,7 @@ function RulesList({ rulesQuery, onEdit }: {
     return Array.from(set)
   }, [rules])
   const namesQuery = useQuery({
-    queryKey: ['instrument-names', allSymbols.join(',')],
+    queryKey: QK.instrumentNames(allSymbols.join(',')),
     queryFn: () => api.instrumentNames(allSymbols),
     enabled: allSymbols.length > 0,
     staleTime: 300000,

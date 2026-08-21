@@ -1,4 +1,5 @@
 """Normalize provider responses into internal Polars schemas."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -11,10 +12,22 @@ DAILY_COLS = ["symbol", "date", "open", "high", "low", "close", "volume", "amoun
 ADJ_FACTOR_COLS = ["symbol", "trade_date", "ex_factor"]
 INSTRUMENT_COLS = ["symbol", "name", "code", "exchange", "asset_type", "source"]
 MINUTE_COLS = [
-    "symbol", "asset_type", "source", "datetime", "received_at", "freq",
-    "open", "high", "low", "close",
-    "raw_open", "raw_high", "raw_low", "raw_close",
-    "volume", "amount",
+    "symbol",
+    "asset_type",
+    "source",
+    "datetime",
+    "received_at",
+    "freq",
+    "open",
+    "high",
+    "low",
+    "close",
+    "raw_open",
+    "raw_high",
+    "raw_low",
+    "raw_close",
+    "volume",
+    "amount",
 ]
 
 
@@ -39,7 +52,9 @@ def to_polars(data) -> pl.DataFrame:
         return pl.DataFrame()
 
 
-def normalize_daily(data, default_symbol: str | None = None, source: str = "tickflow") -> pl.DataFrame:
+def normalize_daily(
+    data, default_symbol: str | None = None, source: str = "tickflow"
+) -> pl.DataFrame:
     df = to_polars(data)
     if df.is_empty():
         return df
@@ -78,9 +93,18 @@ def normalize_adj_factors(data, source: str = "tickflow") -> pl.DataFrame:
     }
     df = df.rename({k: v for k, v in rename_map.items() if k in df.columns})
     if "trade_date" in df.columns:
-        if df.schema["trade_date"] in {pl.Int64, pl.Int32, pl.UInt64, pl.UInt32, pl.Float64, pl.Float32}:
+        if df.schema["trade_date"] in {
+            pl.Int64,
+            pl.Int32,
+            pl.UInt64,
+            pl.UInt32,
+            pl.Float64,
+            pl.Float32,
+        }:
             df = df.with_columns(
-                pl.from_epoch(pl.col("trade_date").cast(pl.Int64), time_unit="ms").dt.date().alias("trade_date")
+                pl.from_epoch(pl.col("trade_date").cast(pl.Int64), time_unit="ms")
+                .dt.date()
+                .alias("trade_date")
             )
         else:
             df = df.with_columns(pl.col("trade_date").cast(pl.Date, strict=False))
@@ -157,9 +181,7 @@ def normalize_minute(
                 .cast(pl.Datetime("us"))
             )
         elif dtype == pl.String:
-            df = df.with_columns(
-                pl.col("datetime").str.to_datetime(time_unit="us", strict=False)
-            )
+            df = df.with_columns(pl.col("datetime").str.to_datetime(time_unit="us", strict=False))
         else:
             df = df.with_columns(pl.col("datetime").cast(pl.Datetime("us"), strict=False))
     if "symbol" not in df.columns or "datetime" not in df.columns:
@@ -201,7 +223,9 @@ def normalize_minute(
     )
 
 
-def normalize_instruments(rows: list[dict], asset_type: str, source: str = "tickflow") -> pl.DataFrame:
+def normalize_instruments(
+    rows: list[dict], asset_type: str, source: str = "tickflow"
+) -> pl.DataFrame:
     if not rows:
         return pl.DataFrame()
     out: list[dict] = []
@@ -209,14 +233,21 @@ def normalize_instruments(rows: list[dict], asset_type: str, source: str = "tick
         symbol = item.get("symbol")
         if not symbol:
             continue
-        out.append({
-            "symbol": str(symbol),
-            "name": item.get("name") or str(symbol),
-            "code": item.get("code") or str(symbol).split(".")[0],
-            "exchange": item.get("exchange"),
-            "asset_type": asset_type,
-            "source": source,
-        })
+        out.append(
+            {
+                "symbol": str(symbol),
+                "name": item.get("name") or str(symbol),
+                "code": item.get("code") or str(symbol).split(".")[0],
+                "exchange": item.get("exchange"),
+                "asset_type": asset_type,
+                "source": source,
+            }
+        )
     if not out:
         return pl.DataFrame()
-    return pl.DataFrame(out).select(INSTRUMENT_COLS).unique(subset=["symbol"], keep="last").sort("symbol")
+    return (
+        pl.DataFrame(out)
+        .select(INSTRUMENT_COLS)
+        .unique(subset=["symbol"], keep="last")
+        .sort("symbol")
+    )

@@ -1,4 +1,5 @@
 """A 股交易日历工具。"""
+
 from __future__ import annotations
 
 import logging

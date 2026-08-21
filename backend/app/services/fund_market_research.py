@@ -7,18 +7,19 @@
 产出：对每个研究对象的四档研判（长期持有 / 减仓 / 可买入 / 观望），
 档位由确定性规则给出（可审计），AI 层在此基础上做叙事解读。
 """
-# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import math
 import statistics
 from datetime import date, timedelta
+from itertools import pairwise
 from typing import Any, Protocol
 
 from app.services.fund_portfolio import parse_localized_number
 from app.services.fund_research import (
-    EastmoneyFundResearchProvider,
     _MARKET_INDICES,
+    EastmoneyFundResearchProvider,
     _market_trend_snapshot,
 )
 
@@ -178,7 +179,7 @@ def _benchmark_beta_correlation(
         window = common
     fund_returns: list[float] = []
     benchmark_returns: list[float] = []
-    for prev, current in zip(window, window[1:]):
+    for prev, current in pairwise(window):
         fund_prev, fund_now = fund_map[prev], fund_map[current]
         bench_prev, bench_now = benchmark_map[prev], benchmark_map[current]
         if min(fund_prev, fund_now, bench_prev, bench_now) <= 0:
@@ -193,7 +194,7 @@ def _benchmark_beta_correlation(
     benchmark_var = sum((value - benchmark_mean) ** 2 for value in benchmark_returns)
     covariance = sum(
         (f - fund_mean) * (b - benchmark_mean)
-        for f, b in zip(fund_returns, benchmark_returns)
+        for f, b in zip(fund_returns, benchmark_returns, strict=True)
     )
     correlation = (
         covariance / math.sqrt(fund_var * benchmark_var)
@@ -220,7 +221,9 @@ def _classify(fund: dict[str, Any], regime: str) -> dict[str, Any]:
         }
 
     category = str(fund.get("category") or "主动权益")
-    thresholds = _POLICY["thresholds"]["bond"] if category == "债券" else _POLICY["thresholds"]["equity"]
+    thresholds = (
+        _POLICY["thresholds"]["bond"] if category == "债券" else _POLICY["thresholds"]["equity"]
+    )
     performance = fund.get("performance_pct") or {}
     r1m = _number(performance.get("1m"))
     r3m = _number(performance.get("3m"))
@@ -236,12 +239,12 @@ def _classify(fund: dict[str, Any], regime: str) -> dict[str, Any]:
     momentum_broken = (
         r3m is not None and r6m is not None and r3m < reduce["r3m_lt"] and r6m < reduce["r6m_lt"]
     )
-    clear_underperformance = (
-        alpha_6m is not None and alpha_6m <= reduce["alpha_6m_lt"]
-    )
+    clear_underperformance = alpha_6m is not None and alpha_6m <= reduce["alpha_6m_lt"]
     sharp_recent_loss = (
-        r1m is not None and r1m <= reduce["r1m_lt"]
-        and max_drawdown is not None and max_drawdown <= reduce["mdd_lt"]
+        r1m is not None
+        and r1m <= reduce["r1m_lt"]
+        and max_drawdown is not None
+        and max_drawdown <= reduce["mdd_lt"]
     )
 
     if momentum_broken or clear_underperformance or sharp_recent_loss:
@@ -251,7 +254,9 @@ def _classify(fund: dict[str, Any], regime: str) -> dict[str, Any]:
         if clear_underperformance:
             reasons.append(f"近6月相对沪深300 超额收益 {alpha_6m:.2f}%，显著跑输基准")
         if sharp_recent_loss:
-            reasons.append(f"近1月收益 {r1m:.2f}% 且近1年最大回撤 {max_drawdown:.2f}%，风险释放未完成")
+            reasons.append(
+                f"近1月收益 {r1m:.2f}% 且近1年最大回撤 {max_drawdown:.2f}%，风险释放未完成"
+            )
         return {
             "tier": "减仓",
             "score": None,
@@ -264,19 +269,27 @@ def _classify(fund: dict[str, Any], regime: str) -> dict[str, Any]:
     buy = _POLICY["buy"]
     buy_ok = (
         buy_allowed
-        and r6m is not None and r6m > buy["r6m_gt"]
-        and r1y is not None and r1y > buy["r1y_gt"]
+        and r6m is not None
+        and r6m > buy["r6m_gt"]
+        and r1y is not None
+        and r1y > buy["r1y_gt"]
         and (alpha_6m is None or alpha_6m > buy["alpha_6m_gt"])
-        and volatility is not None and volatility <= thresholds["vol_cap"]
-        and max_drawdown is not None and max_drawdown >= thresholds["buy_mdd_ge"]
+        and volatility is not None
+        and volatility <= thresholds["vol_cap"]
+        and max_drawdown is not None
+        and max_drawdown >= thresholds["buy_mdd_ge"]
     )
     hold_ok = (
         sample >= _POLICY["min_sample_days_hold"]
-        and r1y is not None and r1y >= thresholds["hold_r1y_ge"]
+        and r1y is not None
+        and r1y >= thresholds["hold_r1y_ge"]
         and (alpha_1y is None or alpha_1y >= 0 or category == "债券")
-        and max_drawdown is not None and max_drawdown >= thresholds["hold_mdd_ge"]
-        and volatility is not None and volatility <= thresholds["vol_cap"]
-        and positive_ratio is not None and positive_ratio >= thresholds["hold_pos_ge"]
+        and max_drawdown is not None
+        and max_drawdown >= thresholds["hold_mdd_ge"]
+        and volatility is not None
+        and volatility <= thresholds["vol_cap"]
+        and positive_ratio is not None
+        and positive_ratio >= thresholds["hold_pos_ge"]
     )
 
     if buy_ok:
@@ -285,9 +298,7 @@ def _classify(fund: dict[str, Any], regime: str) -> dict[str, Any]:
         ]
         if alpha_6m is not None:
             reasons.append(f"近6月相对沪深300 超额收益 {alpha_6m:.2f}%")
-        reasons.append(
-            f"年化波动率 {volatility:.2f}%、近1年最大回撤 {max_drawdown:.2f}%，风险可控"
-        )
+        reasons.append(f"年化波动率 {volatility:.2f}%、近1年最大回撤 {max_drawdown:.2f}%，风险可控")
         if regime == "上行":
             reasons.append("大盘处于上行环境，权益类配置窗口相对友好")
         else:
@@ -335,15 +346,12 @@ def _classify(fund: dict[str, Any], regime: str) -> dict[str, Any]:
 
 def _score_funds(funds: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """跨基金百分位加权评分（0-100），仅用于同类内排序，不改档位。"""
+
     def collect(metric: str) -> list[float]:
         result: list[float] = []
         for fund in funds:
             performance = fund.get("performance_pct") or {}
-            value = (
-                _number(performance.get("1y"))
-                if metric == "r1y"
-                else _number(fund.get(metric))
-            )
+            value = _number(performance.get("1y")) if metric == "r1y" else _number(fund.get(metric))
             if value is not None:
                 result.append(value)
         return result
@@ -413,7 +421,8 @@ def _apply_buy_cap(funds: list[dict[str, Any]]) -> list[dict[str, Any]]:
             fund["recommendation"] = {
                 "tier": "观望",
                 "score": fund.get("score"),
-                "reasons": fund["recommendation"]["reasons"] + ["同类中排名靠后，未进入外部买入候选名单"],
+                "reasons": fund["recommendation"]["reasons"]
+                + ["同类中排名靠后，未进入外部买入候选名单"],
                 "triggers": ["排名进入同类前列或名单腾出空间后重新评估"],
                 "invalidation": ["名单重新生成后本结论自动失效"],
             }
@@ -560,7 +569,9 @@ class FundMarketResearchService:
                     include_history=True,
                 )
             except Exception as exc:
-                data_gaps.append(f"基金 {item['code']} 的公开净值研究数据暂不可用：{str(exc)[:120]}")
+                data_gaps.append(
+                    f"基金 {item['code']} 的公开净值研究数据暂不可用：{str(exc)[:120]}"
+                )
                 continue
             history = snapshot.pop("history", [])
             history_rows = _as_dates(history)
@@ -595,7 +606,10 @@ class FundMarketResearchService:
             fund["recommendation"] = _classify(fund, regime["regime"])
         funds = _apply_buy_cap(funds)
 
-        summary = {tier: sum(1 for fund in funds if fund["recommendation"]["tier"] == tier) for tier in _TIERS}
+        summary = {
+            tier: sum(1 for fund in funds if fund["recommendation"]["tier"] == tier)
+            for tier in _TIERS
+        }
         as_of = max(as_of_dates, default=None)
         return {
             "scope": "fund_market",

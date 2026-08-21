@@ -1,4 +1,5 @@
 """美股全量基础档案、检索与按需历史行情服务。"""
+
 from __future__ import annotations
 
 import copy
@@ -152,12 +153,7 @@ class UsMarketHistoryStore:
         with lock:
             disk = self._cache.get(cache_key) or self._read(normalized, adjust)
             rows = disk.get("rows", []) if disk is not None else []
-            if (
-                not force
-                and disk is not None
-                and self._is_fresh(disk)
-                and len(rows) >= count
-            ):
+            if not force and disk is not None and self._is_fresh(disk) and len(rows) >= count:
                 disk["status"] = "live" if cache_key in self._cache else "snapshot"
                 self._cache[cache_key] = disk
                 return self._tail(disk, count)
@@ -175,9 +171,7 @@ class UsMarketHistoryStore:
                     disk["message"] = "历史行情刷新失败,使用最近快照"
                     self._cache[cache_key] = disk
                     return self._tail(disk, count)
-                raise UsMarketHistoryUnavailableError(
-                    f"{normalized} 的历史行情当前不可用"
-                ) from exc
+                raise UsMarketHistoryUnavailableError(f"{normalized} 的历史行情当前不可用") from exc
 
     def _path(self, symbol: str, adjust: AdjustType) -> Path:
         safe_symbol = symbol.replace(".", "_")
@@ -241,9 +235,7 @@ class UsMarketInstrumentService:
         provider = market_provider or TickFlowUsMarketDataProvider()
         self._overview = overview_service
         self._classifications = classification_store
-        self._instruments = instruments or UsMarketInstrumentStore(
-            data_dir, provider=provider
-        )
+        self._instruments = instruments or UsMarketInstrumentStore(data_dir, provider=provider)
         self._history = history or UsMarketHistoryStore(data_dir, provider=provider)
 
     def list_instruments(
@@ -336,7 +328,12 @@ class UsMarketInstrumentService:
             if target is None:
                 continue
             for key in (
-                "last_price", "change_amount", "change_pct", "volume", "amount", "timestamp",
+                "last_price",
+                "change_amount",
+                "change_pct",
+                "volume",
+                "amount",
+                "timestamp",
             ):
                 if quote.get(key) is not None:
                     target[key] = quote.get(key)
@@ -363,14 +360,15 @@ class UsMarketInstrumentService:
             }
 
         change_rows = [
-            row for row in rows.values()
+            row
+            for row in rows.values()
             if (_finite(row.get("last_price")) or 0) >= 1
             and _finite(row.get("change_pct")) is not None
         ]
         active_rows = [
-            row for row in rows.values()
-            if (_finite(row.get("last_price")) or 0) > 0
-            and (_finite(row.get("volume")) or 0) > 0
+            row
+            for row in rows.values()
+            if (_finite(row.get("last_price")) or 0) > 0 and (_finite(row.get("volume")) or 0) > 0
         ]
         breadth, distribution = build_market_statistics(list(rows.values()))
         live_count = sum(symbol in live_symbols for symbol in rows)
@@ -395,20 +393,23 @@ class UsMarketInstrumentService:
             "distribution": distribution if breadth["total"] else [],
             "rankings": {
                 "gainers": [
-                    public(row) for row in sorted(
+                    public(row)
+                    for row in sorted(
                         change_rows,
                         key=lambda row: float(row["change_pct"]),
                         reverse=True,
                     )[:limit]
                 ],
                 "losers": [
-                    public(row) for row in sorted(
+                    public(row)
+                    for row in sorted(
                         change_rows,
                         key=lambda row: float(row["change_pct"]),
                     )[:limit]
                 ],
                 "active": [
-                    public(row) for row in sorted(
+                    public(row)
+                    for row in sorted(
                         active_rows,
                         key=lambda row: (
                             _finite(row.get("amount"))
@@ -437,20 +438,31 @@ class UsMarketInstrumentService:
             if not isinstance(row, Mapping) or not row.get("symbol"):
                 continue
             symbol = str(row["symbol"])
-            target = merged.setdefault(symbol, {
-                "symbol": symbol,
-                "code": symbol.removesuffix(".US"),
-                "exchange": "US",
-                "region": "US",
-                "name": str(row.get("name") or symbol),
-                "instrument_type": "stock",
-                "total_shares": None,
-                "float_shares": None,
-            })
+            target = merged.setdefault(
+                symbol,
+                {
+                    "symbol": symbol,
+                    "code": symbol.removesuffix(".US"),
+                    "exchange": "US",
+                    "region": "US",
+                    "name": str(row.get("name") or symbol),
+                    "instrument_type": "stock",
+                    "total_shares": None,
+                    "float_shares": None,
+                },
+            )
             target["name_en"] = str(row.get("name") or "")
             for key in (
-                "sector", "industry", "country", "ipo_year", "market_cap",
-                "last_price", "change_amount", "change_pct", "volume", "profile_url",
+                "sector",
+                "industry",
+                "country",
+                "ipo_year",
+                "market_cap",
+                "last_price",
+                "change_amount",
+                "change_pct",
+                "volume",
+                "profile_url",
             ):
                 if row.get(key) not in (None, ""):
                     target[key] = row.get(key)
@@ -471,7 +483,12 @@ class UsMarketInstrumentService:
                 if target is None:
                     continue
                 for key in (
-                    "last_price", "change_amount", "change_pct", "volume", "amount", "timestamp",
+                    "last_price",
+                    "change_amount",
+                    "change_pct",
+                    "volume",
+                    "amount",
+                    "timestamp",
                 ):
                     target[key] = _finite(quote.get(key))
                 target["quote_source"] = "TickFlow"

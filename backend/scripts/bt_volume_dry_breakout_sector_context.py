@@ -38,9 +38,7 @@ def _config(
             **context,
             "lag_bars": context_lag_bars,
         }
-    effective_max_positions = (
-        version.max_positions if max_positions is None else max_positions
-    )
+    effective_max_positions = version.max_positions if max_positions is None else max_positions
     return StrategyBacktestConfig(
         strategy_id="volume_dry_breakout",
         symbols=None,
@@ -72,10 +70,7 @@ def _without_entry_range(
     start_text = str(start)
     end_text = str(end)
     skipped_rows = np.fromiter(
-        (
-            start_text <= label[:10] <= end_text
-            for label in prepared.market_data.timestamp_labels
-        ),
+        (start_text <= label[:10] <= end_text for label in prepared.market_data.timestamp_labels),
         dtype=bool,
         count=len(prepared.market_data.timestamp_labels),
     )
@@ -128,9 +123,7 @@ def main() -> None:
     service = StrategyBacktestService(
         engine=BacktestEngine(repo),
         strategy_engine=StrategyEngine(
-            strategy_dirs=[
-                Path(__file__).resolve().parent.parent / "app" / "strategy" / "builtin"
-            ]
+            strategy_dirs=[Path(__file__).resolve().parent.parent / "app" / "strategy" / "builtin"]
         ),
     )
 
@@ -167,12 +160,8 @@ def main() -> None:
                 "end": str(args.end),
                 "max_exposure_pct": version.max_exposure_pct,
                 "max_positions": config.max_positions,
-                "skip_entry_start": (
-                    str(args.skip_entry_start) if args.skip_entry_start else None
-                ),
-                "skip_entry_end": (
-                    str(args.skip_entry_end) if args.skip_entry_end else None
-                ),
+                "skip_entry_start": (str(args.skip_entry_start) if args.skip_entry_start else None),
+                "skip_entry_end": (str(args.skip_entry_end) if args.skip_entry_end else None),
                 "skipped_trading_days": skipped_trading_days,
                 "trades_touching_skip_range": trades_touching_skip_range,
                 "error": result.error,

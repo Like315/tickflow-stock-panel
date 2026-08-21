@@ -10,7 +10,7 @@ import { usePreferences, useVersion } from '@/lib/useSharedQueries'
 import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { PageHeader } from '@/components/PageHeader'
-import { refreshAlertToastConfig } from '@/components/AlertToast'
+import { refreshAlertToastConfig } from '@/lib/alertToastStore'
 import { SOUND_OPTIONS, previewSound } from '@/lib/notificationSound'
 import {
   listZhVoices, previewVoice, activateVoice, getCurrentVoiceURI,

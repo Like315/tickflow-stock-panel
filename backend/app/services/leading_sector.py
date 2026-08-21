@@ -27,6 +27,7 @@
 进程级 TTL 120s, 缓存键含最新交易日 → 数据更新后自动失效 (与 rps_rotation 同模式);
 另提供 `invalidate_cache()` 供管道在需要时主动清空。
 """
+
 from __future__ import annotations
 
 import logging
@@ -68,19 +69,23 @@ def _trade_plan(history: pl.DataFrame, symbol: str) -> dict | None:
     if len(stock) < 120:
         return None
 
-    stock = stock.with_columns([
-        pl.col("close").rolling_mean(5).alias("ma5"),
-        pl.col("close").rolling_max(20).alias("high_close_20d"),
-        pl.col("date").dt.strftime("%G-%V").alias("week"),
-    ])
+    stock = stock.with_columns(
+        [
+            pl.col("close").rolling_mean(5).alias("ma5"),
+            pl.col("close").rolling_max(20).alias("high_close_20d"),
+            pl.col("date").dt.strftime("%G-%V").alias("week"),
+        ]
+    )
     weekly = (
         stock.group_by("week", maintain_order=True)
         .agg(pl.col("date").last(), pl.col("close").last())
         .sort("date")
-        .with_columns([
-            pl.col("close").rolling_mean(4).alias("wma4"),
-            pl.col("close").rolling_mean(10).alias("wma10"),
-        ])
+        .with_columns(
+            [
+                pl.col("close").rolling_mean(4).alias("wma4"),
+                pl.col("close").rolling_mean(10).alias("wma10"),
+            ]
+        )
     )
     if len(weekly) < 10:
         return None
@@ -89,10 +94,12 @@ def _trade_plan(history: pl.DataFrame, symbol: str) -> dict | None:
         .group_by("month", maintain_order=True)
         .agg(pl.col("date").last(), pl.col("close").last())
         .sort("date")
-        .with_columns([
-            pl.col("close").rolling_mean(3).alias("mma3"),
-            pl.col("close").rolling_mean(6).alias("mma6"),
-        ])
+        .with_columns(
+            [
+                pl.col("close").rolling_mean(3).alias("mma3"),
+                pl.col("close").rolling_mean(6).alias("mma6"),
+            ]
+        )
     )
     if len(monthly) < 6:
         return None
@@ -132,7 +139,11 @@ def _trade_plan(history: pl.DataFrame, symbol: str) -> dict | None:
         "drawdown_stop_price": round(drawdown_stop, 3),
         "drawdown_pct": round(close / high_close - 1.0, 4),
         "exit_ma5": exit_ma5,
-        "eligible": monthly_trend and weekly_trend and above_ma5 and within_drawdown and not exit_ma5,
+        "eligible": monthly_trend
+        and weekly_trend
+        and above_ma5
+        and within_drawdown
+        and not exit_ma5,
     }
 
 
@@ -152,7 +163,9 @@ def _empty_result(latest: date | None, kind: str, days: int) -> dict:
     }
 
 
-def _persistence_score(top10_days: int, days_with_data: int, avg_rank: float, sector_count: int) -> float:
+def _persistence_score(
+    top10_days: int, days_with_data: int, avg_rank: float, sector_count: int
+) -> float:
     """排名持续性得分 (0~100)。
 
     强势日占比 (前 10 天数 / 有数据天数) 权重 0.6; 平均排名线性分权重 0.4。
@@ -208,9 +221,7 @@ def _build_sector_stats(wdf: pl.DataFrame, kind: str) -> pl.DataFrame:
         .filter(pl.col("avg_pct").is_not_null() & pl.col("avg_pct").is_not_nan())
     )
     # 当日涨幅榜排名 (avg_pct 降序, 每列各自排)
-    sday = sday.with_columns(
-        pl.col("avg_pct").rank(descending=True).over("date").alias("day_rank")
-    )
+    sday = sday.with_columns(pl.col("avg_pct").rank(descending=True).over("date").alias("day_rank"))
     stats = sday.group_by(kind).agg(
         avg_rank=pl.col("day_rank").mean(),
         top10_days=(pl.col("day_rank") <= _TOP_RANK).sum(),
@@ -251,10 +262,7 @@ def _build_champions(wdf: pl.DataFrame, daily_leaders: pl.DataFrame, kind: str) 
     最高连板 = 窗口内 consecutive_limit_ups 最大值 (缺失列退化为 0)。
     """
     # 领涨天数: 每日龙头按 (kind, symbol) 计数
-    lead = (
-        daily_leaders.group_by([kind, "symbol"])
-        .agg(pl.len().alias("lead_days"))
-    )
+    lead = daily_leaders.group_by([kind, "symbol"]).agg(pl.len().alias("lead_days"))
 
     # 累计涨幅: 只对有行情的日子连乘, 避免停牌日 null 污染
     cum = (
@@ -266,20 +274,13 @@ def _build_champions(wdf: pl.DataFrame, daily_leaders: pl.DataFrame, kind: str) 
         )
     )
 
-    base = (
-        wdf.group_by([kind, "symbol"])
-        .agg(
-            name=(
-                pl.col("name").first()
-                if "name" in wdf.columns
-                else pl.col("symbol").first()
-            ),
-            max_boards=(
-                pl.col("consecutive_limit_ups").fill_null(0).max()
-                if "consecutive_limit_ups" in wdf.columns
-                else pl.lit(0).alias("max_boards")
-            ),
-        )
+    base = wdf.group_by([kind, "symbol"]).agg(
+        name=(pl.col("name").first() if "name" in wdf.columns else pl.col("symbol").first()),
+        max_boards=(
+            pl.col("consecutive_limit_ups").fill_null(0).max()
+            if "consecutive_limit_ups" in wdf.columns
+            else pl.lit(0).alias("max_boards")
+        ),
     )
 
     merged = (
@@ -292,7 +293,8 @@ def _build_champions(wdf: pl.DataFrame, daily_leaders: pl.DataFrame, kind: str) 
 
     # 冠军排序: 领涨天数 → 累计涨幅 → 最高连板, 均降序; 每组取第一
     merged = merged.sort(
-        ["lead_days", "cum_pct", "max_boards"], descending=[True, True, True],
+        ["lead_days", "cum_pct", "max_boards"],
+        descending=[True, True, True],
     )
     top = merged.group_by(kind, maintain_order=True).first()
 
@@ -373,8 +375,14 @@ def build_leading_sectors(
     # 2. 历史行情 (命中内存缓存)
     start = latest - timedelta(days=max(days * 2 + 10, 260))
     want_cols = [
-        "symbol", "date", "change_pct", "amount",
-        "consecutive_limit_ups", "signal_limit_up", "name", "close",
+        "symbol",
+        "date",
+        "change_pct",
+        "amount",
+        "consecutive_limit_ups",
+        "signal_limit_up",
+        "name",
+        "close",
     ]
     df = repo.get_enriched_range(start, latest, columns=want_cols)
     if df is None or df.is_empty():
@@ -415,14 +423,18 @@ def build_leading_sectors(
     leader_by_sector: dict[str, list[dict]] = {}
     for row in daily_leaders.iter_rows(named=True):
         sec = row[kind]
-        leader_by_sector.setdefault(sec, []).append({
-            "date": str(row["date"]),
-            "symbol": row["symbol"],
-            "name": row.get("name") or row["symbol"],
-            "change_pct": round(float(row["change_pct"]), 4) if row["change_pct"] is not None else None,
-            "rank_in_sector": 1,
-            "is_limit_up": bool(row.get("signal_limit_up")),
-        })
+        leader_by_sector.setdefault(sec, []).append(
+            {
+                "date": str(row["date"]),
+                "symbol": row["symbol"],
+                "name": row.get("name") or row["symbol"],
+                "change_pct": round(float(row["change_pct"]), 4)
+                if row["change_pct"] is not None
+                else None,
+                "rank_in_sector": 1,
+                "is_limit_up": bool(row.get("signal_limit_up")),
+            }
+        )
 
     max_amount = float(stats["total_amount"].max() or 0.0)
     window_len = len(window_dates)
@@ -437,7 +449,12 @@ def build_leading_sectors(
             champion = dict(champion)
             champion["trade_plan"] = trade_plans.get(champion["symbol"])
         parts = {
-            "persistence": _persistence_score(int(row["top10_days"]), int(row["days_with_data"]), float(row["avg_rank"]), total_sectors),
+            "persistence": _persistence_score(
+                int(row["top10_days"]),
+                int(row["days_with_data"]),
+                float(row["avg_rank"]),
+                total_sectors,
+            ),
             "capital": _capital_score(float(row["total_amount"]), max_amount),
             "leader": _leader_score(champion, window_len),
         }
@@ -449,18 +466,20 @@ def build_leading_sectors(
         )
         daily = leader_by_sector.get(name, [])
         daily.sort(key=lambda d: d["date"], reverse=True)  # 最新在前
-        sectors.append({
-            "name": name,
-            "count": int(row["member_count"]),
-            "score": score,
-            "parts": parts,
-            "avg_pct": round(float(row["avg_pct"]), 4),
-            "total_amount": round(float(row["total_amount"]), 2),
-            "avg_rank": round(float(row["avg_rank"]), 1),
-            "top10_days": int(row["top10_days"]),
-            "champion": champion,
-            "daily_leaders": daily,
-        })
+        sectors.append(
+            {
+                "name": name,
+                "count": int(row["member_count"]),
+                "score": score,
+                "parts": parts,
+                "avg_pct": round(float(row["avg_pct"]), 4),
+                "total_amount": round(float(row["total_amount"]), 2),
+                "avg_rank": round(float(row["avg_rank"]), 1),
+                "top10_days": int(row["top10_days"]),
+                "champion": champion,
+                "daily_leaders": daily,
+            }
+        )
 
     sectors.sort(key=lambda s: s["score"], reverse=True)
 

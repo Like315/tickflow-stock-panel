@@ -195,7 +195,10 @@ function WatchlistStockPicker({
     queryFn: api.watchlistList,
     staleTime: 30_000,
   })
-  const entries = watchlist.data?.symbols ?? []
+  const entries = useMemo(
+    () => watchlist.data?.symbols ?? [],
+    [watchlist.data?.symbols],
+  )
   const filteredEntries = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase()
     if (!keyword) return entries

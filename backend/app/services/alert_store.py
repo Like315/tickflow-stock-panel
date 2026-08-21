@@ -10,6 +10,7 @@
   - 清理策略: 追加后按需 prune (按 ts 删旧),避免文件无限膨胀
   - 读时全量加载到内存过滤 (记录量受上限约束, 5000 条量级无压力)
 """
+
 from __future__ import annotations
 
 import json
@@ -78,6 +79,7 @@ def list_recent(
     持锁读: prune/delete/clear 会整文件重写, 无锁读可能读到截断内容。
     """
     import time
+
     cutoff = (time.time() - days * 86400) * 1000  # 毫秒
     out: list[dict] = []
     p = _path(data_dir)
@@ -182,6 +184,7 @@ def count(data_dir: Path) -> int:
 def _prune_locked(p: Path) -> None:
     """(调用方需持锁) 保留近 MAX_DAYS 天 + 上限 MAX_RECORDS 条。"""
     import time
+
     cutoff = (time.time() - MAX_DAYS * 86400) * 1000
     kept: list[dict] = []
     try:

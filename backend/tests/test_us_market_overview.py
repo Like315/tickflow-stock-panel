@@ -75,11 +75,7 @@ class _ProxyOnlyQuotes:
 
 class _EtfOnlyQuotes(_ProxyOnlyQuotes):
     def get(self, *, symbols: list[str]) -> list[dict]:
-        return [
-            _quote(symbol, 102, 100)
-            for symbol in symbols
-            if symbol in PROXY_SYMBOLS
-        ]
+        return [_quote(symbol, 102, 100) for symbol in symbols if symbol in PROXY_SYMBOLS]
 
 
 class _BatchQuotes(_ProxyOnlyQuotes):
@@ -208,9 +204,7 @@ def test_rankings_require_volume_and_use_source_amplitude() -> None:
 
 
 def test_advance_decline_ratio_is_null_without_decliners() -> None:
-    result = build_live_overview(
-        [_quote("UP.US", 102, 100), _quote("FLAT.US", 100, 100)]
-    )
+    result = build_live_overview([_quote("UP.US", 102, 100), _quote("FLAT.US", 100, 100)])
 
     assert result["breadth"]["advance_decline_ratio"] is None
     json.dumps(result, allow_nan=False)

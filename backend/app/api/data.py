@@ -1,13 +1,16 @@
 """数据画像 API —— 让前端知道"我们本地有什么数据"。"""
+
 from __future__ import annotations
 
 import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from collections.abc import Callable
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from fastapi import APIRouter, Request
 
@@ -107,7 +110,7 @@ def _safe_aggregate(repo, view: str) -> dict | None:
                        count(DISTINCT date) AS trading_days
                 FROM {view}"""
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("aggregate %s failed: %s", view, e)
         return None
     if not row or not row[0]:
@@ -161,7 +164,7 @@ def _safe_aggregate_enriched(repo) -> dict | None:
     try:
         cols = repo.execute_all("DESCRIBE kline_enriched")
         fields = len(cols)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     # 日期范围：从分区目录名获取，不扫数据
@@ -191,12 +194,10 @@ def _safe_aggregate_enriched(repo) -> dict | None:
 def _count_instruments_symbols(repo) -> int:
     """从 instruments 小表取标的数（~5000行，毫秒级）。"""
     try:
-        sym_row = repo.execute_one(
-            "SELECT count(DISTINCT symbol) FROM instruments"
-        )
+        sym_row = repo.execute_one("SELECT count(DISTINCT symbol) FROM instruments")
         if sym_row and sym_row[0]:
             return int(sym_row[0])
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return 0
 
@@ -211,7 +212,7 @@ def _safe_aggregate_instruments(repo) -> dict | None:
                       count_if(name IS NOT NULL AND name != '') AS named
                FROM instruments"""
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("aggregate instruments failed: %s", e)
         return None
     if not row or not row[0]:
@@ -235,7 +236,7 @@ def _safe_aggregate_index_enriched(repo) -> dict | None:
     try:
         cols = repo.execute_all("DESCRIBE kline_index_enriched")
         fields = len(cols)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     stats = _safe_aggregate(repo, "kline_index_enriched")
     if not stats:
@@ -252,7 +253,7 @@ def _safe_aggregate_index_instruments(repo) -> dict | None:
                       count_if(name IS NOT NULL AND name != '') AS named
                FROM instruments_index"""
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("aggregate instruments_index failed: %s", e)
         return None
     if not row or not row[0]:
@@ -281,7 +282,7 @@ def _safe_aggregate_etf_instruments(repo) -> dict | None:
     for sql in queries:
         try:
             row = repo.execute_one(sql)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("aggregate etf instruments fallback failed: %s", e)
             continue
         if row and row[0]:
@@ -300,7 +301,7 @@ def _safe_aggregate_etf_enriched(repo) -> dict | None:
     try:
         cols = repo.execute_all("DESCRIBE kline_etf_enriched")
         fields = len(cols)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     stats = _safe_aggregate(repo, "kline_etf_enriched")
     if not stats:
@@ -330,7 +331,7 @@ def _safe_aggregate_etf_daily(repo) -> dict | None:
     for sql in queries:
         try:
             row = repo.execute_one(sql)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.debug("aggregate etf daily fallback failed: %s", e)
             continue
         if row and row[0]:
@@ -348,9 +349,7 @@ def _safe_aggregate_adj_factor(repo) -> dict | None:
     """adj_factor 视图统计,日期范围对齐日 K 覆盖区间。"""
     try:
         # 取日 K 的日期范围作为过滤条件
-        dr = repo.execute_one(
-            "SELECT min(date), max(date) FROM kline_daily"
-        )
+        dr = repo.execute_one("SELECT min(date), max(date) FROM kline_daily")
         if not dr or not dr[0]:
             return None
         d_min, d_max = dr[0], dr[1]
@@ -371,7 +370,7 @@ def _safe_aggregate_adj_factor(repo) -> dict | None:
             "latest_date": str(d_max),
             "trading_days": int(row[2] or 0),
         }
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("aggregate adj_factor failed: %s", e)
         return None
 
@@ -420,6 +419,7 @@ def _safe_aggregate_financials(repo) -> dict | None:
         if path.exists():
             try:
                 import polars as pl
+
                 df = pl.read_parquet(path, columns=["symbol"])
                 rows = len(df)
                 symbols = df["symbol"].n_unique() if not df.is_empty() else 0
@@ -451,10 +451,8 @@ def _scan_dir_stats(dirpath: Path) -> tuple[int, float]:
             count += c
             total += s
         elif entry.is_file(follow_symlinks=False):
-            try:
+            with suppress(OSError):
                 total += entry.stat().st_size
-            except OSError:
-                pass
             count += 1
     return count, round(total / 1048576, 2)
 
@@ -470,10 +468,8 @@ def _scan_dir_recursive(entry: os.DirEntry) -> tuple[int, int]:
                 count += c
                 total += s
             elif sub.is_file(follow_symlinks=False):
-                try:
+                with suppress(OSError):
                     total += sub.stat().st_size
-                except OSError:
-                    pass
                 count += 1
     except PermissionError:
         pass
@@ -528,10 +524,8 @@ def _compute_storage(data_dir: Path) -> dict:
     # 根目录散文件
     for entry in os.scandir(data_dir):
         if entry.is_file(follow_symlinks=False):
-            try:
+            with suppress(OSError):
                 total_size += entry.stat().st_size / 1048576
-            except OSError:
-                pass
     stats["total_size_mb"] = round(total_size, 2)
     return stats
 
@@ -544,7 +538,7 @@ def _next_cron_run(scheduler, job_id: str) -> str | None:
         job = scheduler.get_job(job_id)
         if job and job.next_run_time:
             return job.next_run_time.isoformat(timespec="seconds")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return None
 
@@ -571,6 +565,7 @@ def _last_finished(job_label: str) -> str | None:
             return _last_finished_cache.get(job_label)
 
     from app.services.pipeline_jobs import job_store
+
     jobs = job_store.list_recent(limit=50)
     cache: dict[str, str | None] = {}
     for j in jobs:
@@ -592,30 +587,38 @@ def status(request: Request) -> dict:
     data_dir = repo.store.data_dir
 
     return {
-        "daily":       _get_table_stats("daily",       lambda: _safe_aggregate_daily(repo)),
-        "enriched":    _get_table_stats("enriched",    lambda: _safe_aggregate_enriched(repo)),
-    "index_daily":       _get_table_stats("index_daily",       lambda: _safe_aggregate_index_daily(repo)),
-    "index_enriched":    _get_table_stats("index_enriched",    lambda: _safe_aggregate_index_enriched(repo)),
-    "index_minute":      _get_table_stats("index_minute",      lambda: _safe_aggregate_minute(repo, "index")),
-    "index_instruments": _get_table_stats("index_instruments", lambda: _safe_aggregate_index_instruments(repo)),
-    "etf_daily":         _get_table_stats("etf_daily",         lambda: _safe_aggregate_etf_daily(repo)),
-    "etf_enriched":      _get_table_stats("etf_enriched",      lambda: _safe_aggregate_etf_enriched(repo)),
-    "etf_instruments":   _get_table_stats("etf_instruments",   lambda: _safe_aggregate_etf_instruments(repo)),
-    "etf_minute":        _get_table_stats("etf_minute",        lambda: _safe_aggregate_minute(repo, "etf")),
-    "minute":      _get_table_stats("minute",      lambda: _safe_aggregate_minute(repo)),
-        "adj_factor":  _get_table_stats("adj_factor",  lambda: _safe_aggregate_adj_factor(repo)),
+        "daily": _get_table_stats("daily", lambda: _safe_aggregate_daily(repo)),
+        "enriched": _get_table_stats("enriched", lambda: _safe_aggregate_enriched(repo)),
+        "index_daily": _get_table_stats("index_daily", lambda: _safe_aggregate_index_daily(repo)),
+        "index_enriched": _get_table_stats(
+            "index_enriched", lambda: _safe_aggregate_index_enriched(repo)
+        ),
+        "index_minute": _get_table_stats(
+            "index_minute", lambda: _safe_aggregate_minute(repo, "index")
+        ),
+        "index_instruments": _get_table_stats(
+            "index_instruments", lambda: _safe_aggregate_index_instruments(repo)
+        ),
+        "etf_daily": _get_table_stats("etf_daily", lambda: _safe_aggregate_etf_daily(repo)),
+        "etf_enriched": _get_table_stats(
+            "etf_enriched", lambda: _safe_aggregate_etf_enriched(repo)
+        ),
+        "etf_instruments": _get_table_stats(
+            "etf_instruments", lambda: _safe_aggregate_etf_instruments(repo)
+        ),
+        "etf_minute": _get_table_stats("etf_minute", lambda: _safe_aggregate_minute(repo, "etf")),
+        "minute": _get_table_stats("minute", lambda: _safe_aggregate_minute(repo)),
+        "adj_factor": _get_table_stats("adj_factor", lambda: _safe_aggregate_adj_factor(repo)),
         "instruments": _get_table_stats("instruments", lambda: _safe_aggregate_instruments(repo)),
-        "financials":  _get_table_stats("financials",  lambda: _safe_aggregate_financials(repo)),
-
+        "financials": _get_table_stats("financials", lambda: _safe_aggregate_financials(repo)),
         # 文件层面信息(缓存)
         "storage": _get_storage(data_dir),
-
         # 调度
         "next_instruments_run": _next_cron_run(scheduler, "pre_market_instruments"),
-        "next_pipeline_run":    _next_cron_run(scheduler, "daily_pipeline"),
+        "next_pipeline_run": _next_cron_run(scheduler, "daily_pipeline"),
         "last_instruments_run": _last_finished("instruments"),
-        "last_pipeline_run":    _last_finished("pipeline"),
-        "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "last_pipeline_run": _last_finished("pipeline"),
+        "checked_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         # 指标缓存就绪标志 (启动时 enriched 异步预热, 完成前为 false)
         "indicators_ready": getattr(request.app.state, "indicators_ready", True),
     }
@@ -631,10 +634,25 @@ def clear_data(request: Request):
     deleted = 0
 
     for sub in (
-        "kline_daily", "kline_daily_enriched", "kline_index_daily", "kline_index_enriched", "kline_index_minute",
-        "kline_etf_daily", "kline_etf_enriched", "kline_etf_minute", "kline_minute",
-        "adj_factor", "adj_factor_etf", "instruments", "instruments_index", "instruments_etf", "pools", "financials",
-        "backtest_results", "screener_results", "ai_cache",
+        "kline_daily",
+        "kline_daily_enriched",
+        "kline_index_daily",
+        "kline_index_enriched",
+        "kline_index_minute",
+        "kline_etf_daily",
+        "kline_etf_enriched",
+        "kline_etf_minute",
+        "kline_minute",
+        "adj_factor",
+        "adj_factor_etf",
+        "instruments",
+        "instruments_index",
+        "instruments_etf",
+        "pools",
+        "financials",
+        "backtest_results",
+        "screener_results",
+        "ai_cache",
     ):
         d = data_dir / sub
         if d.exists():
@@ -649,6 +667,7 @@ def clear_data(request: Request):
 
     # 清除同步历史（内存 + 磁盘 job_store/ 文件夹）
     from app.services.pipeline_jobs import job_store
+
     job_store.clear()
 
     # 清除财务数据
@@ -662,6 +681,7 @@ def clear_data(request: Request):
     # 清除监控运行数据 (user_data 下仅清运行产物, 不动 monitor_rules/preferences/secrets 等用户配置)
     # - 触发记录 alerts.jsonl
     from app.services import alert_store
+
     alert_store.clear(data_dir)
     # - 待推送的实时通知队列 (进程内存)
     qs = getattr(request.app.state, "quote_service", None)
@@ -677,10 +697,12 @@ def clear_data(request: Request):
 
     # 清除 Screener 进程级 _history_cache (TTL 缓存)
     from app.services.screener import ScreenerService
+
     ScreenerService.clear_history_cache()
 
     # 清除 Overview 总览聚合结果缓存 (5s TTL)
     from app.api.overview import invalidate_overview_cache
+
     invalidate_overview_cache()
 
     # 刷新 DuckDB 视图（空 parquet 目录也需要重新挂载）——
@@ -807,12 +829,14 @@ def table_schema(request: Request, table: str) -> list[dict]:
         for col in cols:
             name = col[0]
             dtype = col[1]
-            fields.append({
-                "name": name,
-                "type": dtype,
-                "desc": desc_map.get(name, ""),
-            })
-    except Exception:  # noqa: BLE001
+            fields.append(
+                {
+                    "name": name,
+                    "type": dtype,
+                    "desc": desc_map.get(name, ""),
+                }
+            )
+    except Exception:
         # 视图不存在(本地无数据)，用静态字段定义兜底
         if desc_map:
             for name, desc in desc_map.items():
@@ -836,6 +860,7 @@ def get_version(request: Request) -> dict:
 
     # 2. 回退到项目根 VERSION 文件
     from app.config import settings
+
     project_root = Path(settings.data_dir).parent
     version_file = project_root / "VERSION"
     if version_file.exists():
@@ -858,8 +883,10 @@ def refresh_cache(request: Request) -> dict:
     repo.refresh_cache()
     # 清除 Overview 总览聚合结果缓存 + Screener 历史 TTL 缓存
     from app.api.overview import invalidate_overview_cache
+
     invalidate_overview_cache()
     from app.services.screener import ScreenerService
+
     ScreenerService.clear_history_cache()
     logger.info("refresh-cache: Polars 缓存已重建")
     return {"ok": True}

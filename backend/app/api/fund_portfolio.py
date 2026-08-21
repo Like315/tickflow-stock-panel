@@ -1,5 +1,5 @@
 """Fund portfolio APIs: local ledger, import preview, and quote refresh."""
-# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import logging
@@ -81,7 +81,12 @@ async def import_preview(request: Request, file: Annotated[UploadFile, File()]):
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     filename = (file.filename or "").lower()
     is_image = content_type in _IMAGE_TYPES or filename.endswith(_IMAGE_EXTENSIONS)
-    is_csv = content_type in {"text/csv", "application/csv", "application/vnd.ms-excel", "text/plain"} or filename.endswith(".csv")
+    is_csv = content_type in {
+        "text/csv",
+        "application/csv",
+        "application/vnd.ms-excel",
+        "text/plain",
+    } or filename.endswith(".csv")
     if not is_image and not is_csv:
         raise HTTPException(400, "仅支持 PNG/JPG/WebP/BMP/GIF 截图或 CSV 文件")
     limit = _MAX_IMAGE_BYTES if is_image else _MAX_CSV_BYTES

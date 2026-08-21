@@ -44,9 +44,7 @@ def _service(repo: KlineRepository) -> StrategyBacktestService:
     return StrategyBacktestService(
         engine=BacktestEngine(repo),
         strategy_engine=StrategyEngine(
-            strategy_dirs=[
-                Path(__file__).resolve().parent.parent / "app" / "strategy" / "builtin"
-            ]
+            strategy_dirs=[Path(__file__).resolve().parent.parent / "app" / "strategy" / "builtin"]
         ),
     )
 
@@ -73,9 +71,7 @@ def _config(
         exit_fill="open_t+1",
         max_positions=version.max_positions if max_positions is None else max_positions,
         max_exposure_pct=(
-            version.max_exposure_pct
-            if max_exposure_pct is None
-            else max_exposure_pct
+            version.max_exposure_pct if max_exposure_pct is None else max_exposure_pct
         ),
         initial_capital=initial_capital,
         commission_pct=COMMISSION_PCT,
@@ -145,10 +141,9 @@ def _load_candidate_minutes(
     if not points.size:
         return pl.DataFrame()
     symbols = sorted({market.symbols[int(asset)] for _, asset in points})
-    dates = sorted({
-        date.fromisoformat(market.timestamp_labels[int(time_id)][:10])
-        for time_id, _ in points
-    })
+    dates = sorted(
+        {date.fromisoformat(market.timestamp_labels[int(time_id)][:10]) for time_id, _ in points}
+    )
     try:
         minute = repo.get_minute_by_dates(symbols, dates, asset_type="stock")
     except Exception:
@@ -310,8 +305,7 @@ def _combine_sleeves(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     sleeves = (("c2", c_result), ("leader", leader_result))
     curve_maps = {
-        name: {str(row["date"]): row for row in result.equity_curve}
-        for name, result in sleeves
+        name: {str(row["date"]): row for row in result.equity_curve} for name, result in sleeves
     }
     dates = sorted(set().union(*(set(curve) for curve in curve_maps.values())))
     last_rows = {
@@ -325,19 +319,20 @@ def _combine_sleeves(
                 last_rows[name] = curve_maps[name][date_text]
         total_value = reserve_cash + sum(float(row["value"]) for row in last_rows.values())
         invested = sum(
-            float(row["value"]) * float(row.get("exposure") or 0.0)
-            for row in last_rows.values()
+            float(row["value"]) * float(row.get("exposure") or 0.0) for row in last_rows.values()
         )
-        combined_curve.append({
-            "date": date_text,
-            "value": round(total_value, 2),
-            "cash": round(
-                reserve_cash + sum(float(row.get("cash") or 0.0) for row in last_rows.values()),
-                2,
-            ),
-            "positions": sum(int(row.get("positions") or 0) for row in last_rows.values()),
-            "exposure": round(invested / total_value if total_value > 0 else 0.0, 4),
-        })
+        combined_curve.append(
+            {
+                "date": date_text,
+                "value": round(total_value, 2),
+                "cash": round(
+                    reserve_cash + sum(float(row.get("cash") or 0.0) for row in last_rows.values()),
+                    2,
+                ),
+                "positions": sum(int(row.get("positions") or 0) for row in last_rows.values()),
+                "exposure": round(invested / total_value if total_value > 0 else 0.0, 4),
+            }
+        )
 
     combined_trades: list[dict[str, Any]] = []
     for name, result in sleeves:
@@ -370,7 +365,9 @@ def _combine_sleeves(
         "avg_exposure": round(
             float(np.mean([row["exposure"] for row in combined_curve])),
             4,
-        ) if combined_curve else 0.0,
+        )
+        if combined_curve
+        else 0.0,
         "max_exposure": round(
             max((float(row["exposure"]) for row in combined_curve), default=0.0),
             4,
@@ -391,11 +388,18 @@ def main() -> None:
 
     daily_config = _config(daily_version, args.start, args.end)
     daily_result = _run_daily(service, daily_config)
-    print(json.dumps(_activity_row(
-        daily_version,
-        daily_result,
-        exposure_cap=daily_config.max_exposure_pct,
-    ), ensure_ascii=False, default=str), flush=True)
+    print(
+        json.dumps(
+            _activity_row(
+                daily_version,
+                daily_result,
+                exposure_cap=daily_config.max_exposure_pct,
+            ),
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
 
     minute_config = _config(minute_version, args.start, args.end)
     minute_result, coverage = _run_intraday(
@@ -404,20 +408,34 @@ def main() -> None:
         minute_version,
         minute_config,
     )
-    print(json.dumps(_sim_result_row(
-        minute_version,
-        minute_result,
-        coverage,
-        config=minute_config,
-    ), ensure_ascii=False, default=str), flush=True)
+    print(
+        json.dumps(
+            _sim_result_row(
+                minute_version,
+                minute_result,
+                coverage,
+                config=minute_config,
+            ),
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
 
     leader_config = _config(leader_version, args.start, args.end)
     leader_result = _run_daily(service, leader_config)
-    print(json.dumps(_activity_row(
-        leader_version,
-        leader_result,
-        exposure_cap=leader_config.max_exposure_pct,
-    ), ensure_ascii=False, default=str), flush=True)
+    print(
+        json.dumps(
+            _activity_row(
+                leader_version,
+                leader_result,
+                exposure_cap=leader_config.max_exposure_pct,
+            ),
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
 
     c_sleeve_config = _config(
         daily_version,

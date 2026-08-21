@@ -2,7 +2,7 @@
 
 只读取官网全文检索返回的标题、日期和原文链接；失败时返回明确降级状态。
 """
-# ruff: noqa: RUF002
+
 from __future__ import annotations
 
 import html
@@ -46,7 +46,9 @@ class CninfoAnnouncementProvider:
         self._lock = threading.Lock()
         self._cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
-    def fetch(self, symbol: str, *, end_date: date, days: int = 45, limit: int = 5) -> dict[str, Any]:
+    def fetch(
+        self, symbol: str, *, end_date: date, days: int = 45, limit: int = 5
+    ) -> dict[str, Any]:
         code = symbol.split(".", 1)[0]
         key = (code, end_date.isoformat())
         with self._lock:
@@ -96,12 +98,14 @@ class CninfoAnnouncementProvider:
                 if published_date > end_date:
                     continue
                 published_at = published_date.isoformat()
-                announcements.append({
-                    "title": _clean_title(str(row.get("announcementTitle") or ""))[:240],
-                    "published_at": published_at,
-                    "url": source_url,
-                    "source": "巨潮资讯网",
-                })
+                announcements.append(
+                    {
+                        "title": _clean_title(str(row.get("announcementTitle") or ""))[:240],
+                        "published_at": published_at,
+                        "url": source_url,
+                        "source": "巨潮资讯网",
+                    }
+                )
                 if len(announcements) >= min(max(limit, 1), 10):
                     break
             result = {

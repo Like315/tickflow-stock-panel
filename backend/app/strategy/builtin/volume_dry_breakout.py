@@ -153,14 +153,8 @@ class VolumeDryBreakoutMatrixStrategy:
         entry = (
             (previous_vol_ratio >= float(params.get("setup_vol_ratio_min", 2.0)))
             & (setup_range > 0)
-            & (
-                setup_body
-                <= setup_range * float(params.get("max_body_to_range", 0.35))
-            )
-            & (
-                setup_lower_wick
-                >= setup_range * float(params.get("min_lower_wick_to_range", 0.35))
-            )
+            & (setup_body <= setup_range * float(params.get("max_body_to_range", 0.35)))
+            & (setup_lower_wick >= setup_range * float(params.get("min_lower_wick_to_range", 0.35)))
             & (market.close > previous_high)
             & (
                 market.volume
@@ -179,12 +173,8 @@ class VolumeDryBreakoutMatrixStrategy:
             ma20_bias = market.close / ma20 - 1.0
             breakout_margin = market.close / previous_high - 1.0
             stretched_shallow_breakout = (
-                ma20_bias
-                >= float(params.get("breakout_guard_ma20_bias_min", 0.05))
-            ) & (
-                breakout_margin
-                <= float(params.get("breakout_guard_margin_max", 0.01))
-            )
+                ma20_bias >= float(params.get("breakout_guard_ma20_bias_min", 0.05))
+            ) & (breakout_margin <= float(params.get("breakout_guard_margin_max", 0.01)))
             entry &= ~stretched_shallow_breakout
 
         current_vol_ratio = matrix_feature(market, "vol_ratio_5d")

@@ -1,4 +1,5 @@
 """龙头板块分析 service 测试 — 评分口径、每日龙头、区间冠军、行业层级、降级路径。"""
+
 from __future__ import annotations
 
 from datetime import date
@@ -25,9 +26,7 @@ class _Repo:
         cache = self._enriched_history_cache
         if cache is None or cache.is_empty() or "date" not in cache.columns:
             return None
-        df = cache.filter(
-            (pl.col("date") >= start) & (pl.col("date") <= end)
-        )
+        df = cache.filter((pl.col("date") >= start) & (pl.col("date") <= end))
         if symbols is not None:
             df = df.filter(pl.col("symbol").is_in(symbols))
         if columns and not df.is_empty():
@@ -150,9 +149,13 @@ def test_basic_ranking_and_factors(tmp_path):
     _write_concept_ext(
         tmp_path,
         [
-            ("600001.SH", "人工智能"), ("600002.SH", "人工智能"), ("600003.SH", "人工智能"),
-            ("600011.SH", "半导体"), ("600012.SH", "半导体"),
-            ("600021.SH", "房地产"), ("600022.SH", "房地产"),
+            ("600001.SH", "人工智能"),
+            ("600002.SH", "人工智能"),
+            ("600003.SH", "人工智能"),
+            ("600011.SH", "半导体"),
+            ("600012.SH", "半导体"),
+            ("600021.SH", "房地产"),
+            ("600022.SH", "房地产"),
         ],
     )
     repo = _Repo(tmp_path, _enriched_cache())
@@ -163,7 +166,7 @@ def test_basic_ranking_and_factors(tmp_path):
     assert result["sector_count"] == 3
 
     names = [s["name"] for s in result["sectors"]]
-    assert names[0] == "人工智能"      # 强势主线排第一
+    assert names[0] == "人工智能"  # 强势主线排第一
     assert names[1] == "半导体"
     assert names[2] == "房地产"
 
@@ -190,7 +193,9 @@ def test_daily_leaders_and_champion(tmp_path):
     _write_concept_ext(
         tmp_path,
         [
-            ("600001.SH", "人工智能"), ("600002.SH", "人工智能"), ("600003.SH", "人工智能"),
+            ("600001.SH", "人工智能"),
+            ("600002.SH", "人工智能"),
+            ("600003.SH", "人工智能"),
         ],
     )
     repo = _Repo(tmp_path, _enriched_cache())
@@ -218,7 +223,9 @@ def test_top_slices_result(tmp_path):
     _write_concept_ext(
         tmp_path,
         [
-            ("600001.SH", "人工智能"), ("600011.SH", "半导体"), ("600021.SH", "房地产"),
+            ("600001.SH", "人工智能"),
+            ("600011.SH", "半导体"),
+            ("600021.SH", "房地产"),
         ],
     )
     repo = _Repo(tmp_path, _enriched_cache())
@@ -252,16 +259,18 @@ def test_industry_level_aggregation(tmp_path):
         ],
     )
     d1 = date(2026, 6, 26)
-    cache = pl.DataFrame({
-        "symbol": ["600031.SH", "600032.SH"],
-        "name": ["股份行", "城商行"],
-        "date": [d1, d1],
-        "change_pct": [0.05, 0.03],
-        "amount": [1_000_000_000.0, 500_000_000.0],
-        "consecutive_limit_ups": [0, 0],
-        "signal_limit_up": [False, False],
-        "industry": ["银行-银行-股份制银行", "银行-银行-城商行"],
-    })
+    cache = pl.DataFrame(
+        {
+            "symbol": ["600031.SH", "600032.SH"],
+            "name": ["股份行", "城商行"],
+            "date": [d1, d1],
+            "change_pct": [0.05, 0.03],
+            "amount": [1_000_000_000.0, 500_000_000.0],
+            "consecutive_limit_ups": [0, 0],
+            "signal_limit_up": [False, False],
+            "industry": ["银行-银行-股份制银行", "银行-银行-城商行"],
+        }
+    )
     repo = _Repo(tmp_path, cache)
     raw = leading_sector.build_leading_sectors(repo, days=12, kind="industry", level=None, top=10)
     assert raw["sector_count"] == 2  # 未分级: 两个全路径名
@@ -277,11 +286,13 @@ def test_degraded_cache_without_optional_columns(tmp_path):
     """降级: 无 name/amount/signal_limit_up/consecutive_limit_ups 仍能出结果 (fail-safe)。"""
     _write_concept_ext(tmp_path, [("600001.SH", "人工智能"), ("600011.SH", "半导体")])
     d1 = date(2026, 6, 26)
-    cache = pl.DataFrame({
-        "symbol": ["600001.SH", "600011.SH"],
-        "date": [d1, d1],
-        "change_pct": [0.08, 0.01],
-    })
+    cache = pl.DataFrame(
+        {
+            "symbol": ["600001.SH", "600011.SH"],
+            "date": [d1, d1],
+            "change_pct": [0.08, 0.01],
+        }
+    )
     repo = _Repo(tmp_path, cache)
     result = leading_sector.build_leading_sectors(repo, days=12, kind="concept", top=10)
     assert len(result["sectors"]) == 2
@@ -298,13 +309,18 @@ def test_degraded_cache_without_optional_columns(tmp_path):
 # API 契约测试
 # ================================================================
 
+
 def _api_client(tmp_path) -> TestClient:
     _write_concept_ext(
         tmp_path,
         [
-            ("600001.SH", "人工智能"), ("600002.SH", "人工智能"), ("600003.SH", "人工智能"),
-            ("600011.SH", "半导体"), ("600012.SH", "半导体"),
-            ("600021.SH", "房地产"), ("600022.SH", "房地产"),
+            ("600001.SH", "人工智能"),
+            ("600002.SH", "人工智能"),
+            ("600003.SH", "人工智能"),
+            ("600011.SH", "半导体"),
+            ("600012.SH", "半导体"),
+            ("600021.SH", "房地产"),
+            ("600022.SH", "房地产"),
         ],
     )
     app = FastAPI()
@@ -325,8 +341,16 @@ def test_api_returns_ranking_contract(tmp_path):
 
     top = data["sectors"][0]
     assert set(top.keys()) >= {
-        "name", "count", "score", "parts", "avg_pct", "total_amount",
-        "avg_rank", "top10_days", "champion", "daily_leaders",
+        "name",
+        "count",
+        "score",
+        "parts",
+        "avg_pct",
+        "total_amount",
+        "avg_rank",
+        "top10_days",
+        "champion",
+        "daily_leaders",
     }
     assert set(top["parts"].keys()) == {"persistence", "capital", "leader"}
     assert top["champion"]["symbol"] == "600001.SH"
@@ -352,11 +376,13 @@ def test_trade_plan_weekly_trend_and_risk_levels():
     dates = pl.date_range(date(2025, 10, 1), date(2026, 8, 14), interval="1d", eager=True)
     dates = dates.filter(dates.dt.weekday() <= 5)
     closes = [10.0 + i * 0.1 for i in range(len(dates))]
-    history = pl.DataFrame({
-        "symbol": ["600001.SH"] * len(dates),
-        "date": dates,
-        "close": closes,
-    })
+    history = pl.DataFrame(
+        {
+            "symbol": ["600001.SH"] * len(dates),
+            "date": dates,
+            "close": closes,
+        }
+    )
 
     plan = leading_sector._trade_plan(history, "600001.SH")
 
@@ -370,9 +396,11 @@ def test_trade_plan_weekly_trend_and_risk_levels():
 
 
 def test_trade_plan_requires_sufficient_history():
-    history = pl.DataFrame({
-        "symbol": ["600001.SH"] * 20,
-        "date": pl.date_range(date(2026, 1, 5), date(2026, 1, 24), interval="1d", eager=True),
-        "close": [10.0] * 20,
-    })
+    history = pl.DataFrame(
+        {
+            "symbol": ["600001.SH"] * 20,
+            "date": pl.date_range(date(2026, 1, 5), date(2026, 1, 24), interval="1d", eager=True),
+            "close": [10.0] * 20,
+        }
+    )
     assert leading_sector._trade_plan(history, "600001.SH") is None

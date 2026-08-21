@@ -1,5 +1,5 @@
 """用户维护的股票持仓账本。"""
-# ruff: noqa: RUF001, RUF002
+
 from __future__ import annotations
 
 import json
@@ -112,7 +112,9 @@ def parse_stock_portfolio_ocr(
             warnings.append(f"代码 {code} 未匹配到本地股票标的，已跳过")
             continue
 
-        line_index = next((index for index, line in enumerate(lines) if code in re.sub(r"\s+", "", line)), -1)
+        line_index = next(
+            (index for index, line in enumerate(lines) if code in re.sub(r"\s+", "", line)), -1
+        )
         if line_index < 0:
             block = lines
         else:
@@ -120,7 +122,10 @@ def parse_stock_portfolio_ocr(
                 (
                     index
                     for index in range(line_index + 1, len(lines))
-                    if any(other != code and other in re.sub(r"\s+", "", lines[index]) for other in codes)
+                    if any(
+                        other != code and other in re.sub(r"\s+", "", lines[index])
+                        for other in codes
+                    )
                 ),
                 len(lines),
             )
@@ -136,16 +141,20 @@ def parse_stock_portfolio_ocr(
         if buy_price is None and quantity is not None and total_cost is not None:
             buy_price = total_cost / quantity
         if quantity is None or total_cost is None:
-            warnings.append(f"{symbol_to_name.get(symbol) or code} 未完整识别数量或成本，请手工补充")
+            warnings.append(
+                f"{symbol_to_name.get(symbol) or code} 未完整识别数量或成本，请手工补充"
+            )
 
-        candidates.append({
-            "code": code,
-            "symbol": symbol,
-            "name": symbol_to_name.get(symbol) or "",
-            "quantity": _float(quantity, _QUANTITY),
-            "cost_amount": _float(total_cost, _MONEY),
-            "buy_price": _float(buy_price, _PRICE),
-        })
+        candidates.append(
+            {
+                "code": code,
+                "symbol": symbol,
+                "name": symbol_to_name.get(symbol) or "",
+                "quantity": _float(quantity, _QUANTITY),
+                "cost_amount": _float(total_cost, _MONEY),
+                "buy_price": _float(buy_price, _PRICE),
+            }
+        )
 
     if not candidates:
         raise ValueError("图片中的股票代码未匹配到本地标的，请先同步标的列表")
@@ -194,15 +203,18 @@ class StockPortfolioService:
         frame, price_date = self._repo.get_enriched_latest()
         if frame.is_empty() or "symbol" not in frame.columns:
             return {}, price_date.isoformat() if price_date else None
-        columns = [column for column in ("symbol", "raw_close", "change_pct") if column in frame.columns]
+        columns = [
+            column for column in ("symbol", "raw_close", "change_pct") if column in frame.columns
+        ]
         rows = (
-            frame
-            .filter(pl.col("symbol").is_in(symbols))
+            frame.filter(pl.col("symbol").is_in(symbols))
             .select(columns)
             .unique(subset=["symbol"], keep="last")
             .to_dicts()
         )
-        return {str(row["symbol"]): row for row in rows}, price_date.isoformat() if price_date else None
+        return {
+            str(row["symbol"]): row for row in rows
+        }, price_date.isoformat() if price_date else None
 
     @staticmethod
     def _present_position(
@@ -245,7 +257,9 @@ class StockPortfolioService:
         except Exception:
             names = {}
         positions = [
-            self._present_position(row, quotes.get(row["symbol"]), price_date, names.get(row["symbol"]))
+            self._present_position(
+                row, quotes.get(row["symbol"]), price_date, names.get(row["symbol"])
+            )
             for row in state["positions"]
         ]
 
@@ -259,7 +273,9 @@ class StockPortfolioService:
             else None
         )
         total_profit = total_market - total_cost if total_market is not None else None
-        profit_pct = total_profit / total_cost if total_profit is not None and total_cost > 0 else None
+        profit_pct = (
+            total_profit / total_cost if total_profit is not None and total_cost > 0 else None
+        )
         return {
             "updated_at": state["updated_at"],
             "price_date": price_date,
@@ -308,7 +324,11 @@ class StockPortfolioService:
         }
         with self._lock:
             index = next(
-                (i for i, row in enumerate(self._state["positions"]) if row.get("symbol") == normalized_symbol),
+                (
+                    i
+                    for i, row in enumerate(self._state["positions"])
+                    if row.get("symbol") == normalized_symbol
+                ),
                 None,
             )
             if index is None:
@@ -325,8 +345,7 @@ class StockPortfolioService:
         normalized_symbol = _normalize_symbol(symbol)
         with self._lock:
             positions = [
-                row for row in self._state["positions"]
-                if row.get("symbol") != normalized_symbol
+                row for row in self._state["positions"] if row.get("symbol") != normalized_symbol
             ]
             if len(positions) == len(self._state["positions"]):
                 raise KeyError(normalized_symbol)

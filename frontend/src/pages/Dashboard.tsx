@@ -571,7 +571,7 @@ export function Dashboard() {
     queryKey: QK.pipelineJob(fetchJobId ?? ''),
     queryFn: () => api.pipelineJob(fetchJobId!),
     enabled: !!fetchJobId,
-    refetchInterval: (q: any) => {
+    refetchInterval: q => {
       const j = q.state.data
       return j && (j.status === 'succeeded' || j.status === 'failed') ? false : 1_000
     },

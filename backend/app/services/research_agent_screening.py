@@ -2,7 +2,7 @@
 
 预筛只负责缩小研究候选范围，分数不直接映射为买卖结论。
 """
-# ruff: noqa: RUF001, RUF002
+
 from __future__ import annotations
 
 from datetime import date
@@ -20,13 +20,17 @@ def _finite_positive(column: str) -> pl.Expr:
 
 
 def _ensure_columns(df: pl.DataFrame, defaults: dict[str, object]) -> pl.DataFrame:
-    expressions = [pl.lit(value).alias(name) for name, value in defaults.items() if name not in df.columns]
+    expressions = [
+        pl.lit(value).alias(name) for name, value in defaults.items() if name not in df.columns
+    ]
     return df.with_columns(expressions) if expressions else df
 
 
 def _percentile(column: str, *, descending: bool = False) -> pl.Expr:
-    rank = pl.col(column).fill_null(pl.col(column).median()).rank(
-        method="average", descending=descending
+    rank = (
+        pl.col(column)
+        .fill_null(pl.col(column).median())
+        .rank(method="average", descending=descending)
     )
     return (rank / pl.len()).fill_nan(0.5).fill_null(0.5)
 
@@ -110,7 +114,9 @@ def screen_dataframe(
             (pl.col("close") > pl.col("ma20")).cast(pl.Float64) * 0.45
             + (pl.col("ma20") > pl.col("ma60")).cast(pl.Float64) * 0.35
             + ((pl.col("close") / pl.col("ma20") - 1).clip(-0.1, 0.1) + 0.1) * 1.0
-        ).fill_null(0.0).alias("_trend_score"),
+        )
+        .fill_null(0.0)
+        .alias("_trend_score"),
         (
             (pl.col("rsi_14").fill_null(50) - 68).clip(0, 32) / 32
             + (pl.col("vol_ratio_5d").fill_null(1) - 2.5).clip(0, 3) / 3
@@ -127,9 +133,21 @@ def screen_dataframe(
     )
 
     output_columns = [
-        "symbol", "name", "close", "raw_close", "change_pct", "amount", "volume",
-        "ma20", "ma60", "momentum_20d", "annual_vol_20d", "rsi_14", "vol_ratio_5d",
-        "research_score", "_history_days",
+        "symbol",
+        "name",
+        "close",
+        "raw_close",
+        "change_pct",
+        "amount",
+        "volume",
+        "ma20",
+        "ma60",
+        "momentum_20d",
+        "annual_vol_20d",
+        "rsi_14",
+        "vol_ratio_5d",
+        "research_score",
+        "_history_days",
     ]
     selected = (
         df.sort(["research_score", "symbol"], descending=[True, False])
@@ -138,10 +156,12 @@ def screen_dataframe(
     )
     candidates = []
     for row in selected.to_dicts():
-        candidates.append({
-            key.removeprefix("_"): (round(value, 6) if isinstance(value, float) else value)
-            for key, value in row.items()
-        })
+        candidates.append(
+            {
+                key.removeprefix("_"): (round(value, 6) if isinstance(value, float) else value)
+                for key, value in row.items()
+            }
+        )
     return CandidateScreenResult(
         as_of=as_of,
         candidates=candidates,

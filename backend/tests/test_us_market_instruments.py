@@ -28,18 +28,33 @@ INSTRUMENTS = {
     "metadata_count": 3,
     "rows": [
         {
-            "symbol": "AAA.US", "code": "AAA", "exchange": "US", "region": "US",
-            "name": "阿尔法", "instrument_type": "stock", "total_shares": 1000.0,
+            "symbol": "AAA.US",
+            "code": "AAA",
+            "exchange": "US",
+            "region": "US",
+            "name": "阿尔法",
+            "instrument_type": "stock",
+            "total_shares": 1000.0,
             "float_shares": 900.0,
         },
         {
-            "symbol": "BBB.US", "code": "BBB", "exchange": "US", "region": "US",
-            "name": "贝塔", "instrument_type": "stock", "total_shares": 2000.0,
+            "symbol": "BBB.US",
+            "code": "BBB",
+            "exchange": "US",
+            "region": "US",
+            "name": "贝塔",
+            "instrument_type": "stock",
+            "total_shares": 2000.0,
             "float_shares": 1800.0,
         },
         {
-            "symbol": "CCC.US", "code": "CCC", "exchange": "US", "region": "US",
-            "name": "伽马", "instrument_type": "stock", "total_shares": None,
+            "symbol": "CCC.US",
+            "code": "CCC",
+            "exchange": "US",
+            "region": "US",
+            "name": "伽马",
+            "instrument_type": "stock",
+            "total_shares": None,
             "float_shares": None,
         },
     ],
@@ -52,19 +67,37 @@ CLASSIFICATIONS = {
     "standard": "sic_mapped",
     "rows": [
         {
-            "symbol": "AAA.US", "name": "Alpha Inc", "sector": "Technology",
-            "industry": "Software", "country": "United States", "market_cap": 5000.0,
-            "last_price": 10.0, "change_pct": 0.01, "volume": 100.0,
+            "symbol": "AAA.US",
+            "name": "Alpha Inc",
+            "sector": "Technology",
+            "industry": "Software",
+            "country": "United States",
+            "market_cap": 5000.0,
+            "last_price": 10.0,
+            "change_pct": 0.01,
+            "volume": 100.0,
         },
         {
-            "symbol": "BBB.US", "name": "Beta Inc", "sector": "Finance",
-            "industry": "Banks", "country": "United States", "market_cap": 8000.0,
-            "last_price": 20.0, "change_pct": -0.03, "volume": 500.0,
+            "symbol": "BBB.US",
+            "name": "Beta Inc",
+            "sector": "Finance",
+            "industry": "Banks",
+            "country": "United States",
+            "market_cap": 8000.0,
+            "last_price": 20.0,
+            "change_pct": -0.03,
+            "volume": 500.0,
         },
         {
-            "symbol": "DDD.US", "name": "Delta Inc", "sector": "Industrials",
-            "industry": "Tools", "country": "Canada", "market_cap": 3000.0,
-            "last_price": 5.0, "change_pct": 0.05, "volume": 200.0,
+            "symbol": "DDD.US",
+            "name": "Delta Inc",
+            "sector": "Industrials",
+            "industry": "Tools",
+            "country": "Canada",
+            "market_cap": 3000.0,
+            "last_price": 5.0,
+            "change_pct": 0.05,
+            "volume": 200.0,
         },
     ],
 }
@@ -76,13 +109,25 @@ DAILY = {
     "adjust": "none",
     "rows": [
         {
-            "date": "2026-08-18", "timestamp": 1, "open": 10.0, "high": 11.0,
-            "low": 9.5, "close": 10.5, "volume": 100.0, "amount": 1000.0,
+            "date": "2026-08-18",
+            "timestamp": 1,
+            "open": 10.0,
+            "high": 11.0,
+            "low": 9.5,
+            "close": 10.5,
+            "volume": 100.0,
+            "amount": 1000.0,
             "change_pct": None,
         },
         {
-            "date": "2026-08-19", "timestamp": 2, "open": 10.5, "high": 12.0,
-            "low": 10.0, "close": 11.0, "volume": 120.0, "amount": 1200.0,
+            "date": "2026-08-19",
+            "timestamp": 2,
+            "open": 10.5,
+            "high": 12.0,
+            "low": 10.0,
+            "close": 11.0,
+            "volume": 120.0,
+            "amount": 1200.0,
             "change_pct": 11 / 10.5 - 1,
         },
     ],
@@ -101,10 +146,17 @@ class _Provider:
 
 class _Overview:
     def get_market_snapshot(self, *, force: bool = False):
-        return {"status": "live"}, [{
-            "symbol": "AAA.US", "last_price": 12.0, "change_amount": 1.0,
-            "change_pct": 0.02, "volume": 500.0, "amount": 6000.0, "timestamp": 3,
-        }]
+        return {"status": "live"}, [
+            {
+                "symbol": "AAA.US",
+                "last_price": 12.0,
+                "change_amount": 1.0,
+                "change_pct": 0.02,
+                "volume": 500.0,
+                "amount": 6000.0,
+                "timestamp": 3,
+            }
+        ]
 
 
 def _service(tmp_path: Path, overview=None) -> UsMarketInstrumentService:
@@ -121,10 +173,17 @@ def _service(tmp_path: Path, overview=None) -> UsMarketInstrumentService:
 def test_parse_tickflow_instruments_keeps_every_universe_symbol() -> None:
     result = parse_tickflow_instruments(
         {"id": "US_Equity", "symbol_count": 2, "symbols": ["AAA.US", "MISSING.US"]},
-        [{
-            "symbol": "AAA.US", "code": "AAA", "exchange": "US", "region": "US",
-            "name": "Alpha", "type": "stock", "ext": {"total_shares": 100.0},
-        }],
+        [
+            {
+                "symbol": "AAA.US",
+                "code": "AAA",
+                "exchange": "US",
+                "region": "US",
+                "name": "Alpha",
+                "type": "stock",
+                "ext": {"total_shares": 100.0},
+            }
+        ],
     )
 
     assert result["declared_count"] == 2
@@ -133,11 +192,19 @@ def test_parse_tickflow_instruments_keeps_every_universe_symbol() -> None:
 
 
 def test_parse_tickflow_daily_calculates_decimal_change() -> None:
-    result = parse_tickflow_daily("AAA", {
-        "timestamp": [1_776_744_000_000, 1_776_830_400_000],
-        "open": [10, 11], "high": [11, 12], "low": [9, 10], "close": [10, 11],
-        "volume": [100, 120], "amount": [1000, 1200],
-    }, adjust="none")
+    result = parse_tickflow_daily(
+        "AAA",
+        {
+            "timestamp": [1_776_744_000_000, 1_776_830_400_000],
+            "open": [10, 11],
+            "high": [11, 12],
+            "low": [9, 10],
+            "close": [10, 11],
+            "volume": [100, 120],
+            "amount": [1000, 1200],
+        },
+        adjust="none",
+    )
 
     assert result["symbol"] == "AAA.US"
     assert result["rows"][1]["change_pct"] == pytest.approx(0.1)
@@ -154,9 +221,13 @@ def test_tickflow_provider_retries_large_instrument_batches() -> None:
             return [{"symbol": symbol, "name": symbol, "type": "stock"} for symbol in chunk]
 
     client = SimpleNamespace(
-        universes=SimpleNamespace(get=lambda _: {
-            "id": "US_Equity", "symbol_count": len(symbols), "symbols": symbols,
-        }),
+        universes=SimpleNamespace(
+            get=lambda _: {
+                "id": "US_Equity",
+                "symbol_count": len(symbols),
+                "symbols": symbols,
+            }
+        ),
         instruments=Instruments(),
     )
 
@@ -201,7 +272,9 @@ def test_instrument_store_uses_snapshot_and_returns_unavailable_without_one(tmp_
     assert unavailable["rows"] == []
 
 
-def test_rankings_use_nasdaq_snapshot_when_full_market_quotes_are_unavailable(tmp_path: Path) -> None:
+def test_rankings_use_nasdaq_snapshot_when_full_market_quotes_are_unavailable(
+    tmp_path: Path,
+) -> None:
     service = _service(
         tmp_path,
         SimpleNamespace(get_market_snapshot=lambda **_: ({"status": "partial"}, [])),
@@ -211,7 +284,8 @@ def test_rankings_use_nasdaq_snapshot_when_full_market_quotes_are_unavailable(tm
 
     assert result["status"] == "snapshot"
     assert [row["symbol"] for row in result["rankings"]["gainers"]] == [
-        "DDD.US", "AAA.US",
+        "DDD.US",
+        "AAA.US",
     ]
     assert result["rankings"]["losers"][0]["symbol"] == "BBB.US"
     assert result["rankings"]["active"][0]["symbol"] == "BBB.US"

@@ -7,7 +7,7 @@
  */
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { Check, Plus, Eye, EyeOff, RefreshCw } from 'lucide-react'
-import type { KlineRow, MinuteKlineRow } from '@/lib/api'
+import type { KlineRow, MinuteKlineRow, ScreenerRow } from '@/lib/api'
 import { fmtPrice, formatExtNumber } from '@/lib/format'
 import type { ColumnConfig } from '@/lib/screener-columns'
 import { getSignals, signalCls } from '@/lib/stock-table'
@@ -23,7 +23,7 @@ import {
 } from '@/components/DimensionMembersDialog'
 
 interface ScreenerTableProps {
-  rows: any[]
+  rows: ScreenerRow[]
   columns: ColumnConfig[]
   strategyIdToName: Record<string, string>
   symbolStrategyMap: Map<string, string[]>
@@ -113,13 +113,15 @@ const EXT_TAG_CLS = 'inline-block px-1.5 py-px rounded text-[10px] font-medium l
 const STRATEGY_TAG_CLS = 'inline-block px-1.5 py-px rounded text-[10px] font-medium leading-tight bg-amber-500/10 text-amber-600 border border-amber-500/20'
 
 function renderExtValue(
-  val: any,
+  val: unknown,
   col: ColumnConfig,
   expanded: boolean,
   onToggle: () => void,
   onTagClick?: (tag: string) => void,
 ): ReactNode {
-  if (val == null || Number.isNaN(val)) return <span className="text-muted">—</span>
+  if (val == null || (typeof val === 'number' && Number.isNaN(val))) {
+    return <span className="text-muted">—</span>
+  }
   if (typeof val === 'number') {
     // 数字格式化: 千分位 + 单位换算 + 小数位(由列配置控制)
     const cfg = col.extDisplay
@@ -140,7 +142,7 @@ function renderExtValue(
   const separator = cfg?.separator?.trim() || null
   const tags = separator
     ? str.split(separator).map(s => s.trim()).filter(Boolean)
-    : str.split(/[、,，;；\-]/).map(s => s.trim()).filter(Boolean)
+    : str.split(/[-、,，;；]/).map(s => s.trim()).filter(Boolean)
 
   return renderTagList(tags, col, expanded, onToggle, EXT_TAG_CLS, onTagClick)
 }
@@ -179,7 +181,7 @@ export function ScreenerTable({
     })
   }
 
-  const renderCell = (r: any, col: ColumnConfig): ReactNode => {
+  const renderCell = (r: ScreenerRow, col: ColumnConfig): ReactNode => {
     // ext 列
     if (col.source.type === 'ext') {
       const { configId, fieldName } = col.source
@@ -188,7 +190,7 @@ export function ScreenerTable({
       const expanded = expandedCells.has(cellKey)
       const sourceField = `${configId}.${fieldName}`
       const dimensionKind = dimensionKindForSourceField(sourceField)
-      const tdClass = val == null || Number.isNaN(val)
+      const tdClass = val == null || (typeof val === 'number' && Number.isNaN(val))
         ? 'px-3 py-2 text-center text-muted'
         : typeof val === 'number'
           ? 'px-3 py-2 text-right num tabular-nums'
@@ -358,8 +360,8 @@ export function ScreenerTable({
         sort={sort}
         onSortToggle={onSortToggle}
         minWidth={Math.max(900, columns.filter(c => c.visible).length * 110)}
-        rowKey={(r: any) => `${r.symbol}${r._expired ? '-expired' : ''}`}
-        rowClassName={(r: any) => r._expired
+        rowKey={(r: ScreenerRow) => `${r.symbol}${r._expired ? '-expired' : ''}`}
+        rowClassName={(r: ScreenerRow) => r._expired
           ? 'border-border/50 opacity-40'
           : 'border-border hover:bg-elevated/50'
         }

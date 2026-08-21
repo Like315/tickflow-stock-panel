@@ -1,4 +1,5 @@
 """AI 个股分析的财务数据与 prompt 测试。"""
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,10 @@ def test_user_prompt_index_no_financials():
     prompt = _build_user_prompt(
         kline_tail=[{"date": "2026-07-24", "close": 3000.0}],
         fins={"metrics": [], "income": []},
-        levels={}, close=3000.0, symbol="000001.SH", focus="",
+        levels={},
+        close=3000.0,
+        symbol="000001.SH",
+        focus="",
         asset_type="index",
     )
     assert "指数" in prompt
@@ -22,7 +26,8 @@ def test_user_prompt_index_no_financials():
 
 
 def test_load_financials_includes_four_statements_and_latest_four_periods(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     periods = [
         date(2024, 3, 31),
@@ -32,26 +37,34 @@ def test_load_financials_includes_four_statements_and_latest_four_periods(
         date(2025, 3, 31),
     ]
     frames = {
-        "metrics": pl.DataFrame({
-            "symbol": ["600000.SH"] * 5,
-            "period_end": periods,
-            "roe": [8.0, 8.5, 9.0, 9.5, 10.0],
-        }),
-        "income": pl.DataFrame({
-            "symbol": ["600000.SH"] * 5,
-            "period_end": periods,
-            "net_income": [1.0, 2.0, 3.0, 4.0, 5.0],
-        }),
-        "balance_sheet": pl.DataFrame({
-            "symbol": ["600000.SH"] * 5,
-            "period_end": periods,
-            "total_liabilities": [10.0, 11.0, 12.0, 13.0, 14.0],
-        }),
-        "cash_flow": pl.DataFrame({
-            "symbol": ["600000.SH"] * 5,
-            "period_end": periods,
-            "net_operating_cash_flow": [1.0, 2.0, float("nan"), 4.0, 5.0],
-        }),
+        "metrics": pl.DataFrame(
+            {
+                "symbol": ["600000.SH"] * 5,
+                "period_end": periods,
+                "roe": [8.0, 8.5, 9.0, 9.5, 10.0],
+            }
+        ),
+        "income": pl.DataFrame(
+            {
+                "symbol": ["600000.SH"] * 5,
+                "period_end": periods,
+                "net_income": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        ),
+        "balance_sheet": pl.DataFrame(
+            {
+                "symbol": ["600000.SH"] * 5,
+                "period_end": periods,
+                "total_liabilities": [10.0, 11.0, 12.0, 13.0, 14.0],
+            }
+        ),
+        "cash_flow": pl.DataFrame(
+            {
+                "symbol": ["600000.SH"] * 5,
+                "period_end": periods,
+                "net_operating_cash_flow": [1.0, 2.0, float("nan"), 4.0, 5.0],
+            }
+        ),
     }
     monkeypatch.setattr(
         stock_analyzer,
@@ -90,12 +103,17 @@ def test_user_prompt_describes_partial_financial_data():
             "metrics": [{"period_end": "2025-12-31", "roe": 12.3}],
             "income": [],
             "balance_sheet": [],
-            "cash_flow": [{
-                "period_end": "2025-12-31",
-                "net_operating_cash_flow": 100.0,
-            }],
+            "cash_flow": [
+                {
+                    "period_end": "2025-12-31",
+                    "net_operating_cash_flow": 100.0,
+                }
+            ],
         },
-        levels={}, close=10.0, symbol="600000.SH", focus="",
+        levels={},
+        close=10.0,
+        symbol="600000.SH",
+        focus="",
     )
 
     assert "比率类指标为百分点" in prompt
@@ -113,7 +131,10 @@ def test_user_prompt_stock_without_financials_points_to_sync():
             "balance_sheet": [],
             "cash_flow": [],
         },
-        levels={}, close=10.0, symbol="600000.SH", focus="",
+        levels={},
+        close=10.0,
+        symbol="600000.SH",
+        focus="",
     )
 
     assert "财务分析" in prompt

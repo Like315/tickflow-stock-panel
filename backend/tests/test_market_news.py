@@ -103,24 +103,28 @@ async def test_eastmoney_provider_filters_future_rows_and_caches() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(200, json={
-            "data": {
-                "fastNewsList": [
-                    {
-                        "title": "当日市场快讯",
-                        "summary": "公开摘要",
-                        "showTime": "2026-08-18 16:30:00",
-                        "code": "202608183500001",
-                    },
-                    {
-                        "title": "未来快讯",
-                        "summary": "不可用于历史复盘",
-                        "showTime": "2026-08-19 09:00:00",
-                        "code": "202608193500002",
-                    },
-                ]
-            }
-        }, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "fastNewsList": [
+                        {
+                            "title": "当日市场快讯",
+                            "summary": "公开摘要",
+                            "showTime": "2026-08-18 16:30:00",
+                            "code": "202608183500001",
+                        },
+                        {
+                            "title": "未来快讯",
+                            "summary": "不可用于历史复盘",
+                            "showTime": "2026-08-19 09:00:00",
+                            "code": "202608193500002",
+                        },
+                    ]
+                }
+            },
+            request=request,
+        )
 
     provider = EastmoneyNewsProvider(transport=httpx.MockTransport(handler))
     first = await provider.fetch_market(as_of=date(2026, 8, 18), limit=8)
@@ -141,13 +145,15 @@ async def test_eastmoney_provider_paginates_until_recap_window_is_covered() -> N
         cursor = request.url.params.get("sortEnd", "")
         cursors.append(cursor)
         if not cursor:
-            rows = [{
-                "title": "收盘后消息",
-                "summary": "等待后续交易日验证",
-                "showTime": "2026-08-18 20:30:00",
-                "code": "202608183500010",
-                "realSort": "cursor-1",
-            }]
+            rows = [
+                {
+                    "title": "收盘后消息",
+                    "summary": "等待后续交易日验证",
+                    "showTime": "2026-08-18 20:30:00",
+                    "code": "202608183500010",
+                    "realSort": "cursor-1",
+                }
+            ]
         else:
             rows = [
                 {

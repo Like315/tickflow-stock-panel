@@ -1,4 +1,5 @@
 """美股行业分类、主题 ETF 持仓与指定板块聚合服务。"""
+
 from __future__ import annotations
 
 import copy
@@ -38,23 +39,37 @@ SECTOR_CN: dict[str, str] = {
 
 THEME_GROUPS: dict[str, dict[str, str]] = {
     "semiconductors": {"symbol": "XSD.US", "name": "半导体", "name_en": "Semiconductors"},
-    "software-services": {"symbol": "XSW.US", "name": "软件与服务", "name_en": "Software & Services"},
+    "software-services": {
+        "symbol": "XSW.US",
+        "name": "软件与服务",
+        "name_en": "Software & Services",
+    },
     "biotechnology": {"symbol": "XBI.US", "name": "生物科技", "name_en": "Biotechnology"},
     "pharmaceuticals": {"symbol": "XPH.US", "name": "制药", "name_en": "Pharmaceuticals"},
-    "healthcare-equipment": {"symbol": "XHE.US", "name": "医疗设备", "name_en": "Health Care Equipment"},
+    "healthcare-equipment": {
+        "symbol": "XHE.US",
+        "name": "医疗设备",
+        "name_en": "Health Care Equipment",
+    },
     "banks": {"symbol": "KBE.US", "name": "银行", "name_en": "Banking"},
     "regional-banks": {"symbol": "KRE.US", "name": "区域银行", "name_en": "Regional Banking"},
     "retail": {"symbol": "XRT.US", "name": "零售", "name_en": "Retail"},
     "homebuilders": {"symbol": "XHB.US", "name": "住宅建筑", "name_en": "Homebuilders"},
-    "oil-gas-exploration": {"symbol": "XOP.US", "name": "油气勘探", "name_en": "Oil & Gas Exploration"},
+    "oil-gas-exploration": {
+        "symbol": "XOP.US",
+        "name": "油气勘探",
+        "name_en": "Oil & Gas Exploration",
+    },
     "metals-mining": {"symbol": "XME.US", "name": "金属与采矿", "name_en": "Metals & Mining"},
-    "aerospace-defense": {"symbol": "XAR.US", "name": "航空航天与国防", "name_en": "Aerospace & Defense"},
+    "aerospace-defense": {
+        "symbol": "XAR.US",
+        "name": "航空航天与国防",
+        "name_en": "Aerospace & Defense",
+    },
     "telecom": {"symbol": "XTL.US", "name": "电信", "name_en": "Telecom"},
 }
 
-THEME_PROXIES: dict[str, str] = {
-    spec["symbol"]: spec["name"] for spec in THEME_GROUPS.values()
-}
+THEME_PROXIES: dict[str, str] = {spec["symbol"]: spec["name"] for spec in THEME_GROUPS.values()}
 
 
 class UsMarketGroupNotFoundError(KeyError):
@@ -184,12 +199,14 @@ class StateStreetHoldingsStore:
                 return copy.deepcopy(disk)
             try:
                 parsed = self._provider.get_theme_holdings(ticker)
-                parsed.update({
-                    "group_id": group_id,
-                    "ticker": ticker,
-                    "fetched_at": int(self._wall_time() * 1000),
-                    "status": "live",
-                })
+                parsed.update(
+                    {
+                        "group_id": group_id,
+                        "ticker": ticker,
+                        "fetched_at": int(self._wall_time() * 1000),
+                        "status": "live",
+                    }
+                )
                 self._write(group_id, parsed)
                 self._cache[group_id] = parsed
                 return copy.deepcopy(parsed)
@@ -283,10 +300,13 @@ def aggregate_group(
     valid_weight = sum(_finite(member.get("weight_pct")) or 0 for member, _ in valid)
     weighted_change = None
     if valid_weight > 0:
-        weighted_change = sum(
-            float(quote["change_pct"]) * (_finite(member.get("weight_pct")) or 0)
-            for member, quote in valid
-        ) / valid_weight
+        weighted_change = (
+            sum(
+                float(quote["change_pct"]) * (_finite(member.get("weight_pct")) or 0)
+                for member, quote in valid
+            )
+            / valid_weight
+        )
     leaders = sorted(valid, key=lambda item: float(item[1]["change_pct"]), reverse=True)
 
     return {
@@ -364,19 +384,19 @@ class UsMarketSectorService:
             reverse=True,
         )
 
-        theme_quotes = {
-            str(row.get("symbol") or ""): row for row in overview.get("themes", [])
-        }
+        theme_quotes = {str(row.get("symbol") or ""): row for row in overview.get("themes", [])}
         themes = []
         for group_id, spec in THEME_GROUPS.items():
-            themes.append({
-                "id": group_id,
-                "kind": "theme",
-                "name": spec["name"],
-                "name_en": spec["name_en"],
-                "proxy_symbol": spec["symbol"],
-                "proxy_quote": theme_quotes.get(spec["symbol"]),
-            })
+            themes.append(
+                {
+                    "id": group_id,
+                    "kind": "theme",
+                    "name": spec["name"],
+                    "name_en": spec["name_en"],
+                    "proxy_symbol": spec["symbol"],
+                    "proxy_quote": theme_quotes.get(spec["symbol"]),
+                }
+            )
 
         return {
             "schema_version": 1,
@@ -414,7 +434,8 @@ class UsMarketSectorService:
     ) -> dict[str, Any]:
         classification = self._classifications.get(force=force)
         rows = [
-            row for row in classification.get("rows", [])
+            row
+            for row in classification.get("rows", [])
             if isinstance(row, Mapping) and _slug(str(row.get("sector") or "")) == group_id
         ]
         if not rows:
@@ -446,7 +467,9 @@ class UsMarketSectorService:
             for industry, members in industries.items()
         ]
         industry_summaries.sort(
-            key=lambda row: row["avg_change_pct"] if row["avg_change_pct"] is not None else float("-inf"),
+            key=lambda row: (
+                row["avg_change_pct"] if row["avg_change_pct"] is not None else float("-inf")
+            ),
             reverse=True,
         )
         return self._detail_payload(
@@ -476,7 +499,8 @@ class UsMarketSectorService:
         holdings = self._holdings.get(group_id, force=force)
         members = [row for row in holdings.get("members", []) if isinstance(row, Mapping)]
         missing_symbols = [
-            str(row.get("symbol") or "") for row in members
+            str(row.get("symbol") or "")
+            for row in members
             if row.get("symbol") and row.get("symbol") not in quote_map
         ]
         if missing_symbols:
@@ -493,7 +517,8 @@ class UsMarketSectorService:
         )
         proxy_quote = next(
             (
-                row for row in overview.get("themes", [])
+                row
+                for row in overview.get("themes", [])
                 if isinstance(row, Mapping) and row.get("symbol") == spec["symbol"]
             ),
             None,
@@ -526,17 +551,21 @@ class UsMarketSectorService:
         for member in members:
             symbol = str(member.get("symbol") or "")
             quote = quote_map.get(symbol)
-            public_members.append({
-                "symbol": symbol,
-                "name": str(member.get("name") or (quote or {}).get("name") or symbol),
-                "sector": str(member.get("sector") or ""),
-                "industry": str(member.get("industry") or ""),
-                "weight_pct": _finite(member.get("weight_pct")),
-                "quote": _quote_public(quote) if _valid_quote(quote) else None,
-            })
+            public_members.append(
+                {
+                    "symbol": symbol,
+                    "name": str(member.get("name") or (quote or {}).get("name") or symbol),
+                    "sector": str(member.get("sector") or ""),
+                    "industry": str(member.get("industry") or ""),
+                    "weight_pct": _finite(member.get("weight_pct")),
+                    "quote": _quote_public(quote) if _valid_quote(quote) else None,
+                }
+            )
         if any(row["weight_pct"] is not None for row in public_members):
             public_members.sort(
-                key=lambda row: row["weight_pct"] if row["weight_pct"] is not None else float("-inf"),
+                key=lambda row: (
+                    row["weight_pct"] if row["weight_pct"] is not None else float("-inf")
+                ),
                 reverse=True,
             )
         else:

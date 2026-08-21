@@ -1,4 +1,5 @@
 """Small boundary around the optional Tushare SDK."""
+
 from __future__ import annotations
 
 import os

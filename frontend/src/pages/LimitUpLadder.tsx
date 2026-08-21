@@ -57,6 +57,14 @@ interface ExtFieldConfig {
   showIndustryGroupStats?: boolean
 }
 
+/** 兼容历史字符串字段格式的本地存储结构。 */
+type PersistedExtFieldConfig = Omit<ExtFieldConfig, 'concept' | 'industry'> & {
+  concept?: ExtFieldItem | string
+  industry?: ExtFieldItem | string
+  conceptSep?: string
+  industrySep?: string
+}
+
 const DEFAULT_BF: BrokenFailedConfig = {
   brokenMinBoards: 0,
   failedMinBoards: 0,
@@ -67,16 +75,18 @@ const DEFAULT_BF: BrokenFailedConfig = {
 }
 
 function loadExtFields(): ExtFieldConfig {
-  const raw = storage.limitLadderExtFields.get({}) as any
+  const raw = storage.limitLadderExtFields.get({}) as PersistedExtFieldConfig
   if (!raw) return {}
   // 兼容旧格式 { concept: "id.field", conceptSep: "x" }
   if (typeof raw.concept === 'string') {
     return {
       concept: raw.concept ? { field: raw.concept, display: { displayMode: 'tag', separator: raw.conceptSep } } : undefined,
-      industry: raw.industry ? { field: raw.industry, display: { displayMode: 'tag', separator: raw.industrySep } } : undefined,
+      industry: typeof raw.industry === 'string' && raw.industry
+        ? { field: raw.industry, display: { displayMode: 'tag', separator: raw.industrySep } }
+        : undefined,
     }
   }
-  return raw
+  return raw as ExtFieldConfig
 }
 
 /** 根据显示开关过滤 extFields */
@@ -109,7 +119,7 @@ function getExtTags(stock: LimitLadderStock, item?: ExtFieldItem): string[] {
   const sep = cfg?.separator?.trim() || null
   const tags = sep
     ? str.split(sep).map(s => s.trim()).filter(Boolean)
-    : str.split(/[、,，;；\-]/).map(s => s.trim()).filter(Boolean)
+    : str.split(/[-、,，;；]/).map(s => s.trim()).filter(Boolean)
 
   const maxTags = cfg?.maxTags ?? 0
   const sliced = maxTags > 0 ? tags.slice(0, maxTags) : tags

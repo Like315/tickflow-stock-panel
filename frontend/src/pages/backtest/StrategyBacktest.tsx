@@ -8,6 +8,8 @@ import {
   type StrategyBacktestTrade,
   type StrategyDetail,
   type StrategyParamDef,
+  type StrategyParamValue,
+  type ApiRecord,
   REGIME_STATE_LABELS,
   REGIME_STATE_COLORS,
 } from '@/lib/api'
@@ -257,17 +259,17 @@ function NumberField({ value, onChange, min, max, step, className, placeholder }
   )
 }
 const strategyDefaultParams = (detail: StrategyDetail) => {
-  const values: Record<string, any> = { ...detail.params_defaults }
+  const values: Record<string, StrategyParamValue> = { ...detail.params_defaults }
   detail.params.forEach(p => {
     if (!(p.id in values)) values[p.id] = p.default
   })
   return values
 }
-const mergeStrategyParams = (detail: StrategyDetail, values?: Record<string, any> | null) => ({
+const mergeStrategyParams = (detail: StrategyDetail, values?: Record<string, StrategyParamValue> | null) => ({
   ...strategyDefaultParams(detail),
   ...(values ?? {}),
 })
-const normalizeStrategyOverrides = (detail: StrategyDetail, values?: Record<string, any> | null) => {
+const normalizeStrategyOverrides = (detail: StrategyDetail, values?: ApiRecord | null) => {
   const next = { ...(values ?? {}) }
   if (detail.execution_backend === 'matrix_native') {
     // MatrixStrategy.compute_signals() owns entry/exit formulas. Remove both
@@ -706,11 +708,11 @@ function ScoringWeightRow({ name, weight, pct, editing, onChange }: {
 
 function StrategyParamInput({ param, value, onChange }: {
   param: StrategyParamDef
-  value: any
-  onChange: (value: any) => void
+  value: StrategyParamValue | undefined
+  onChange: (value: StrategyParamValue) => void
 }) {
   if (param.type === 'bool') {
-    const checked = value === true || value === 'true' || value === 'True' || value === true
+    const checked = value === true || value === 'true' || value === 'True'
     return (
       <label className="block">
         <span className="mb-1 block text-[11px] text-secondary">{param.label}</span>
@@ -733,7 +735,7 @@ function StrategyParamInput({ param, value, onChange }: {
     return (
       <label className="block">
         <span className="mb-1 block text-[11px] text-secondary">{param.label}</span>
-        <select value={value ?? param.default} onChange={e => onChange(e.target.value)} className={INPUT_CLS}>
+        <select value={String(value ?? param.default)} onChange={e => onChange(e.target.value)} className={INPUT_CLS}>
           {(param.options ?? []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
         </select>
       </label>
@@ -767,7 +769,10 @@ function StockPoolPicker({ value, onChange, assetType = 'stock' }: { value: stri
     enabled: query.trim().length > 0,
     staleTime: 30_000,
   })
-  const results = search.data?.results ?? []
+  const results = useMemo(
+    () => search.data?.results ?? [],
+    [search.data?.results],
+  )
   // 自选列表 — 供「从自选导入」一键填入回测范围
   const watchlist = useQuery({
     queryKey: QK.watchlist,
@@ -949,8 +954,8 @@ export function StrategyBacktest() {
   const [settingsTab, setSettingsTab] = useState<AdvancedSettingsTab>('params')
   const [editingScoring, setEditingScoring] = useState(false)
   const [scoringDraft, setScoringDraft] = useState<Record<string, number>>({})
-  const [strategyParams, setStrategyParams] = useState<Record<string, any>>(saved?.params ?? {})
-  const [overrides, setOverrides] = useState<Record<string, any>>(saved?.overrides ?? {})
+  const [strategyParams, setStrategyParams] = useState<Record<string, StrategyParamValue>>(saved?.params ?? {})
+  const [overrides, setOverrides] = useState<ApiRecord>(saved?.overrides ?? {})
   // result 不从 localStorage 恢复:它是运行产物(净值/交易),大且易过时,
   // 跨会话/拉新代码后自动渲染一个可能对应已失效策略的旧结果会造成困惑
   // (切页不卸载组件,内存中的 result 仍保留,无需靠 localStorage 恢复)。
@@ -1038,7 +1043,6 @@ export function StrategyBacktest() {
   // 刷新页面后: 从 localStorage 恢复未完成的回测任务
   useEffect(() => {
     tryReconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -1096,6 +1100,8 @@ export function StrategyBacktest() {
         result: backtestTask.result,
       })
     }
+    // 只在后台任务状态变化时持久化；把可编辑表单参数加入依赖会错误覆盖已完成任务的配置快照。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backtestTask])
 
   const handleRun = () => {
@@ -1287,7 +1293,7 @@ export function StrategyBacktest() {
         : ADVANCED_TABS,
     [matrixStrategy, compositeStrategy],
   )
-  const basicFilter = (overrides.basic_filter ?? {}) as Record<string, any>
+  const basicFilter = (overrides.basic_filter ?? {}) as ApiRecord
   const entrySignals = (overrides.entry_signals ?? []) as string[]
   const exitSignals = (overrides.exit_signals ?? []) as string[]
   const effectiveExitSignals = (overrides.exit_signals ?? detail?.exit_signals ?? []) as string[]
@@ -1321,10 +1327,10 @@ export function StrategyBacktest() {
     }
   }, [matrixStrategy, settingsTab])
 
-  const updateOverride = (key: string, value: any) => {
+  const updateOverride = (key: string, value: unknown) => {
     setOverrides(prev => ({ ...prev, [key]: value }))
   }
-  const updateBasicFilter = (key: string, value: any) => {
+  const updateBasicFilter = (key: string, value: unknown) => {
     updateOverride('basic_filter', { ...basicFilter, [key]: value })
   }
   const startScoringEdit = () => {
@@ -1674,7 +1680,14 @@ export function StrategyBacktest() {
           </div>
           <div>
             <label className="text-xs font-medium text-secondary block mb-1.5">买入权重</label>
-            <select value={positionSizing} onChange={e => setPositionSizing(e.target.value as any)} className={INPUT_CLS}>
+            <select
+              value={positionSizing}
+              onChange={event => {
+                const value = event.target.value
+                if (value === 'equal' || value === 'score_weight') setPositionSizing(value)
+              }}
+              className={INPUT_CLS}
+            >
               <option value="equal">等权买入</option>
               <option value="score_weight">评分加权</option>
             </select>

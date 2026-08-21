@@ -5,6 +5,14 @@
  * - SSE invalidation 基于 SSE_INVALIDATE_PREFIXES 列表，新增 key 无需改 useQuoteStream。
  */
 
+type AlertQueryKeyOptions = {
+  source?: string
+  direction?: string
+  relation?: string
+  symbols?: string
+  extColumns?: string
+}
+
 // ===== Query Key 工厂 =====
 
 export const QK = {
@@ -27,13 +35,17 @@ export const QK = {
   usMarketDaily: (symbol: string, count: number) => ['us-market-daily', symbol, count] as const,
   usMarketRankings: ['us-market-rankings'] as const,
   stockPortfolio: ['stock-portfolio'] as const,
+  stockPortfolioOcrStatus: ['stock-portfolio', 'ocr-status'] as const,
   fundPortfolio: ['fund-portfolio'] as const,
   fundMarketResearch: ['fund-market-research'] as const,
   researchAgentStatus: ['research-agent', 'status'] as const,
   researchAgentLatest: ['research-agent', 'recommendations', 'latest'] as const,
   researchAgentRecommendations: ['research-agent', 'recommendations'] as const,
+  researchAgentReviewsRoot: ['research-agent', 'reviews'] as const,
   researchAgentReviews: (batchId?: string) => ['research-agent', 'reviews', batchId ?? 'all'] as const,
+  investmentExpertRoot: ['investment-expert'] as const,
   investmentExpertStatus: ['investment-expert', 'status'] as const,
+  investmentExpertPortfolioSyncPreview: ['investment-expert', 'portfolio-sync-preview'] as const,
   investmentExpertTrades: ['investment-expert', 'trades'] as const,
   investmentExpertSessions: ['investment-expert', 'sessions'] as const,
   investmentExpertExperiments: ['investment-expert', 'experiments'] as const,
@@ -98,6 +110,14 @@ export const QK = {
   monitorRules:         ['monitor-rules'] as const,
   monitorRuleOptions:   ['monitor-rule-options'] as const,
   alerts:               (source?: string) => ['alerts', source ?? ''] as const,
+  alertsFiltered:       (options: AlertQueryKeyOptions) => [
+    'alerts',
+    options.source ?? '',
+    options.direction ?? 'all-directions',
+    options.relation ?? 'all-relations',
+    options.symbols ?? 'all-symbols',
+    options.extColumns ?? '',
+  ] as const,
 
   // AI 大盘复盘
   reviewReports:        ['review-reports'] as const,

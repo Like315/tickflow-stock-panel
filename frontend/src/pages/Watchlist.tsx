@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trash2, RefreshCw, Star, X, Search, LayoutGrid, List, Settings2, Plus, Check, Filter, Eye, EyeOff, Minus, ChevronsUp, Clock, RotateCcw, ImagePlus } from 'lucide-react'
-import { api, type KlineRow, type MinuteKlineRow } from '@/lib/api'
+import { api, type KlineRow, type MinuteKlineRow, type ScreenerRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { storage } from '@/lib/storage'
 import { fmtPrice, fmtPct, fmtBigNum, priceColorClass, formatExtNumber } from '@/lib/format'
@@ -69,14 +69,16 @@ function turnoverColor(rate: number | null | undefined): string {
 
 /** 渲染扩展数据列的值（含分隔/标签/展开配置） */
 function renderExtValue(
-  val: any,
+  val: unknown,
   col: ColumnConfig,
   expanded: boolean,
   onToggle: () => void,
   inline?: boolean,
   onTagClick?: (tag: string) => void,
 ): React.ReactNode {
-  if (val == null || Number.isNaN(val)) return <span className="text-muted">—</span>
+  if (val == null || (typeof val === 'number' && Number.isNaN(val))) {
+    return <span className="text-muted">—</span>
+  }
   if (typeof val === 'number') {
     // 数字格式化: 千分位 + 单位换算 + 小数位(由列配置控制)
     const cfg = col.extDisplay
@@ -103,7 +105,7 @@ function renderExtValue(
   const separator = cfg?.separator?.trim() || null
   const tags = separator
     ? str.split(separator).map(s => s.trim()).filter(Boolean)
-    : str.split(/[、,，;；\-]/).map(s => s.trim()).filter(Boolean)
+    : str.split(/[-、,，;；]/).map(s => s.trim()).filter(Boolean)
 
   if (tags.length === 0) return <span className="text-muted">—</span>
 
@@ -164,7 +166,7 @@ function renderExtValue(
 
 /** 渲染扩展数据列的 <td> */
 function renderExtCell(
-  r: any,
+  r: ScreenerRow,
   col: ColumnConfig,
   expandedCells: Set<string>,
   onToggleExpand: (key: string) => void,
@@ -184,7 +186,7 @@ function renderExtCell(
   }
 
   // 根据值类型决定 td class
-  const tdClass = val == null || Number.isNaN(val)
+  const tdClass = val == null || (typeof val === 'number' && Number.isNaN(val))
     ? 'px-2 py-1.5 text-right num tabular-nums text-muted'
     : typeof val === 'number'
       ? 'px-2 py-1.5 text-right num tabular-nums'
@@ -403,7 +405,7 @@ const StockCard = React.memo(function StockCard({
   onDimensionClick,
   isMonitored,
 }: {
-  r: any
+  r: ScreenerRow
   candleRows: KlineRow[]
   showCandle: boolean
   onPreview: (symbol: string, name: string) => void
@@ -484,7 +486,7 @@ const StockCard = React.memo(function StockCard({
               {board.label}
             </span>
           )}
-          {r.consecutive_limit_ups > 0 && (
+          {(r.consecutive_limit_ups ?? 0) > 0 && (
             <span className="shrink-0 inline-flex items-center justify-center px-1 h-[16px] rounded bg-danger/15 text-danger text-[9px] font-bold tabular-nums">
               {r.consecutive_limit_ups === 1 ? '首板' : `${r.consecutive_limit_ups}连`}
             </span>
@@ -703,12 +705,15 @@ export function Watchlist() {
     enabled: (list.data?.symbols.length ?? 0) > 0,
   })
 
-  const symbols = enriched.data?.rows?.map((r: any) => r.symbol) ?? []
+  const symbols = useMemo(
+    () => enriched.data?.rows?.map(r => r.symbol) ?? [],
+    [enriched.data?.rows],
+  )
   const symbolsKey = symbols.join(',')
 
   // 指数无本地分钟K数据, 分时批量请求剔除指数 symbol (省请求, 避免逐只 404)
   const minuteSymbols = useMemo(
-    () => symbols.filter((s: string) => (enriched.data?.rows ?? []).find((r: any) => r.symbol === s)?.asset_type !== 'index'),
+    () => symbols.filter(s => (enriched.data?.rows ?? []).find(r => r.symbol === s)?.asset_type !== 'index'),
     [symbols, enriched.data],
   )
   const minuteSymbolsKey = minuteSymbols.join(',')
@@ -756,9 +761,9 @@ export function Watchlist() {
     mutationFn: (sym: string) => api.watchlistRemove(sym),
     onSuccess: (_data, sym) => {
       // 1. 立即从 enriched 缓存中移除该股票，UI 即时更新
-      qc.setQueryData(['watchlist-enriched', extColumnsParam], (old: any) => {
+      qc.setQueryData<Awaited<ReturnType<typeof api.watchlistEnriched>>>(QK.watchlistEnriched(extColumnsParam), old => {
         if (!old?.rows) return old
-        return { ...old, rows: old.rows.filter((r: any) => r.symbol !== sym) }
+        return { ...old, rows: old.rows.filter(r => r.symbol !== sym) }
       })
       // 2. 清除 list 缓存，触发后台 refetch
       qc.invalidateQueries({ queryKey: QK.watchlist })
@@ -805,8 +810,14 @@ export function Watchlist() {
   const handleCardCancelRemove = useCallback(() => setConfirmRemove(null), [])
   const handleCardRequestRemove = useCallback((sym: string) => setConfirmRemove(sym), [])
 
-  const allSymbols = list.data?.symbols?.map(s => s.symbol) ?? []
-  const rows = enriched.data?.rows ?? []
+  const allSymbols = useMemo(
+    () => list.data?.symbols?.map(s => s.symbol) ?? [],
+    [list.data?.symbols],
+  )
+  const rows = useMemo(
+    () => enriched.data?.rows ?? [],
+    [enriched.data?.rows],
+  )
 
   // 实时监控圆点: 仅 Free/低档 "按自选股实时监控" 模式 (mode === 'watchlist') 下显示;
   // Starter+ 全市场模式 (mode === 'full_market') 全部标的都在监控, 标圆点无意义, 故不显示。
@@ -921,7 +932,7 @@ export function Watchlist() {
   const hasActiveFilters = activeFilterCount > 0 || hasBoardFilter
 
   // 排序（复用共享三态排序 hook）
-  const { sort, toggle: handleSortToggle, sortRows } = useTableSort()
+  const { sort, toggle: handleSortToggle, sortRows } = useTableSort<ScreenerRow>()
 
   const sortedRows = useMemo(
     () => sortRows(filteredRows, columns),
@@ -940,7 +951,7 @@ export function Watchlist() {
     count: virtualizeCards ? cardRowCount : 0,
     getScrollElement: getCardScrollElement,
     estimateSize: () => dailyKVisible ? 180 : 140,
-    getItemKey: index => `${cardColumns}:${(sortedRows[index * cardColumns] as any)?.symbol ?? index}`,
+    getItemKey: index => `${cardColumns}:${sortedRows[index * cardColumns]?.symbol ?? index}`,
     gap: 12,
     overscan: 3,
     scrollMargin: cardScrollMargin,
@@ -956,7 +967,7 @@ export function Watchlist() {
   // 指标全为 null 的行属于 enriched 缓存未覆盖 (新股/冷门/新用户未同步), 非筛选导致.
   // 用 close 是否为 null/undefined 判断 "整行指标缺失" (close 是 enriched 最基础字段).
   const pendingCount = useMemo(
-    () => sortedRows.filter((r: any) => r.close == null).length,
+    () => sortedRows.filter(r => r.close == null).length,
     [sortedRows],
   )
 
@@ -964,7 +975,7 @@ export function Watchlist() {
   // rows.length 是后端实际返回 (含 pending 行), 减去 sortedRows (筛选后) 才是真正的筛选隐藏.
   const hiddenCount = Math.max(0, rows.length - sortedRows.length)
 
-  const renderStockCard = (r: any) => (
+  const renderStockCard = (r: ScreenerRow) => (
     <StockCard
       key={r.symbol}
       r={r}
@@ -1196,7 +1207,7 @@ export function Watchlist() {
               headerSticky
               sort={sort}
               onSortToggle={handleSortToggle}
-              rowKey={(r: any) => r.symbol}
+              rowKey={(r: ScreenerRow) => r.symbol}
               rowClassName={() => 'border-t border-border hover:bg-elevated/50 transition-colors duration-150 ease-smooth'}
               // 日k列表头：标签 + 显示/隐藏眼睛按钮
               renderHeaderContent={(col) => {
@@ -1260,7 +1271,7 @@ export function Watchlist() {
                 }
                 return undefined
               }}
-              renderCell={(r: any, col: ColumnConfig) => {
+              renderCell={(r: ScreenerRow, col: ColumnConfig) => {
                 // ext 列
                 if (col.source.type === 'ext') {
                   return renderExtCell(r, col, expandedCells, handleToggleExpand, setDimensionTarget)

@@ -4,6 +4,7 @@
 每个板块附三因子评分拆解 (排名持续性/资金强度/龙头股强度)、
 区间冠军股与每日龙头清单。
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request
@@ -17,7 +18,9 @@ router = APIRouter(prefix="/api/leading-sectors", tags=["leading-sectors"])
 def get_leading_sectors(
     request: Request,
     days: int = Query(12, ge=7, le=30, description="最近 N 个交易日(7-30)"),
-    kind: str = Query("concept", pattern="concept|industry", description="维度: concept 概念 / industry 行业"),
+    kind: str = Query(
+        "concept", pattern="concept|industry", description="维度: concept 概念 / industry 行业"
+    ),
     level: int | None = Query(None, ge=1, le=3, description="行业层级(仅 kind=industry): 1/2/3 级"),
     top: int = Query(30, ge=1, le=100, description="返回前 N 个龙头板块"),
 ) -> dict:

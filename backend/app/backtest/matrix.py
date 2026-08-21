@@ -1,4 +1,5 @@
 """Matrix structures, builders, NumPy features, and matrix-strategy contract."""
+
 from __future__ import annotations
 
 import hashlib
@@ -12,7 +13,7 @@ import uuid
 import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date
@@ -38,6 +39,7 @@ from app.price_limits import (
 try:
     from numba import njit, prange
 except ImportError:
+
     def njit(*args, **kwargs):
         if len(args) == 1 and callable(args[0]) and not kwargs:
             return args[0]
@@ -503,11 +505,9 @@ class SignalMatrix:
 
     @property
     def nbytes(self) -> int:
-        return int(sum(
-            value.nbytes
-            for value in self.__dict__.values()
-            if isinstance(value, np.ndarray)
-        ))
+        return int(
+            sum(value.nbytes for value in self.__dict__.values() if isinstance(value, np.ndarray))
+        )
 
 
 @dataclass(frozen=True)
@@ -547,11 +547,9 @@ class MarketMatrix:
 
     @property
     def nbytes(self) -> int:
-        return int(sum(
-            value.nbytes
-            for value in self.__dict__.values()
-            if isinstance(value, np.ndarray)
-        ))
+        return int(
+            sum(value.nbytes for value in self.__dict__.values() if isinstance(value, np.ndarray))
+        )
 
 
 def build_market_data_matrix(
@@ -701,8 +699,7 @@ def load_market_data_matrix_from_parquet(
     build_start = max(requested_coverage_start, available_start)
     build_end = min(requested_coverage_end, available_end)
     build_fields = frozenset(
-        requested_fields
-        | _normalize_matrix_cache_fields(cache_field_columns or field_columns)
+        requested_fields | _normalize_matrix_cache_fields(cache_field_columns or field_columns)
     )
     normalized_symbols = _normalize_symbol_request(symbols)
     instrument_fingerprint = _instrument_fingerprint(instruments).hex()
@@ -862,9 +859,7 @@ def _matrix_filter_expression(
     end: date,
     symbols: tuple[str, ...] | None,
 ):
-    expression = (pads.field("date") >= pa.scalar(start)) & (
-        pads.field("date") <= pa.scalar(end)
-    )
+    expression = (pads.field("date") >= pa.scalar(start)) & (pads.field("date") <= pa.scalar(end))
     if symbols is not None:
         expression &= pads.field("symbol").isin(list(symbols))
     return expression
@@ -888,9 +883,7 @@ def _resolve_matrix_storage_fields(
     vector_fields = {
         name
         for name in ("total_shares", "float_shares")
-        if name in wanted_fields
-        and name in instrument_columns
-        and name not in parquet_fields
+        if name in wanted_fields and name in instrument_columns and name not in parquet_fields
     }
     if "raw_close" in wanted_fields:
         matrix_fields.add("raw_close")
@@ -940,10 +933,7 @@ def _build_market_data_matrix_from_dataset(
         "close": np.full(shape, np.nan, dtype=np.float32),
         "volume": np.zeros(shape, dtype=np.float32),
     }
-    fields = {
-        name: np.full(shape, np.nan, dtype=np.float32)
-        for name in matrix_fields
-    }
+    fields = {name: np.full(shape, np.nan, dtype=np.float32) for name in matrix_fields}
     seen = np.zeros(shape, dtype=bool)
     _scan_matrix_values(
         dataset,
@@ -1080,12 +1070,10 @@ def _build_market_data_matrix_cache_from_dataset(
             stream.truncate(total_bytes)
 
         arrays = {
-            name: _open_matrix_memmap(data_path, spec, mapped)
-            for name, spec in array_specs.items()
+            name: _open_matrix_memmap(data_path, spec, mapped) for name, spec in array_specs.items()
         }
         fields = {
-            name: _open_matrix_memmap(data_path, spec, mapped)
-            for name, spec in field_specs.items()
+            name: _open_matrix_memmap(data_path, spec, mapped) for name, spec in field_specs.items()
         }
         timestamps, session_ids = _matrix_time_axes(actual_dates)
         arrays["timestamps"][:] = timestamps
@@ -1228,14 +1216,10 @@ def _matrix_binary_layout(
         return spec
 
     array_specs = {name: add_spec(dtype, value_shape) for name, dtype, value_shape in arrays}
-    field_specs = {
-        name: add_spec(np.dtype(np.float32), shape)
-        for name in matrix_fields
-    }
-    field_specs.update({
-        name: add_spec(np.dtype(np.float32), (shape[1],))
-        for name in vector_fields
-    })
+    field_specs = {name: add_spec(np.dtype(np.float32), shape) for name in matrix_fields}
+    field_specs.update(
+        {name: add_spec(np.dtype(np.float32), (shape[1],)) for name in vector_fields}
+    )
     return array_specs, field_specs, offset
 
 
@@ -1292,16 +1276,12 @@ def _mask_unseen_staging_fields(
 
 def _close_matrix_memmaps(mapped: list[np.memmap]) -> None:
     for values in reversed(mapped):
-        try:
+        with suppress(OSError, ValueError):
             values.flush()
-        except (OSError, ValueError):
-            pass
         mmap_obj = getattr(values, "_mmap", None)
         if mmap_obj is not None:
-            try:
+            with suppress(OSError, ValueError):
                 mmap_obj.close()
-            except (OSError, ValueError):
-                pass
 
 
 def _scan_matrix_values(
@@ -1588,9 +1568,11 @@ def _find_covering_matrix_cache(
                 continue
             if manifest.get("instrument_fingerprint") != instrument_fingerprint:
                 continue
-            if source_generation is not None:
-                if manifest.get("source_generation") != source_generation:
-                    continue
+            if (
+                source_generation is not None
+                and manifest.get("source_generation") != source_generation
+            ):
+                continue
             cached_start = date.fromisoformat(str(manifest["coverage_start"]))
             cached_end = date.fromisoformat(str(manifest["coverage_end"]))
             if cached_start > start or cached_end < end:
@@ -1613,9 +1595,7 @@ def _find_covering_matrix_cache(
             storage = path / str(manifest.get("storage", "matrix.bin"))
             size = storage.stat().st_size
             exact = (
-                cached_start == start
-                and cached_end == end
-                and cached_fields == requested_fields
+                cached_start == start and cached_end == end and cached_fields == requested_fields
             )
             matches.append((size, -path.stat().st_mtime_ns, path, "exact" if exact else "covering"))
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
@@ -1630,9 +1610,7 @@ class _MatrixDiskCacheLease:
     def __init__(self, path: Path) -> None:
         self.path = str(path)
         with _MATRIX_DISK_CACHE_LOCK:
-            _MATRIX_DISK_CACHE_LEASES[self.path] = (
-                _MATRIX_DISK_CACHE_LEASES.get(self.path, 0) + 1
-            )
+            _MATRIX_DISK_CACHE_LEASES[self.path] = _MATRIX_DISK_CACHE_LEASES.get(self.path, 0) + 1
 
     def __del__(self) -> None:
         path = self.path
@@ -1692,22 +1670,13 @@ def _load_market_data_matrix_cache(
         if name not in {"timestamps", "session_ids"}
     ):
         raise ValueError("matrix disk cache contains inconsistent array shapes")
-    if any(
-        values.shape not in {shape, (shape[1],)}
-        for values in stored_fields.values()
-    ):
+    if any(values.shape not in {shape, (shape[1],)} for values in stored_fields.values()):
         raise ValueError("matrix disk cache contains inconsistent field shapes")
     vector_field_names = frozenset(
-        name
-        for name, values in stored_fields.items()
-        if values.shape == (shape[1],)
+        name for name, values in stored_fields.items() if values.shape == (shape[1],)
     )
     fields = {
-        name: (
-            values
-            if values.shape == shape
-            else np.broadcast_to(values.reshape(1, -1), shape)
-        )
+        name: (values if values.shape == shape else np.broadcast_to(values.reshape(1, -1), shape))
         for name, values in stored_fields.items()
     }
     _make_read_only(*fields.values())
@@ -1731,10 +1700,9 @@ def _load_market_data_matrix_cache(
         cache_path=str(path),
         cache_lease=_MatrixDiskCacheLease(path),
         vector_fields=vector_field_names,
-        cache_timing_ms=MappingProxyType({
-            str(name): float(value)
-            for name, value in manifest.get("build_timing_ms", {}).items()
-        }),
+        cache_timing_ms=MappingProxyType(
+            {str(name): float(value) for name, value in manifest.get("build_timing_ms", {}).items()}
+        ),
     )
 
 
@@ -1821,9 +1789,7 @@ def _prune_matrix_disk_cache(
             continue
     if current_source_generation is not None:
         try:
-            keep_manifest = json.loads(
-                (keep / "manifest.json").read_text(encoding="utf-8")
-            )
+            keep_manifest = json.loads((keep / "manifest.json").read_text(encoding="utf-8"))
             keep_parquet_root = keep_manifest.get("parquet_root")
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             keep_parquet_root = None
@@ -1831,9 +1797,7 @@ def _prune_matrix_disk_cache(
             if path == keep:
                 continue
             try:
-                manifest = json.loads(
-                    (path / "manifest.json").read_text(encoding="utf-8")
-                )
+                manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
                 same_universe = (
                     keep_parquet_root is not None
                     and manifest.get("parquet_root") == keep_parquet_root
@@ -1906,10 +1870,9 @@ def _load_or_build_matrix_axes(
     if path.exists():
         try:
             previous = json.loads(path.read_text(encoding="utf-8"))
-            if (
-                int(previous.get("version", -1)) == _MATRIX_AXIS_INDEX_VERSION
-                and previous.get("source_partitions") == dict(source_partitions)
-            ):
+            if int(previous.get("version", -1)) == _MATRIX_AXIS_INDEX_VERSION and previous.get(
+                "source_partitions"
+            ) == dict(source_partitions):
                 return (
                     [date.fromisoformat(value) for value in previous["dates"]],
                     [str(value) for value in previous["symbols"]],
@@ -1925,9 +1888,7 @@ def _load_or_build_matrix_axes(
             if previous_partitions.get(value) != fingerprint
         }
         removed_labels = set(previous_partitions) - set(source_partitions)
-        rewritten_labels = {
-            value for value in changed_labels if value in previous_partitions
-        }
+        rewritten_labels = {value for value in changed_labels if value in previous_partitions}
         if removed_labels or rewritten_labels:
             actual_dates, actual_symbols = _collect_parquet_axes(
                 dataset,
@@ -1963,8 +1924,7 @@ def _load_or_build_matrix_axes(
                     for value in pc.unique(_batch_column(batch, "date")).to_pylist()
                 )
                 symbols_set.update(
-                    str(value)
-                    for value in pc.unique(_batch_column(batch, "symbol")).to_pylist()
+                    str(value) for value in pc.unique(_batch_column(batch, "symbol")).to_pylist()
                 )
             actual_symbols = sorted(symbols_set)
         actual_dates = [date.fromisoformat(value) for value in sorted(retained_dates)]
@@ -2007,8 +1967,7 @@ def _collect_parquet_axes(
     for batch in scanner.to_batches():
         dates.update(pc.unique(_batch_column(batch, "date")).to_pylist())
         symbols.update(
-            str(value)
-            for value in pc.unique(_batch_column(batch, "symbol")).to_pylist()
+            str(value) for value in pc.unique(_batch_column(batch, "symbol")).to_pylist()
         )
     return sorted(dates), sorted(symbols)
 
@@ -2074,10 +2033,7 @@ def _instrument_axis_values(
         for name in sorted(wanted_fields)
         if name in instruments.columns and instruments[name].dtype.is_numeric()
     ]
-    vectors = {
-        name: np.full(len(symbols), np.nan, dtype=np.float32)
-        for name in numeric_fields
-    }
+    vectors = {name: np.full(len(symbols), np.nan, dtype=np.float32) for name in numeric_fields}
     for asset_id, symbol in enumerate(symbols):
         row = by_symbol.get(symbol)
         if row is None:
@@ -2093,10 +2049,12 @@ def _instrument_axis_values(
                 target[asset_id] = np.float32(value)
 
     shape = (1, len(symbols))
-    fields.update({
-        name: np.broadcast_to(values.reshape(shape), (time_count, len(symbols)))
-        for name, values in vectors.items()
-    })
+    fields.update(
+        {
+            name: np.broadcast_to(values.reshape(shape), (time_count, len(symbols)))
+            for name, values in vectors.items()
+        }
+    )
     return names, fields, limits
 
 
@@ -2129,9 +2087,7 @@ def _limit_lock_matrices(
     previous_adjustment = np.full(shape[1], np.nan, dtype=np.float64)
     for time_id in range(shape[0]):
         limit_pct = (
-            legacy_pct
-            if trading_dates[time_id] < MAIN_BOARD_ST_LIMIT_CHANGE_DATE
-            else current_pct
+            legacy_pct if trading_dates[time_id] < MAIN_BOARD_ST_LIMIT_CHANGE_DATE else current_pct
         )
         present = seen[time_id]
         current_close = close[time_id].astype(np.float64, copy=False)
@@ -2166,12 +2122,12 @@ def _limit_lock_matrices(
                 use_down = np.isfinite(latest_down) & (latest_down < 10_000.0)
                 up_price = np.where(use_up, latest_up, up_price)
                 down_price = np.where(use_down, latest_down, down_price)
-            up_locked[time_id, valid] = (
-                current_raw[valid] >= up_price[valid] - 0.005
-            ).astype(np.uint8)
-            down_locked[time_id, valid] = (
-                current_raw[valid] <= down_price[valid] + 0.005
-            ).astype(np.uint8)
+            up_locked[time_id, valid] = (current_raw[valid] >= up_price[valid] - 0.005).astype(
+                np.uint8
+            )
+            down_locked[time_id, valid] = (current_raw[valid] <= down_price[valid] + 0.005).astype(
+                np.uint8
+            )
 
         previous_close[present] = current_close[present]
         previous_raw[present] = current_raw[present]
@@ -2648,10 +2604,12 @@ def _append_market_row(
     return MarketDataMatrix(
         timestamps=np.concatenate([market.timestamps, latest.timestamps[:1]]),
         timestamp_labels=(*market.timestamp_labels, latest_label),
-        session_ids=np.concatenate([
-            market.session_ids,
-            np.array([next_session], dtype=np.int32),
-        ]),
+        session_ids=np.concatenate(
+            [
+                market.session_ids,
+                np.array([next_session], dtype=np.int32),
+            ]
+        ),
         symbols=market.symbols,
         names=market.names,
         fields=MappingProxyType(fields),
@@ -2755,12 +2713,7 @@ def _present_matrix(
     volume: np.ndarray,
 ) -> np.ndarray:
     del volume
-    return (
-        np.isfinite(open_)
-        | np.isfinite(high)
-        | np.isfinite(low)
-        | np.isfinite(close)
-    )
+    return np.isfinite(open_) | np.isfinite(high) | np.isfinite(low) | np.isfinite(close)
 
 
 def _normalize_signal(signal: str) -> str:
@@ -3259,8 +3212,7 @@ def ewm_adjust_false(
             if continuing.any():
                 denominator = old_weight[continuing] + alpha_value
                 weighted[continuing] = (
-                    old_weight[continuing] * weighted[continuing]
-                    + alpha_value * row[continuing]
+                    old_weight[continuing] * weighted[continuing] + alpha_value * row[continuing]
                 ) / denominator
                 old_weight[continuing] = 1.0
             if starting.any():
@@ -3471,11 +3423,7 @@ class MatrixStrategyPipeline:
             and cache.current_bytes + _estimate_pipeline_cache_bytes(market, config)
             > cache.max_bytes
         )
-        cache_scope = (
-            cache.suspend()
-            if protect_cache
-            else nullcontext()
-        )
+        cache_scope = cache.suspend() if protect_cache else nullcontext()
         with cache_scope:
             basic_mask = build_pipeline_filter_mask(market, config)
             entry = (signals.entry.astype(bool) & basic_mask).astype(np.uint8)
@@ -3496,9 +3444,8 @@ class MatrixStrategyPipeline:
                 if not np.isfinite(context_score).all():
                     raise ValueError("matrix strategy entry context score must be finite")
                 context_weight = min(max(float(config.entry_context_weight), 0.0), 1.0)
-                score = (
-                    score * np.float32(1.0 - context_weight)
-                    + context_score * np.float32(context_weight)
+                score = score * np.float32(1.0 - context_weight) + context_score * np.float32(
+                    context_weight
                 )
                 score[entry == 0] = 0.0
             entry_codes = np.where(entry != 0, signals.entry_signal_code, -1).astype(np.int16)
@@ -3534,23 +3481,15 @@ def _estimate_pipeline_cache_bytes(
     if config.entry_context_score is not None:
         estimated += float_bytes
 
-    feature_names = {
-        name
-        for name, weight in config.scoring.items()
-        if float(weight) != 0.0
-    }
+    feature_names = {name for name, weight in config.scoring.items() if float(weight) != 0.0}
     if not feature_names and config.order_by and config.order_by != "score":
         feature_names.add(str(config.order_by))
     for name in feature_names:
         if name in {"open", "high", "low", "close", "volume"} or name in market.fields:
             continue
-        if name == "vol_ratio_5d":
+        if name == "vol_ratio_5d" or name == "ma20_bias":
             estimated += 2 * float_bytes
-        elif name == "ma20_bias":
-            estimated += 2 * float_bytes
-        elif name == "change_pct" or (
-            name.startswith("momentum_") and name.endswith("d")
-        ):
+        elif name == "change_pct" or (name.startswith("momentum_") and name.endswith("d")):
             estimated += float_bytes
     return estimated
 
@@ -3718,7 +3657,8 @@ def matrix_feature(market: MarketDataMatrix, name: str) -> np.ndarray:
     if name in {"open", "high", "low", "close", "volume"} or name in market.fields:
         return market.field(name)
     close_feature = (
-        name in {
+        name
+        in {
             "prev_close",
             "change_pct",
             "change_amount",
@@ -3732,9 +3672,7 @@ def matrix_feature(market: MarketDataMatrix, name: str) -> np.ndarray:
         }
         or (name.startswith("ma") and name[2:].isdigit())
         or (name.startswith("rsi_") and name[4:].isdigit())
-        or (
-            name.startswith("momentum_") and name.endswith("d")
-        )
+        or (name.startswith("momentum_") and name.endswith("d"))
     )
     if close_feature:
         source = market.close
@@ -3823,7 +3761,7 @@ def _compute_matrix_feature(market: MarketDataMatrix, name: str) -> np.ndarray:
             np.isfinite(daily),
             20,
             ddof=1,
-        ) * np.float32(252 ** 0.5)
+        ) * np.float32(252**0.5)
     if name.startswith("rsi_") and name[4:].isdigit():
         window = int(name[4:])
         delta = market.close - valid_shift(market.close, 1, close_valid)

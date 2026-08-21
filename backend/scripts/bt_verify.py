@@ -1,14 +1,17 @@
-# -*- coding: utf-8 -*-
 """验证矩阵原生回测管线可运行（现有策略 limit_up_momentum）。"""
-import sys, io, json
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-from datetime import date
 
-from app.backtest.strategy import StrategyBacktestConfig, StrategyBacktestService
+import io
+import json
+import sys
+from datetime import date
+from pathlib import Path
+
 from app.backtest.engine import BacktestEngine
+from app.backtest.strategy import StrategyBacktestConfig, StrategyBacktestService
 from app.strategy.engine import StrategyEngine
 from app.tickflow.repository import DataStore, KlineRepository
-from pathlib import Path
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 store = DataStore()
 repo = KlineRepository(store)

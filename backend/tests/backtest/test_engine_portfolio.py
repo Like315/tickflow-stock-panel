@@ -13,26 +13,33 @@ from app.backtest.matrix import (
 )
 
 
-def _panel(symbols: list[str], days: int = 4, price: float = 10.0, overrides: dict[tuple[str, int], dict] | None = None) -> pl.DataFrame:
+def _panel(
+    symbols: list[str],
+    days: int = 4,
+    price: float = 10.0,
+    overrides: dict[tuple[str, int], dict] | None = None,
+) -> pl.DataFrame:
     overrides = overrides or {}
     start = date(2024, 1, 1)
     rows = []
     for sym in symbols:
         for i in range(days):
             patch = overrides.get((sym, i), {})
-            rows.append({
-                "symbol": sym,
-                "name": sym,
-                "date": start + timedelta(days=i),
-                "open": patch.get("open", price),
-                "high": patch.get("high", price),
-                "low": patch.get("low", price),
-                "close": patch.get("close", price),
-                "volume": patch.get("volume", 100_000),
-                "score": patch.get("score", {"A": 4, "B": 3, "C": 2, "D": 1}.get(sym, 0)),
-                "signal_limit_up": patch.get("signal_limit_up", False),
-                "signal_limit_down": patch.get("signal_limit_down", False),
-            })
+            rows.append(
+                {
+                    "symbol": sym,
+                    "name": sym,
+                    "date": start + timedelta(days=i),
+                    "open": patch.get("open", price),
+                    "high": patch.get("high", price),
+                    "low": patch.get("low", price),
+                    "close": patch.get("close", price),
+                    "volume": patch.get("volume", 100_000),
+                    "score": patch.get("score", {"A": 4, "B": 3, "C": 2, "D": 1}.get(sym, 0)),
+                    "signal_limit_up": patch.get("signal_limit_up", False),
+                    "signal_limit_down": patch.get("signal_limit_down", False),
+                }
+            )
     return pl.DataFrame(rows).sort(["symbol", "date"])
 
 
@@ -124,7 +131,13 @@ def test_one_price_limit_up_blocks_buy():
         panel,
         entries,
         exits,
-        MatcherConfig(matching="open_t+1", fees_pct=0, slippage_bps=0, max_positions=1, initial_capital=100_000),
+        MatcherConfig(
+            matching="open_t+1",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=1,
+            initial_capital=100_000,
+        ),
     )
 
     assert result.trades == []
@@ -139,10 +152,15 @@ def test_failed_open_exit_keeps_slot_and_blocks_replacement_buy():
             ("A", 2): {"open": 9, "high": 9, "low": 9, "close": 9, "signal_limit_down": True},
         },
     )
-    entries = _mask(panel, {
-        ("A", 0), ("B", 0), ("C", 0),
-        ("D", 1),
-    })
+    entries = _mask(
+        panel,
+        {
+            ("A", 0),
+            ("B", 0),
+            ("C", 0),
+            ("D", 1),
+        },
+    )
     exits = _mask(panel, {("A", 1)})
 
     result = _engine().simulate_portfolio(
@@ -369,7 +387,7 @@ def test_signal_exit_takes_priority_over_max_hold():
         },
     )
     entries = _mask(panel, {("A", 0)})  # day0 收盘确认 → day1 开盘买
-    exits = _mask(panel, {("A", 2)})    # day2 收盘确认卖点 → day3 开盘卖
+    exits = _mask(panel, {("A", 2)})  # day2 收盘确认卖点 → day3 开盘卖
 
     result = _engine().simulate_portfolio(
         panel,
@@ -459,8 +477,8 @@ def test_default_fill_is_buy_open_sell_close():
 
     assert len(result.trades) == 1
     trade = result.trades[0]
-    assert trade.entry_price == 10.0   # 次日开盘
-    assert trade.exit_price == 10.8    # 到期日收盘
+    assert trade.entry_price == 10.0  # 次日开盘
+    assert trade.exit_price == 10.8  # 到期日收盘
     assert trade.exit_reason == "max_hold"
 
 
@@ -480,29 +498,33 @@ def _minute_trigger_panel() -> tuple[pl.DataFrame, pl.Series, pl.Series]:
             ("A", 2): {"open": 10.1, "high": 10.3, "low": 8.9, "close": 9.0},
             ("A", 3): {"open": 8.8, "high": 9.0, "low": 8.7, "close": 8.9},
         },
-    ).with_columns([
-        pl.Series("ma20", [10.0, 10.0, 9.95, 9.9]),
-        pl.Series("signal_ma20_breakdown", [False, False, True, False]),
-    ])
+    ).with_columns(
+        [
+            pl.Series("ma20", [10.0, 10.0, 9.95, 9.9]),
+            pl.Series("signal_ma20_breakdown", [False, False, True, False]),
+        ]
+    )
     return panel, _mask(panel, {("A", 0)}), _mask(panel, {("A", 2)})
 
 
 def test_minute_signal_exit_fills_at_next_minute_open():
     panel, entries, exits = _minute_trigger_panel()
-    minute = pl.DataFrame({
-        "symbol": ["A", "A", "A"],
-        "datetime": [
-            datetime(2024, 1, 3, 9, 31),
-            datetime(2024, 1, 3, 9, 32),
-            datetime(2024, 1, 3, 9, 33),
-        ],
-        "open": [10.2, 10.1, 9.7],
-        "high": [10.3, 10.2, 9.8],
-        "low": [10.1, 9.8, 9.6],
-        "close": [10.2, 9.9, 9.7],
-        "volume": [100.0, 100.0, 100.0],
-        "amount": [1020.0, 990.0, 970.0],
-    })
+    minute = pl.DataFrame(
+        {
+            "symbol": ["A", "A", "A"],
+            "datetime": [
+                datetime(2024, 1, 3, 9, 31),
+                datetime(2024, 1, 3, 9, 32),
+                datetime(2024, 1, 3, 9, 33),
+            ],
+            "open": [10.2, 10.1, 9.7],
+            "high": [10.3, 10.2, 9.8],
+            "low": [10.1, 9.8, 9.6],
+            "close": [10.2, 9.9, 9.7],
+            "volume": [100.0, 100.0, 100.0],
+            "amount": [1020.0, 990.0, 970.0],
+        }
+    )
 
     result = BacktestEngine(repo=_MinuteRepo(minute)).simulate_portfolio(
         panel,
@@ -528,16 +550,18 @@ def test_minute_signal_exit_fills_at_next_minute_open():
 
 def test_minute_signal_exit_without_next_bar_falls_back_to_next_open():
     panel, entries, exits = _minute_trigger_panel()
-    minute = pl.DataFrame({
-        "symbol": ["A"],
-        "datetime": [datetime(2024, 1, 3, 15, 0)],
-        "open": [9.9],
-        "high": [10.0],
-        "low": [8.9],
-        "close": [9.0],
-        "volume": [100.0],
-        "amount": [900.0],
-    })
+    minute = pl.DataFrame(
+        {
+            "symbol": ["A"],
+            "datetime": [datetime(2024, 1, 3, 15, 0)],
+            "open": [9.9],
+            "high": [10.0],
+            "low": [8.9],
+            "close": [9.0],
+            "volume": [100.0],
+            "amount": [900.0],
+        }
+    )
 
     result = BacktestEngine(repo=_MinuteRepo(minute)).simulate_portfolio(
         panel,

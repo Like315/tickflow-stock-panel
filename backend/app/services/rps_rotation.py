@@ -12,6 +12,7 @@
 性能: 387 概念 × 30 天的 group_by + sort 是 polars 内存操作, 实测 <50ms;
 另加进程级结果缓存 (_CACHE_TTL=120s), 重复请求 <1ms。
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,13 +21,13 @@ from datetime import date, timedelta
 
 import polars as pl
 
+from app.services.ext_data import ExtConfigStore
 from app.services.market_overview_builder import (
     _dimension_field,
     _dimension_values,
     _read_ext_rows,
     _symbol_keys,
 )
-from app.services.ext_data import ExtConfigStore
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def invalidate_cache() -> None:
 
 def _latest_enriched_date(repo) -> date | None:
     """取 enriched 缓存里的最新交易日(矩阵的右端=最新日期)。"""
-    cache = repo._enriched_history_cache  # noqa: SLF001 —— 缓存字段无公开 getter
+    cache = repo._enriched_history_cache
     if cache is None or cache.is_empty() or "date" not in cache.columns:
         return None
     return cache["date"].max()
@@ -107,7 +108,9 @@ _map_cache: dict[str, tuple[pl.DataFrame, int]] = {}
 _map_ts: dict[str, float] = {}
 
 
-def build_rps_rotation(repo, days: int = 12, kind: str = "concept", level: int | None = None) -> dict:
+def build_rps_rotation(
+    repo, days: int = 12, kind: str = "concept", level: int | None = None
+) -> dict:
     """构建维度涨幅轮动矩阵(概念或行业)。
 
     Args:
@@ -148,9 +151,7 @@ def build_rps_rotation(repo, days: int = 12, kind: str = "concept", level: int |
 
     # 2. 取最近 N 交易日的个股 change_pct(命中内存缓存)
     start = latest - timedelta(days=days * 2 + 10)  # 日历天 ≈ 2/3 交易日, 多取余量
-    df = repo.get_enriched_range(
-        start, latest, columns=["symbol", "date", "change_pct"]
-    )
+    df = repo.get_enriched_range(start, latest, columns=["symbol", "date", "change_pct"])
     if df is None or df.is_empty():
         return {"dates": [], "columns": {}, "concept_count": 0}
 
@@ -172,18 +173,14 @@ def build_rps_rotation(repo, days: int = 12, kind: str = "concept", level: int |
         joined = joined.with_columns(parts.list.get(idx).alias(kind))
 
     # 4. 按 (date, <kind>) 聚合 avg change_pct —— 与 _dimension_rank 的简单平均口径一致
-    agg = joined.group_by(["date", kind]).agg(
-        pl.col("change_pct").mean().alias("avg_pct")
-    )
+    agg = joined.group_by(["date", kind]).agg(pl.col("change_pct").mean().alias("avg_pct"))
     # 去掉 NaN/Null(停牌等无行情的成员日)
     agg = agg.filter(pl.col("avg_pct").is_not_null() & pl.col("avg_pct").is_not_nan())
 
     # 5. 每个日期内按 avg_pct 降序排, 再 group_by 把每组的 (成员, avg_pct)
     #    收集成并行 list —— 一次 polars 操作拿到全部列, 避免 partition_by 的 tuple key 歧义
     agg = agg.sort(["date", "avg_pct"], descending=[False, True])
-    grouped = agg.group_by("date", maintain_order=True).agg(
-        pl.col(kind), pl.col("avg_pct")
-    )
+    grouped = agg.group_by("date", maintain_order=True).agg(pl.col(kind), pl.col("avg_pct"))
     # 最新日期排最前
     grouped = grouped.sort("date", descending=True)
 
@@ -192,7 +189,7 @@ def build_rps_rotation(repo, days: int = 12, kind: str = "concept", level: int |
     for row in grouped.iter_rows(named=True):
         d_str = str(row["date"])
         all_dates_sorted.append(d_str)
-        columns[d_str] = list(zip(row[kind], row["avg_pct"]))
+        columns[d_str] = list(zip(row[kind], row["avg_pct"], strict=True))
 
     full = {
         "dates": [str(d) for d in all_dates_sorted],

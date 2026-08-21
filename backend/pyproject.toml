@@ -84,6 +84,8 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
 ignore = ["E501"]   # 长行交给 fmt
+# 中文 docstring、注释和用户提示允许使用正常全角标点；数学符号仅用于说明公式。
+allowed-confusables = ["，", "：", "（", "）", "；", "？", "×", "∨"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

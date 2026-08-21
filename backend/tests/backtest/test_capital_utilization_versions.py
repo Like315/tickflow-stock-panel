@@ -58,17 +58,19 @@ def test_1430_confirmation_uses_next_minute_open_and_fails_closed():
     entry[21, 0] = 1
     signals = make_signal_matrix(market.shape, entry=entry)
     target_date = date(2024, 1, 1) + timedelta(days=21)
-    minute = pl.DataFrame({
-        "symbol": ["A", "A", "A"],
-        "datetime": [
-            datetime.combine(target_date, datetime.strptime("14:29", "%H:%M").time()),
-            datetime.combine(target_date, datetime.strptime("14:30", "%H:%M").time()),
-            datetime.combine(target_date, datetime.strptime("14:31", "%H:%M").time()),
-        ],
-        "open": [10.2, 10.5, 10.72],
-        "close": [10.4, 10.7, 10.75],
-        "volume": [80.0, 70.0, 10.0],
-    })
+    minute = pl.DataFrame(
+        {
+            "symbol": ["A", "A", "A"],
+            "datetime": [
+                datetime.combine(target_date, datetime.strptime("14:29", "%H:%M").time()),
+                datetime.combine(target_date, datetime.strptime("14:30", "%H:%M").time()),
+                datetime.combine(target_date, datetime.strptime("14:31", "%H:%M").time()),
+            ],
+            "open": [10.2, 10.5, 10.72],
+            "close": [10.4, 10.7, 10.75],
+            "volume": [80.0, 70.0, 10.0],
+        }
+    )
 
     confirmed, fill, stats = confirm_intraday_entries(market, signals, minute)
     missing, missing_fill, missing_stats = confirm_intraday_entries(

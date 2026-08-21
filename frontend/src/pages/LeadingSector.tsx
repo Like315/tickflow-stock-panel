@@ -58,7 +58,7 @@ export function LeadingSector() {
   })
 
   const data = query.data
-  const sectors = data?.sectors ?? []
+  const sectors = useMemo(() => data?.sectors ?? [], [data?.sectors])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()

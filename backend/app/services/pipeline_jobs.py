@@ -8,13 +8,14 @@
   - 单个查询 = 内存优先,没有则读磁盘
   - 创建新 job 前检查文件数量,>= max_jobs 时删除最老的文件
 """
+
 from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import uuid
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -40,6 +41,7 @@ STALE_JOB_TIMEOUT_S = DEFAULT_JOB_TIMEOUT_S
 
 def _default_store_dir() -> Path:
     from app.config import settings
+
     return settings.data_dir / "job_store"
 
 
@@ -50,7 +52,7 @@ class JobStore:
     def __init__(self, max_jobs: int = 50, store_dir: Path = _STORE_DIR) -> None:
         self._max_jobs = max_jobs
         self._store_dir = store_dir
-        self._active_jobs: dict[str, dict[str, Any]] = {}   # running/pending
+        self._active_jobs: dict[str, dict[str, Any]] = {}  # running/pending
         self._active_id: str | None = None
         self._lock = threading.Lock()
         self._store_dir.mkdir(parents=True, exist_ok=True)
@@ -181,8 +183,15 @@ class JobStore:
 
     # ===== progress =====
 
-    def progress(self, job_id: str, stage: str, pct: int, msg: str,
-                 stage_pct: int | None = None, skip_log: bool = False) -> None:
+    def progress(
+        self,
+        job_id: str,
+        stage: str,
+        pct: int,
+        msg: str,
+        stage_pct: int | None = None,
+        skip_log: bool = False,
+    ) -> None:
         with self._lock:
             j = self._active_jobs.get(job_id)
             if not j:
@@ -200,7 +209,12 @@ class JobStore:
             }
             if skip_log:
                 entry["_skip"] = True
-            if skip_log and j["log"] and j["log"][-1].get("stage") == stage and j["log"][-1].get("_skip"):
+            if (
+                skip_log
+                and j["log"]
+                and j["log"][-1].get("stage") == stage
+                and j["log"][-1].get("_skip")
+            ):
                 j["log"][-1] = entry
             else:
                 j["log"].append(entry)
@@ -259,25 +273,29 @@ class JobStore:
             if not started:
                 return
             # 优先用显式传入, 其次 job 自身阈值, 最后默认值
-            effective_timeout = timeout_s if timeout_s is not None else j.get("timeout_s", DEFAULT_JOB_TIMEOUT_S)
+            effective_timeout = (
+                timeout_s if timeout_s is not None else j.get("timeout_s", DEFAULT_JOB_TIMEOUT_S)
+            )
         # 时间计算放到锁外(避免 datetime 解析持锁)。
         # started_at 形如 "2026-07-04T12:00:00Z"(start() 用 datetime.utcnow 存)。
         # 两端都用 timezone-aware UTC 比较,避免 naive/aware 混用导致 TypeError。
         try:
             start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
             elapsed = (datetime.now(start_dt.tzinfo) - start_dt).total_seconds()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return
         if elapsed > effective_timeout:
-            logger.warning("reap_stale: 强制取消卡死 job %s (已运行 %.0fs, 阈值 %ss)",
-                           jid, elapsed, effective_timeout)
+            logger.warning(
+                "reap_stale: 强制取消卡死 job %s (已运行 %.0fs, 阈值 %ss)",
+                jid,
+                elapsed,
+                effective_timeout,
+            )
             self.fail(jid, f"超时自动取消 (运行 {int(elapsed)}s, 疑似卡死)")
             # 强制释放重任务锁: 卡死的线程无法被中断, 锁永远不会自然释放。
             # job 已标记 failed, 即使僵尸线程后续写入 parquet, 下次拉取会覆盖, 安全。
-            try:
+            with suppress(RuntimeError):
                 _heavy_run_lock.release()
-            except RuntimeError:
-                pass
 
     def clear(self) -> None:
         """清空所有任务（内存 + 磁盘文件）。"""
@@ -285,10 +303,8 @@ class JobStore:
             self._active_jobs.clear()
             self._active_id = None
             for f in self._store_dir.glob("*.json"):
-                try:
+                with suppress(Exception):
                     f.unlink()
-                except Exception:
-                    pass
 
 
 def _summary(j: dict[str, Any]) -> dict[str, Any]:
@@ -313,7 +329,7 @@ def _duration_s(j: dict[str, Any]) -> float | None:
         s = datetime.fromisoformat(j["started_at"])
         e = datetime.fromisoformat(j["finished_at"])
         return round((e - s).total_seconds(), 2)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -343,8 +359,5 @@ def try_acquire_run_slot() -> bool:
 
 def release_run_slot() -> None:
     """释放重任务执行槽(允许跨线程释放)。"""
-    try:
+    with suppress(RuntimeError):
         _heavy_run_lock.release()
-    except RuntimeError:
-        # 未持有(重复释放)—— 幂等忽略
-        pass

@@ -1,5 +1,5 @@
 """Structured, privacy-conscious research context for local fund portfolios."""
-# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import json
@@ -116,15 +116,17 @@ def _parse_holdings_archive(payload: str) -> tuple[str | None, list[dict[str, An
             continue
         code = cells[1].strip()
         weight = _number(cells[6])
-        holdings.append({
-            "rank": int(cells[0]),
-            "security_code": code,
-            "security_name": cells[2].strip(),
-            "market_segment": _market_segment(code),
-            "nav_weight_pct": _rounded(weight),
-            "shares_10k": _rounded(_number(cells[7])),
-            "market_value_10k_cny": _rounded(_number(cells[8])),
-        })
+        holdings.append(
+            {
+                "rank": int(cells[0]),
+                "security_code": code,
+                "security_name": cells[2].strip(),
+                "market_segment": _market_segment(code),
+                "nav_weight_pct": _rounded(weight),
+                "shares_10k": _rounded(_number(cells[7])),
+                "market_value_10k_cny": _rounded(_number(cells[8])),
+            }
+        )
         if len(holdings) >= 10:
             break
     return (date_match.group(1) if date_match else None), holdings
@@ -154,7 +156,9 @@ def _parse_asset_allocation(text: str) -> dict[str, Any] | None:
     return result
 
 
-def _market_trend_snapshot(symbol: str, name: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _market_trend_snapshot(
+    symbol: str, name: str, rows: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     values = [
         (row.get("date"), _number(row.get("close")))
         for row in rows
@@ -232,19 +236,26 @@ def _operation_assessment(
         and return_6m < 0
     )
     if sell_review:
-        reasons.extend([
-            f"用户当前持有收益率为 {profit_pct:.2f}%",
-            f"基金近3月收益为 {return_3m:.2f}%，近6月收益为 {return_6m:.2f}%",
-        ])
+        reasons.extend(
+            [
+                f"用户当前持有收益率为 {profit_pct:.2f}%",
+                f"基金近3月收益为 {return_3m:.2f}%，近6月收益为 {return_6m:.2f}%",
+            ]
+        )
         return {
             "code": code,
             "tier": "进入卖出评估",
             "reasons": reasons,
             "review_triggers": ["刷新数据后若持仓仍亏损且近3月、近6月收益仍同时为负，维持卖出评估"],
-            "invalidation_conditions": ["持仓转为非亏损，或近3月、近6月任一区间收益转为非负时重新评估"],
+            "invalidation_conditions": [
+                "持仓转为非亏损，或近3月、近6月任一区间收益转为非负时重新评估"
+            ],
         }
 
-    if weight_pct is not None and weight_pct >= _OPERATION_POLICY["concentration_review_weight_pct"]:
+    if (
+        weight_pct is not None
+        and weight_pct >= _OPERATION_POLICY["concentration_review_weight_pct"]
+    ):
         reasons.append(f"组合权重 {weight_pct:.2f}% 达到政策集中度阈值 35.00%")
     if return_1m is not None and return_1m <= _OPERATION_POLICY["short_term_weakness_pct"]:
         reasons.append(f"近1月收益 {return_1m:.2f}% 低于或等于政策阈值 -10.00%")
@@ -252,9 +263,7 @@ def _operation_assessment(
         holdings_return is not None
         and holdings_return <= _OPERATION_POLICY["disclosed_holdings_weakness_pct"]
     ):
-        reasons.append(
-            f"披露持仓加权20日收益 {holdings_return:.2f}% 低于或等于政策阈值 -8.00%"
-        )
+        reasons.append(f"披露持仓加权20日收益 {holdings_return:.2f}% 低于或等于政策阈值 -8.00%")
     if volatility is not None and volatility >= _OPERATION_POLICY["high_volatility_pct"]:
         reasons.append(f"年化波动率 {volatility:.2f}% 达到政策高波动阈值 50.00%")
 
@@ -307,16 +316,16 @@ def calculate_nav_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         base_nav = eligible[-1][1]
         performance[period] = _rounded((latest_nav / base_nav - 1) * 100)
 
-    one_year = [(nav_date, nav) for nav_date, nav in values if nav_date >= latest_date - timedelta(days=365)]
+    one_year = [
+        (nav_date, nav) for nav_date, nav in values if nav_date >= latest_date - timedelta(days=365)
+    ]
     daily_returns = [
         one_year[index][1] / one_year[index - 1][1] - 1
         for index in range(1, len(one_year))
         if one_year[index - 1][1] > 0
     ]
     volatility = (
-        statistics.stdev(daily_returns) * math.sqrt(250) * 100
-        if len(daily_returns) >= 2
-        else None
+        statistics.stdev(daily_returns) * math.sqrt(250) * 100 if len(daily_returns) >= 2 else None
     )
     peak = 0.0
     max_drawdown = 0.0
@@ -402,7 +411,9 @@ class EastmoneyFundResearchProvider:
         if len(history) < 2:
             raise RuntimeError("公开行情源的净值历史样本不足")
         metrics = calculate_nav_metrics(history)
-        managers = [value.strip() for value in str(base.get("JJJL") or "").split(",") if value.strip()]
+        managers = [
+            value.strip() for value in str(base.get("JJJL") or "").split(",") if value.strip()
+        ]
         result = {
             "code": code,
             "name": str(exact.get("NAME") or "").strip(),
@@ -433,15 +444,17 @@ class EastmoneyFundResearchProvider:
         except Exception as exc:
             holdings_as_of, top_holdings = None, []
             disclosure_gap = f"最新定期报告持仓明细暂不可用：{str(exc)[:100]}"
-        result.update({
-            "top_holdings_as_of": holdings_as_of,
-            "top_holdings": top_holdings,
-            "top_holdings_total_weight_pct": _rounded(
-                sum(item.get("nav_weight_pct") or 0 for item in top_holdings)
-            ),
-            "holdings_disclosure_note": "仅为最新定期报告披露，不代表当前实时持仓",
-            "disclosure_gap": disclosure_gap,
-        })
+        result.update(
+            {
+                "top_holdings_as_of": holdings_as_of,
+                "top_holdings": top_holdings,
+                "top_holdings_total_weight_pct": _rounded(
+                    sum(item.get("nav_weight_pct") or 0 for item in top_holdings)
+                ),
+                "holdings_disclosure_note": "仅为最新定期报告披露，不代表当前实时持仓",
+                "disclosure_gap": disclosure_gap,
+            }
+        )
         return result
 
     def market_snapshot(
@@ -667,7 +680,9 @@ class FundResearchService:
             try:
                 market_research.append(self._market_provider.research_snapshot(position["code"]))
             except Exception as exc:
-                data_gaps.append(f"基金 {position['code']} 的公开净值研究数据暂不可用：{str(exc)[:120]}")
+                data_gaps.append(
+                    f"基金 {position['code']} 的公开净值研究数据暂不可用：{str(exc)[:120]}"
+                )
         self._enrich_disclosed_holdings(market_research, data_gaps)
         for item in market_research:
             if item.get("disclosure_gap"):
@@ -687,11 +702,11 @@ class FundResearchService:
         global_market_context = self._global_market_context(data_gaps)
 
         as_of_dates = [
-            str(item.get("nav_as_of"))
-            for item in market_research
-            if item.get("nav_as_of")
+            str(item.get("nav_as_of")) for item in market_research if item.get("nav_as_of")
         ]
-        as_of = max(as_of_dates, default=portfolio.get("quotes_refreshed_at") or portfolio.get("synced_at"))
+        as_of = max(
+            as_of_dates, default=portfolio.get("quotes_refreshed_at") or portfolio.get("synced_at")
+        )
         research_by_code = {str(item.get("code") or ""): item for item in market_research}
         operation_assessments = [
             _operation_assessment(position, research_by_code.get(position["code"]))
@@ -720,7 +735,9 @@ class FundResearchService:
             "top1_weight_pct": _rounded(sum(weights[:1])),
             "top3_weight_pct": _rounded(sum(weights[:3])),
             "hhi": _rounded(hhi, 4),
-            "profitable_position_count": sum((row["holding_profit_cny"] or 0) > 0 for row in positions),
+            "profitable_position_count": sum(
+                (row["holding_profit_cny"] or 0) > 0 for row in positions
+            ),
             "loss_position_count": sum((row["holding_profit_cny"] or 0) < 0 for row in positions),
             "quoted_position_count": sum(bool(row.get("official_nav_date")) for row in positions),
         }

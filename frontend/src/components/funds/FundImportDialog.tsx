@@ -93,7 +93,6 @@ export function FundImportDialog({ open, onClose }: Props) {
     )
     return () => { cancelled = true }
     // Reset is intentionally scoped to the dialog lifecycle.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   useEffect(() => () => previewUrls.forEach(URL.revokeObjectURL), [previewUrls])

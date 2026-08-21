@@ -1,4 +1,5 @@
 """Validation-gated single-variable policy evolution."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -163,14 +164,16 @@ class PolicyEvolutionEngine:
         else:
             value = max(-0.05, min(0.10, current + step))
         version = next_version or champion.version + 1
-        candidate = champion.model_copy(update={
-            "id": f"expert_v{version}_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
-            "version": version,
-            "parent_id": champion.id,
-            "status": "candidate",
-            mutation_field: value,
-            "mutation_note": f"{mutation_field}: {current:.6f} -> {value:.6f}",
-        })
+        candidate = champion.model_copy(
+            update={
+                "id": f"expert_v{version}_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
+                "version": version,
+                "parent_id": champion.id,
+                "status": "candidate",
+                mutation_field: value,
+                "mutation_note": f"{mutation_field}: {current:.6f} -> {value:.6f}",
+            }
+        )
         return candidate, mutation_field
 
     @staticmethod
@@ -186,8 +189,12 @@ class PolicyEvolutionEngine:
             return "rejected", "no_protected_evaluation_data"
         if candidate.closed_trades < min_closed_trades:
             return "inconclusive", "insufficient_closed_trades"
-        champion_expectancy = champion.expectancy if champion.expectancy is not None else float("-inf")
-        candidate_expectancy = candidate.expectancy if candidate.expectancy is not None else float("-inf")
+        champion_expectancy = (
+            champion.expectancy if champion.expectancy is not None else float("-inf")
+        )
+        candidate_expectancy = (
+            candidate.expectancy if candidate.expectancy is not None else float("-inf")
+        )
         if candidate_expectancy <= champion_expectancy:
             return "rejected", "expectancy_did_not_improve"
         if candidate.max_drawdown < champion.max_drawdown - 0.01:

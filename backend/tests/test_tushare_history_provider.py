@@ -9,20 +9,22 @@ from app.plugins.tushare_history.provider import TushareHistoricalMinuteProvider
 
 
 def test_tushare_history_provider_normalizes_share_volume_to_lots(monkeypatch) -> None:
-    raw = pl.DataFrame({
-        "ts_code": ["600000.SH", "600000.SH", "600000.SH"],
-        "trade_time": [
-            "2024-01-02 09:31:00",
-            "2024-01-02 09:32:00",
-            "2024-01-02 09:33:00",
-        ],
-        "open": [10.0, 10.1, 10.2],
-        "high": [10.1, 10.2, 10.3],
-        "low": [9.9, 10.0, 10.1],
-        "close": [10.05, 10.15, 10.25],
-        "vol": [1_000.0, 2_000.0, 3_000.0],
-        "amount": [10_000.0, 20_000.0, 30_000.0],
-    })
+    raw = pl.DataFrame(
+        {
+            "ts_code": ["600000.SH", "600000.SH", "600000.SH"],
+            "trade_time": [
+                "2024-01-02 09:31:00",
+                "2024-01-02 09:32:00",
+                "2024-01-02 09:33:00",
+            ],
+            "open": [10.0, 10.1, 10.2],
+            "high": [10.1, 10.2, 10.3],
+            "low": [9.9, 10.0, 10.1],
+            "close": [10.05, 10.15, 10.25],
+            "vol": [1_000.0, 2_000.0, 3_000.0],
+            "amount": [10_000.0, 20_000.0, 30_000.0],
+        }
+    )
     monkeypatch.setattr(bridge, "fetch_minutes", lambda *_args, **_kwargs: raw)
     monkeypatch.setattr(
         "app.plugins.tushare_history.provider.sleep_between_batches",

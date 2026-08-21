@@ -81,15 +81,17 @@ def test_same_day_purchase_cannot_be_sold() -> None:
 
 def test_prior_day_lot_can_sell_but_limit_down_stays_pending() -> None:
     executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
-    executor.lots.append(PositionLot(
-        lot_id="lot_old",
-        symbol="000001.SZ",
-        acquired_date=date(2026, 8, 17),
-        shares=1000,
-        remaining_shares=1000,
-        entry_price=9.5,
-        entry_cost=5,
-    ))
+    executor.lots.append(
+        PositionLot(
+            lot_id="lot_old",
+            symbol="000001.SZ",
+            acquired_date=date(2026, 8, 17),
+            shares=1000,
+            remaining_shares=1000,
+            entry_price=9.5,
+            entry_cost=5,
+        )
+    )
     executor.submit(_intent("sell", 32))
 
     blocked = executor.process_bar(_bar(32, is_limit_down=True))[0]
@@ -141,11 +143,13 @@ def test_materially_inconsistent_ohlc_is_rejected() -> None:
 
 
 def test_volume_participation_forces_partial_fill() -> None:
-    executor = StrictMinuteExecutor(RiskConstitution(
-        slippage_bps=0,
-        max_volume_participation=0.05,
-        volume_unit_shares=100,
-    ))
+    executor = StrictMinuteExecutor(
+        RiskConstitution(
+            slippage_bps=0,
+            max_volume_participation=0.05,
+            volume_unit_shares=100,
+        )
+    )
     executor.submit(_intent("buy", 32, shares=10_000))
 
     event = executor.process_bar(_bar(32, volume=100))[0]
@@ -159,11 +163,13 @@ def test_buy_order_never_carries_overnight() -> None:
     executor.submit(_intent("buy", 32, shares=100))
     next_day = datetime(2026, 8, 19, 9, 30, tzinfo=UTC)
 
-    event = executor.process_bar(_bar(
-        32,
-        datetime=next_day,
-        received_at=next_day + timedelta(minutes=1, seconds=1),
-    ))[0]
+    event = executor.process_bar(
+        _bar(
+            32,
+            datetime=next_day,
+            received_at=next_day + timedelta(minutes=1, seconds=1),
+        )
+    )[0]
 
     assert event.event_type == "order_rejected"
     assert event.reason == "buy_order_expired"
@@ -182,15 +188,17 @@ def test_missing_immediate_execution_minute_cancels_buy() -> None:
 
 def test_blocked_sell_survives_executor_state_restore() -> None:
     executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
-    executor.lots.append(PositionLot(
-        lot_id="old",
-        symbol="000001.SZ",
-        acquired_date=date(2026, 8, 17),
-        shares=100,
-        remaining_shares=100,
-        entry_price=10,
-        entry_cost=5,
-    ))
+    executor.lots.append(
+        PositionLot(
+            lot_id="old",
+            symbol="000001.SZ",
+            acquired_date=date(2026, 8, 17),
+            shares=100,
+            remaining_shares=100,
+            entry_price=10,
+            entry_cost=5,
+        )
+    )
     executor.submit(_intent("sell", 32, shares=100))
     assert executor.process_bar(_bar(32, is_limit_down=True))[0].event_type == "order_blocked"
     restored = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))

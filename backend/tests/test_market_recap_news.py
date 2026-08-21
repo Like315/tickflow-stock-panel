@@ -20,10 +20,12 @@ def _overview() -> dict:
         "emotion": {"score": 50, "label": "中性"},
         "radar": [],
         "concept_rank": {
-            "leading": [{
-                "name": "农业种植",
-                "leader": {"name": "丰乐种业"},
-            }],
+            "leading": [
+                {
+                    "name": "农业种植",
+                    "leader": {"name": "丰乐种业"},
+                }
+            ],
             "lagging": [],
         },
         "industry_rank": {},
@@ -36,15 +38,17 @@ async def test_recap_fetches_configured_news_once_and_injects_prompt(monkeypatch
 
     async def fake_fetch_market_news(*, as_of: date, limit: int, keywords):
         captured["fetch"] = (as_of, limit, keywords)
-        return [{
-            "title": "政策支持&lt;b&gt;资本市场&lt;/b&gt;",
-            "snippet": "发布新的公开政策",
-            "source": "权威来源",
-            "published_at": "2026-08-18T08:30:00+08:00",
-            "matched_keywords": "农业种植",
-            "catalyst_timing": "已兑现候选",
-            "relevance": "盘面关联",
-        }]
+        return [
+            {
+                "title": "政策支持&lt;b&gt;资本市场&lt;/b&gt;",
+                "snippet": "发布新的公开政策",
+                "source": "权威来源",
+                "published_at": "2026-08-18T08:30:00+08:00",
+                "matched_keywords": "农业种植",
+                "catalyst_timing": "已兑现候选",
+                "relevance": "盘面关联",
+            }
+        ]
 
     async def fake_stream(messages, **kwargs):
         captured["messages"] = messages
@@ -55,10 +59,7 @@ async def test_recap_fetches_configured_news_once_and_injects_prompt(monkeypatch
     monkeypatch.setattr("app.services.market_news.fetch_market_news", fake_fetch_market_news)
     monkeypatch.setattr("app.services.ai_provider.stream_ai_text", fake_stream)
 
-    events = [
-        json.loads(event)
-        async for event in market_recap.recap_market_stream(object())
-    ]
+    events = [json.loads(event) async for event in market_recap.recap_market_stream(object())]
 
     assert captured["fetch"][:2] == (date(2026, 8, 18), 8)
     assert captured["fetch"][2] == ["农业种植", "丰乐种业"]
@@ -86,10 +87,7 @@ async def test_recap_news_failure_degrades_without_blocking(monkeypatch) -> None
     monkeypatch.setattr("app.services.market_news.fetch_market_news", fail_fetch)
     monkeypatch.setattr("app.services.ai_provider.stream_ai_text", fake_stream)
 
-    events = [
-        json.loads(event)
-        async for event in market_recap.recap_market_stream(object())
-    ]
+    events = [json.loads(event) async for event in market_recap.recap_market_stream(object())]
 
     assert "未检索到与盘面主线直接匹配" in captured["prompt"]
     assert "后续版本接入" not in captured["prompt"]
@@ -109,7 +107,6 @@ async def test_explicit_news_list_skips_provider(monkeypatch) -> None:
     monkeypatch.setattr("app.services.ai_provider.stream_ai_text", fake_stream)
 
     events = [
-        json.loads(event)
-        async for event in market_recap.recap_market_stream(object(), news=[])
+        json.loads(event) async for event in market_recap.recap_market_stream(object(), news=[])
     ]
     assert [event["type"] for event in events] == ["meta", "delta", "done"]

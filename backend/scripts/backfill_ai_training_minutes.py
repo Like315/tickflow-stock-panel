@@ -22,13 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--candidate-dir",
         type=Path,
-        default=(
-            data_dir
-            / "user_data"
-            / "investment_expert"
-            / "training"
-            / "candidates"
-        ),
+        default=(data_dir / "user_data" / "investment_expert" / "training" / "candidates"),
     )
     parser.add_argument("--start", type=date.fromisoformat, required=True)
     parser.add_argument("--end", type=date.fromisoformat, required=True)

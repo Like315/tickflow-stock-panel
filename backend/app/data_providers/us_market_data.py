@@ -1,4 +1,5 @@
 """美股全量基础档案与历史行情的标准化 Provider。"""
+
 from __future__ import annotations
 
 import logging
@@ -77,16 +78,18 @@ def parse_tickflow_instruments(
             continue
         raw = metadata.get(symbol, {})
         ext = raw.get("ext") if isinstance(raw.get("ext"), Mapping) else {}
-        rows.append({
-            "symbol": symbol,
-            "code": str(raw.get("code") or symbol.removesuffix(".US")),
-            "exchange": str(raw.get("exchange") or "US"),
-            "region": str(raw.get("region") or "US"),
-            "name": str(raw.get("name") or symbol),
-            "instrument_type": str(raw.get("type") or "stock"),
-            "total_shares": _finite(ext.get("total_shares")),
-            "float_shares": _finite(ext.get("float_shares")),
-        })
+        rows.append(
+            {
+                "symbol": symbol,
+                "code": str(raw.get("code") or symbol.removesuffix(".US")),
+                "exchange": str(raw.get("exchange") or "US"),
+                "region": str(raw.get("region") or "US"),
+                "name": str(raw.get("name") or symbol),
+                "instrument_type": str(raw.get("type") or "stock"),
+                "total_shares": _finite(ext.get("total_shares")),
+                "float_shares": _finite(ext.get("float_shares")),
+            }
+        )
     if not rows:
         raise ValueError("TickFlow US_Equity universe 没有有效代码")
     rows.sort(key=lambda row: row["symbol"])
@@ -121,25 +124,29 @@ def parse_tickflow_daily(
             name: _finite(column[index]) if index < len(column) else None
             for name, column in columns.items()
         }
-        if (
-            timestamp is None
-            or any((values[name] or 0) <= 0 for name in ("open", "high", "low", "close"))
+        if timestamp is None or any(
+            (values[name] or 0) <= 0 for name in ("open", "high", "low", "close")
         ):
             continue
-        date_value = datetime.fromtimestamp(
-            timestamp / 1000, tz=UTC
-        ).astimezone(NEW_YORK_TZ).date().isoformat()
-        rows.append({
-            "date": date_value,
-            "timestamp": int(timestamp),
-            "open": values["open"],
-            "high": values["high"],
-            "low": values["low"],
-            "close": values["close"],
-            "volume": values["volume"],
-            "amount": values["amount"],
-            "change_pct": None,
-        })
+        date_value = (
+            datetime.fromtimestamp(timestamp / 1000, tz=UTC)
+            .astimezone(NEW_YORK_TZ)
+            .date()
+            .isoformat()
+        )
+        rows.append(
+            {
+                "date": date_value,
+                "timestamp": int(timestamp),
+                "open": values["open"],
+                "high": values["high"],
+                "low": values["low"],
+                "close": values["close"],
+                "volume": values["volume"],
+                "amount": values["amount"],
+                "change_pct": None,
+            }
+        )
     rows.sort(key=lambda row: row["timestamp"])
     for index in range(1, len(rows)):
         previous = rows[index - 1]["close"]
@@ -173,7 +180,9 @@ class TickFlowUsMarketDataProvider:
             try:
                 instruments.extend(client.instruments.batch(chunk) or [])
             except Exception as exc:
-                logger.warning("美股基础档案批次读取失败 (%d-%d): %s", start, start + len(chunk), exc)
+                logger.warning(
+                    "美股基础档案批次读取失败 (%d-%d): %s", start, start + len(chunk), exc
+                )
                 for retry_start in range(0, len(chunk), 100):
                     retry_chunk = chunk[retry_start : retry_start + 100]
                     try:

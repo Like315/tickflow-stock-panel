@@ -52,29 +52,27 @@ def _market(
                 closes[symbol] = previous_close * 0.999
             if shock_last and offset == days - 1:
                 closes[symbol] *= 0.85 if sector_a else 1.15
-            if (market_crash_last and offset == days - 1) or (
-                offset in market_crash_offsets
-            ):
+            if (market_crash_last and offset == days - 1) or (offset in market_crash_offsets):
                 closes[symbol] *= 0.80
             is_limit_up = (
-                split_leadership
-                and not sector_a
-                and offset in {days - 3, days - 2, days - 1}
+                split_leadership and not sector_a and offset in {days - 3, days - 2, days - 1}
             )
-            rows.append({
-                "symbol": symbol,
-                "name": symbol,
-                "date": start + timedelta(days=offset),
-                "open": closes[symbol] * 0.99,
-                "high": closes[symbol] * 1.01,
-                "low": closes[symbol] * 0.98,
-                "close": closes[symbol],
-                "volume": 100.0,
-                "amount": 1_000_000.0,
-                "consecutive_limit_ups": 2 if is_limit_up else 0,
-                "signal_limit_up": is_limit_up,
-                "signal_limit_down": False,
-            })
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "name": symbol,
+                    "date": start + timedelta(days=offset),
+                    "open": closes[symbol] * 0.99,
+                    "high": closes[symbol] * 1.01,
+                    "low": closes[symbol] * 0.98,
+                    "close": closes[symbol],
+                    "volume": 100.0,
+                    "amount": 1_000_000.0,
+                    "consecutive_limit_ups": 2 if is_limit_up else 0,
+                    "signal_limit_up": is_limit_up,
+                    "signal_limit_down": False,
+                }
+            )
     return build_market_data_matrix(
         pl.DataFrame(rows).sort(["date", "symbol"]),
         field_columns={"amount", "consecutive_limit_ups"},
@@ -82,10 +80,12 @@ def _market(
 
 
 def _mapping() -> pl.DataFrame:
-    return pl.DataFrame({
-        "_sym_up": ["A1", "A2", "B1", "B2"],
-        "industry": ["行业A-细分", "行业A-细分", "行业B-细分", "行业B-细分"],
-    })
+    return pl.DataFrame(
+        {
+            "_sym_up": ["A1", "A2", "B1", "B2"],
+            "industry": ["行业A-细分", "行业A-细分", "行业B-细分", "行业B-细分"],
+        }
+    )
 
 
 def _config(mode: str = "trend") -> dict:
@@ -312,12 +312,7 @@ def test_three_research_versions_have_distinct_risk_layers():
     assert VERSIONS[1].overrides["sector_context_filter"]["apply_as"] == "score"
     assert VERSIONS[1].overrides["sector_context_filter"]["lag_bars"] == 0
     assert VERSIONS[2].overrides["sector_context_filter"]["market_min_score"] == 50.0
-    assert (
-        VERSIONS[2].overrides["sector_context_filter"][
-            "market_min_consecutive_days"
-        ]
-        == 2
-    )
+    assert VERSIONS[2].overrides["sector_context_filter"]["market_min_consecutive_days"] == 2
     assert VERSIONS[2].max_positions == 3
     assert VERSIONS[2].params["use_breakout_quality_guard"] is True
     assert VERSIONS[2].max_exposure_pct < VERSIONS[1].max_exposure_pct

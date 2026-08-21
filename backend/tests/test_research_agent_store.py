@@ -15,14 +15,16 @@ def _pick(symbol: str = "600000.SH") -> dict:
         "stance": "观察",
         "confidence": 60,
         "thesis": "趋势改善但需要确认",
-        "evidence": [{
-            "dimension": "技术面",
-            "conclusion": "均线改善",
-            "supports": ["收盘站上 MA20"],
-            "source": "TickFlow enriched",
-            "evidence_refs": ["technical.ma20"],
-            "as_of": "2026-08-11",
-        }],
+        "evidence": [
+            {
+                "dimension": "技术面",
+                "conclusion": "均线改善",
+                "supports": ["收盘站上 MA20"],
+                "source": "TickFlow enriched",
+                "evidence_refs": ["technical.ma20"],
+                "as_of": "2026-08-11",
+            }
+        ],
         "counter_evidence": ["量能未确认"],
         "risks": ["市场转弱"],
     }
@@ -96,14 +98,16 @@ def test_parent_version_stage_and_run_status(tmp_path) -> None:
     store.save_batch(_batch())
     store.save_batch(_batch(id="rab_v2", version=2, parent_batch_id="rab_test"))
     assert store.latest_batch(as_of="2026-08-11")["id"] == "rab_v2"
-    store.save_stage_review({
-        "batch_id": "rab_test",
-        "symbol": "600000.SH",
-        "stage_day": 5,
-        "trade_date": date(2026, 8, 18),
-        "summary": "阶段表现稳定",
-        "thesis_state": "维持",
-    })
+    store.save_stage_review(
+        {
+            "batch_id": "rab_test",
+            "symbol": "600000.SH",
+            "stage_day": 5,
+            "trade_date": date(2026, 8, 18),
+            "summary": "阶段表现稳定",
+            "thesis_state": "维持",
+        }
+    )
     assert store.list_stage_reviews(batch_id="rab_test")[0]["stage_day"] == 5
 
     run = store.record_run(kind="recommendation", trigger="manual", status="running")

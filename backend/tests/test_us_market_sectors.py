@@ -100,21 +100,34 @@ def _service(tmp_path: Path) -> UsMarketSectorService:
 
 
 def test_parse_nasdaq_classifications_normalizes_symbols_and_keeps_empty_sector() -> None:
-    result = parse_nasdaq_classifications({
-        "data": {
-            "asOf": "2026-08-20",
-            "rows": [
-                {
-                    "symbol": "A", "name": "Agilent", "sector": "Industrials",
-                    "industry": "Diagnostics", "lastsale": "$155.41", "pctchange": "4.695%",
-                    "marketCap": "43892748417", "country": "United States", "ipoyear": "1999",
-                    "url": "/market-activity/stocks/a",
-                },
-                {"symbol": "BRK/A", "name": "Berkshire", "sector": "Finance", "industry": "Insurance"},
-                {"symbol": "EMPTY", "name": "Missing", "sector": "", "industry": ""},
-            ],
+    result = parse_nasdaq_classifications(
+        {
+            "data": {
+                "asOf": "2026-08-20",
+                "rows": [
+                    {
+                        "symbol": "A",
+                        "name": "Agilent",
+                        "sector": "Industrials",
+                        "industry": "Diagnostics",
+                        "lastsale": "$155.41",
+                        "pctchange": "4.695%",
+                        "marketCap": "43892748417",
+                        "country": "United States",
+                        "ipoyear": "1999",
+                        "url": "/market-activity/stocks/a",
+                    },
+                    {
+                        "symbol": "BRK/A",
+                        "name": "Berkshire",
+                        "sector": "Finance",
+                        "industry": "Insurance",
+                    },
+                    {"symbol": "EMPTY", "name": "Missing", "sector": "", "industry": ""},
+                ],
+            }
         }
-    })
+    )
 
     assert result["as_of"] == "2026-08-20"
     assert [row["symbol"] for row in result["rows"]] == ["A.US", "BRK.A.US", "EMPTY.US"]
@@ -138,12 +151,14 @@ def test_parse_state_street_holdings_reads_header_weights_and_as_of() -> None:
     result = parse_state_street_holdings(frame)
 
     assert result["as_of"] == "As of 20-Aug-2026"
-    assert result["members"] == [{
-        "symbol": "AAA.US",
-        "name": "ALPHA INC",
-        "weight_pct": pytest.approx(3.25),
-        "sector": "Technology",
-    }]
+    assert result["members"] == [
+        {
+            "symbol": "AAA.US",
+            "name": "ALPHA INC",
+            "weight_pct": pytest.approx(3.25),
+            "sector": "Technology",
+        }
+    ]
 
 
 def test_aggregate_group_calculates_breadth_and_weighted_change() -> None:
@@ -157,8 +172,13 @@ def test_aggregate_group_calculates_breadth_and_weighted_change() -> None:
     }
 
     result = aggregate_group(
-        "semiconductors", "半导体", "Semiconductors", members, quotes,
-        kind="theme", proxy_symbol="XSD.US",
+        "semiconductors",
+        "半导体",
+        "Semiconductors",
+        members,
+        quotes,
+        kind="theme",
+        proxy_symbol="XSD.US",
     )
 
     assert result["coverage_ratio"] == 1
@@ -220,10 +240,12 @@ def test_service_theme_detail_fetches_members_missing_from_market_snapshot(tmp_p
 def test_classification_store_falls_back_to_disk_snapshot(tmp_path: Path) -> None:
     live = NasdaqClassificationStore(
         tmp_path,
-        provider=SimpleNamespace(get_sector_classifications=lambda: {
-            **CLASSIFICATION,
-            "rows": CLASSIFICATION["rows"][:1],
-        }),
+        provider=SimpleNamespace(
+            get_sector_classifications=lambda: {
+                **CLASSIFICATION,
+                "rows": CLASSIFICATION["rows"][:1],
+            }
+        ),
         wall_time=lambda: 100.0,
     )
     assert live.get()["status"] == "live"
@@ -243,9 +265,14 @@ def test_classification_store_falls_back_to_disk_snapshot(tmp_path: Path) -> Non
 
 
 def test_sector_detail_fails_closed_when_classification_is_unavailable(tmp_path: Path) -> None:
-    unavailable = SimpleNamespace(get=lambda **_: {
-        "status": "unavailable", "rows": [], "source": "Nasdaq", "standard": "sic_mapped",
-    })
+    unavailable = SimpleNamespace(
+        get=lambda **_: {
+            "status": "unavailable",
+            "rows": [],
+            "source": "Nasdaq",
+            "standard": "sic_mapped",
+        }
+    )
     service = UsMarketSectorService(
         tmp_path,
         _Overview(),

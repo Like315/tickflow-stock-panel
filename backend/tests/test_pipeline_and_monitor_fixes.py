@@ -2,6 +2,7 @@
 
 均为纯逻辑, 不触网, 不依赖真实数据源。
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,7 @@ from app.strategy import monitor_rules
 from app.strategy.monitor import MonitorRuleEngine
 
 # ── JobStore 单飞 ────────────────────────────────────────────────────────
+
 
 def test_create_singleflight_dedupes_pending_window(tmp_path):
     """两次快速 create() 在 pending 窗口内应复用同一 job(is_new=False)。"""
@@ -58,14 +60,18 @@ def test_long_job_timeout_allows_full_market_minute_sync(tmp_path):
     job = store.get(jid)
     assert job is not None
     job["started_at"] = (
-        datetime.now(UTC) - timedelta(minutes=31)
-    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        (datetime.now(UTC) - timedelta(minutes=31))
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
     store.reap_stale()
     assert store.get(jid)["status"] == "running"
 
     job["started_at"] = (
-        datetime.now(UTC) - timedelta(hours=2, seconds=1)
-    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        (datetime.now(UTC) - timedelta(hours=2, seconds=1))
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
     store.reap_stale()
     assert store.get(jid)["status"] == "failed"
 
@@ -86,6 +92,7 @@ def test_run_slot_is_exclusive():
 
 
 # ── 监控 sector fail-closed ──────────────────────────────────────────────
+
 
 def _base_price_rule(scope: str) -> dict:
     return {
@@ -117,9 +124,7 @@ def test_apply_scope_sector_fails_closed():
 
     # 对照: scope=all 返回全量, symbols 过滤子集
     assert MonitorRuleEngine._apply_scope(df, {"scope": "all"}).height == 2
-    picked = MonitorRuleEngine._apply_scope(
-        df, {"scope": "symbols", "symbols": ["600000.SH"]}
-    )
+    picked = MonitorRuleEngine._apply_scope(df, {"scope": "symbols", "symbols": ["600000.SH"]})
     assert picked.height == 1
 
 
@@ -131,22 +136,31 @@ def test_ladder_webhook_uses_chinese_title_without_brand(monkeypatch):
             calls.append((fn, args))
 
     monkeypatch.setattr(quote_service, "_WEBHOOK_EXECUTOR", CaptureExecutor())
-    monkeypatch.setattr("app.services.preferences.get_feishu_webhook_url", lambda: "https://open.feishu.cn/open-apis/bot/v2/hook/test")
+    monkeypatch.setattr(
+        "app.services.preferences.get_feishu_webhook_url",
+        lambda: "https://open.feishu.cn/open-apis/bot/v2/hook/test",
+    )
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_secret", lambda: "secret")
     monkeypatch.setattr("app.services.preferences.get_wecom_webhook_url", lambda: "wecom-key")
 
-    engine = type("Engine", (), {
-        "rules": {"r_ladder": {"webhook_channels": ["feishu", "wecom"]}},
-    })()
+    engine = type(
+        "Engine",
+        (),
+        {
+            "rules": {"r_ladder": {"webhook_channels": ["feishu", "wecom"]}},
+        },
+    )()
     QuoteService._maybe_send_webhook(
         object.__new__(QuoteService),
-        [{
-            "rule_id": "r_ladder",
-            "source": "ladder",
-            "symbol": "600000.SH",
-            "name": "浦发银行",
-            "message": "炸板预警",
-        }],
+        [
+            {
+                "rule_id": "r_ladder",
+                "source": "ladder",
+                "symbol": "600000.SH",
+                "name": "浦发银行",
+                "message": "炸板预警",
+            }
+        ],
         engine,
     )
 
@@ -156,7 +170,9 @@ def test_ladder_webhook_uses_chinese_title_without_brand(monkeypatch):
 
 def test_review_webhooks_use_title_without_brand(monkeypatch):
     calls = []
-    monkeypatch.setattr("app.services.preferences.get_review_push_channels", lambda: ["feishu", "wecom"])
+    monkeypatch.setattr(
+        "app.services.preferences.get_review_push_channels", lambda: ["feishu", "wecom"]
+    )
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_url", lambda: "feishu-url")
     monkeypatch.setattr("app.services.preferences.get_feishu_webhook_secret", lambda: "secret")
     monkeypatch.setattr("app.services.preferences.get_wecom_webhook_url", lambda: "wecom-url")

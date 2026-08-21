@@ -146,7 +146,7 @@ function ReviewsPanel() {
   const [batchId, setBatchId] = useState<string>('')
   useEffect(() => { if (!batchId && batches.data?.batches[0]?.id) setBatchId(batches.data.batches[0].id) }, [batchId, batches.data])
   const reviews = useQuery({ queryKey: QK.researchAgentReviews(batchId), queryFn: () => api.researchAgentReviews(batchId), enabled: Boolean(batchId) })
-  const run = useMutation({ mutationFn: api.researchAgentRunReviews, onSuccess: async () => { await qc.invalidateQueries({ queryKey: ['research-agent', 'reviews'] }) } })
+  const run = useMutation({ mutationFn: api.researchAgentRunReviews, onSuccess: async () => { await qc.invalidateQueries({ queryKey: QK.researchAgentReviewsRoot }) } })
   const selected = useMemo(() => batches.data?.batches.find(batch => batch.id === batchId), [batches.data, batchId])
   const latestReviewDate = reviews.data?.reviews.reduce(
     (latest, item) => item.trade_date > latest ? item.trade_date : latest,

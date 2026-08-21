@@ -122,9 +122,7 @@ def _asset_sector_ids(
     rows = mapping.select("_sym_up", kind).drop_nulls().sort(["_sym_up", kind])
     for symbol, raw_sector in rows.iter_rows():
         sector = (
-            _industry_at_level(raw_sector, level)
-            if kind == "industry"
-            else str(raw_sector).strip()
+            _industry_at_level(raw_sector, level) if kind == "industry" else str(raw_sector).strip()
         )
         if sector:
             normalized.setdefault(str(symbol).upper(), sector)
@@ -163,9 +161,7 @@ def build_sector_context_filter(
         )
     apply_as = str(config.get("apply_as", "filter"))
     if apply_as not in {"filter", "score", "filter_score"}:
-        raise ValueError(
-            "sector_context_filter.apply_as must be filter, score or filter_score"
-        )
+        raise ValueError("sector_context_filter.apply_as must be filter, score or filter_score")
     lag_bars = int(config.get("lag_bars", 0))
     if lag_bars < 0:
         raise ValueError("sector_context_filter.lag_bars must be non-negative")
@@ -223,9 +219,7 @@ def build_sector_context_filter(
 
     valid_return = np.isfinite(sector_return)
     rolling_valid = _rolling_sum(valid_return.astype(np.float64), trend_window)
-    rolling_return = _rolling_sum(
-        np.where(valid_return, sector_return, 0.0), trend_window
-    )
+    rolling_return = _rolling_sum(np.where(valid_return, sector_return, 0.0), trend_window)
     rolling_up = _rolling_sum((sector_return > 0).astype(np.float64), trend_window)
     up_ratio = _safe_ratio(rolling_up, rolling_valid)
 
@@ -233,9 +227,7 @@ def build_sector_context_filter(
         sector_return,
         max(1, int(config.get("trend_daily_top", 10))),
     )
-    top_ratio = _safe_ratio(
-        _rolling_sum(daily_top.astype(np.float64), trend_window), rolling_valid
-    )
+    top_ratio = _safe_ratio(_rolling_sum(daily_top.astype(np.float64), trend_window), rolling_valid)
     amount_window = max(2, min(5, trend_window // 2))
     recent_amount = _rolling_sum(sector_amount, amount_window)
     previous_amount = np.full(recent_amount.shape, np.nan)
@@ -313,9 +305,7 @@ def build_sector_context_filter(
         lagged[lag_bars:] = selected[:-lag_bars]
 
     leader_window = max(5, int(config.get("leader_window", 20)))
-    sector_momentum = _rolling_sum(
-        np.where(valid_return, sector_return, 0.0), leader_window
-    )
+    sector_momentum = _rolling_sum(np.where(valid_return, sector_return, 0.0), leader_window)
     stock_momentum = matrix_feature(market, f"momentum_{leader_window}d")
     sector_momentum_by_asset = np.full(market.shape, np.nan, dtype=np.float64)
     valid_assets = np.flatnonzero(covered)
@@ -337,10 +327,9 @@ def build_sector_context_filter(
     leader_score = 0.70 * relative_rank + 0.30 * amount_rank
     sector_score = np.zeros(market.shape, dtype=np.float64)
     if valid_assets.size:
-        sector_score[:, valid_assets] = (
-            0.30 * np.nan_to_num(trend_score[:, asset_sector_ids[valid_assets]])
-            + 0.20 * np.nan_to_num(mainline_score[:, asset_sector_ids[valid_assets]])
-        )
+        sector_score[:, valid_assets] = 0.30 * np.nan_to_num(
+            trend_score[:, asset_sector_ids[valid_assets]]
+        ) + 0.20 * np.nan_to_num(mainline_score[:, asset_sector_ids[valid_assets]])
     context_score = np.clip(
         (sector_score + 0.30 * leader_score) / 0.80 * 100.0,
         0.0,
@@ -356,9 +345,7 @@ def build_sector_context_filter(
     market_valid = valid_change.sum(axis=1)
     market_up = (valid_change & (change > 0)).sum(axis=1)
     market_strong_down = (valid_change & (change <= -0.03)).sum(axis=1)
-    market_average = _safe_ratio(
-        np.where(valid_change, change, 0.0).sum(axis=1), market_valid
-    )
+    market_average = _safe_ratio(np.where(valid_change, change, 0.0).sum(axis=1), market_valid)
     market_breadth = _safe_ratio(market_up, market_valid)
     market_resilience = 1.0 - np.clip(
         _safe_ratio(market_strong_down, market_valid) / 0.15,
@@ -375,8 +362,7 @@ def build_sector_context_filter(
         0.35 * np.clip((market_breadth - 0.30) / 0.40, 0.0, 1.0)
         + 0.20 * np.clip((market_average + 0.015) / 0.03, 0.0, 1.0)
         + 0.20 * np.clip((above_ma20 - 0.25) / 0.50, 0.0, 1.0)
-        + 0.15
-        * np.clip((locked.sum(axis=1, dtype=np.float64) - 20.0) / 80.0, 0.0, 1.0)
+        + 0.15 * np.clip((locked.sum(axis=1, dtype=np.float64) - 20.0) / 80.0, 0.0, 1.0)
         + 0.10 * np.nan_to_num(market_resilience)
     )
     lagged_market_score = np.zeros(n_time, dtype=np.float32)
@@ -395,9 +381,7 @@ def build_sector_context_filter(
         market_pass = lagged_market_score >= float(market_min_score)
         consecutive_days = int(config.get("market_min_consecutive_days", 1))
         if consecutive_days < 1:
-            raise ValueError(
-                "sector_context_filter.market_min_consecutive_days must be positive"
-            )
+            raise ValueError("sector_context_filter.market_min_consecutive_days must be positive")
         persistent_market_pass = market_pass.copy()
         for offset in range(1, consecutive_days):
             previous_pass = np.zeros(n_time, dtype=bool)
@@ -410,9 +394,7 @@ def build_sector_context_filter(
     lagged_score.flags.writeable = False
 
     active_rows = np.flatnonzero(lagged.any(axis=1))
-    average_selected = (
-        float(lagged[active_rows].sum(axis=1).mean()) if active_rows.size else 0.0
-    )
+    average_selected = float(lagged[active_rows].sum(axis=1).mean()) if active_rows.size else 0.0
     return SectorContextFilter(
         entry_mask=entry_mask,
         metadata={
@@ -426,9 +408,7 @@ def build_sector_context_filter(
             "asset_coverage": round(coverage, 6),
             "active_days": int(active_rows.size),
             "average_selected_sectors": round(average_selected, 3),
-            "market_min_score": (
-                float(market_min_score) if market_min_score is not None else -1.0
-            ),
+            "market_min_score": (float(market_min_score) if market_min_score is not None else -1.0),
             "market_min_consecutive_days": consecutive_days,
         },
         score=lagged_score,

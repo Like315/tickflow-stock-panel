@@ -2,6 +2,7 @@
 
 推荐批次写入后不可变。复盘按批次、股票和交易日幂等更新。
 """
+
 from __future__ import annotations
 
 import json
@@ -133,9 +134,13 @@ class ResearchAgentStore:
         return json.loads(value)
 
     def save_batch(self, batch: RecommendationBatch | dict[str, Any]) -> dict[str, Any]:
-        item = batch if isinstance(batch, RecommendationBatch) else RecommendationBatch.model_validate(batch)
+        item = (
+            batch
+            if isinstance(batch, RecommendationBatch)
+            else RecommendationBatch.model_validate(batch)
+        )
         batch_id = item.id or f"rab_{uuid.uuid4().hex}"
-        created_at = (item.created_at.isoformat() if item.created_at else self._now())
+        created_at = item.created_at.isoformat() if item.created_at else self._now()
         payload = item.model_dump(mode="json")
         payload.update({"id": batch_id, "created_at": created_at})
         with self._lock:
@@ -302,7 +307,11 @@ class ResearchAgentStore:
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
-        for field, value in (("batch_id", batch_id), ("symbol", symbol), ("trade_date", trade_date)):
+        for field, value in (
+            ("batch_id", batch_id),
+            ("symbol", symbol),
+            ("trade_date", trade_date),
+        ):
             if value:
                 clauses.append(f"{field} = ?")
                 params.append(value)

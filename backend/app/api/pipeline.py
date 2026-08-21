@@ -1,4 +1,5 @@
 """盘后管道 API — 异步触发 + 进度跟踪。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,12 +8,13 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.api.data import invalidate_storage_cache
 from app.jobs import daily_pipeline
 from app.services.pipeline_jobs import job_store, release_run_slot, try_acquire_run_slot
-from app.api.data import invalidate_storage_cache
 
 # 长时间任务专用线程池（隔离于 FastAPI 默认线程池，防止阻塞请求处理）
 _long_task_executor = _cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix="long-task")
+_background_tasks: set[asyncio.Task[None]] = set()
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +52,9 @@ async def run_now(request: Request) -> dict:
             job_store.start(job_id)
             loop = asyncio.get_event_loop()
 
-            def progress(stage: str, pct: int, msg: str, stage_pct: int | None = None,
-                         skip_log: bool = False) -> None:
+            def progress(
+                stage: str, pct: int, msg: str, stage_pct: int | None = None, skip_log: bool = False
+            ) -> None:
                 job_store.progress(job_id, stage, pct, msg, stage_pct=stage_pct, skip_log=skip_log)
 
             def _run() -> dict:
@@ -65,14 +68,16 @@ async def run_now(request: Request) -> dict:
             invalidate_storage_cache()
             repo.refresh_cache()  # 刷新 Polars 缓存
             daily_pipeline._submit_research_agent_cycle(request.app.state)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.exception("pipeline failed")
             job_store.fail(job_id, str(e))
             invalidate_storage_cache()
         finally:
             release_run_slot()
 
-    asyncio.create_task(task())
+    background_task = asyncio.create_task(task())
+    _background_tasks.add(background_task)
+    background_task.add_done_callback(_background_tasks.discard)
     return {"job_id": job_id, "reused": False}
 
 

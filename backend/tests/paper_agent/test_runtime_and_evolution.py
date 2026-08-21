@@ -125,15 +125,17 @@ def test_runtime_applies_inverse_overnight_module_factor_to_soft_exit() -> None:
 
     def runtime(factor: float) -> InvestmentExpertRuntime:
         executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
-        executor.lots.append(PositionLot(
-            lot_id=f"lot-{factor}",
-            symbol="A",
-            acquired_date=date(2026, 8, 17),
-            shares=100,
-            remaining_shares=100,
-            entry_price=10,
-            entry_cost=5,
-        ))
+        executor.lots.append(
+            PositionLot(
+                lot_id=f"lot-{factor}",
+                symbol="A",
+                acquired_date=date(2026, 8, 17),
+                shares=100,
+                remaining_shares=100,
+                entry_price=10,
+                entry_cost=5,
+            )
+        )
         return InvestmentExpertRuntime(
             session_id=f"module-exit-{factor}",
             policy=policy,
@@ -154,15 +156,17 @@ def test_runtime_applies_inverse_overnight_module_factor_to_soft_exit() -> None:
 
 def test_positive_overnight_module_factor_never_weakens_hard_stop_loss() -> None:
     executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
-    executor.lots.append(PositionLot(
-        lot_id="hard-stop",
-        symbol="A",
-        acquired_date=date(2026, 8, 17),
-        shares=100,
-        remaining_shares=100,
-        entry_price=10,
-        entry_cost=5,
-    ))
+    executor.lots.append(
+        PositionLot(
+            lot_id="hard-stop",
+            symbol="A",
+            acquired_date=date(2026, 8, 17),
+            shares=100,
+            remaining_shares=100,
+            entry_price=10,
+            entry_cost=5,
+        )
+    )
     runtime = InvestmentExpertRuntime(
         session_id="hard-stop",
         policy=ExpertPolicy(id="hard-stop", version=1),
@@ -221,7 +225,8 @@ def test_evolution_changes_exactly_one_policy_dimension() -> None:
     candidate, field = PolicyEvolutionEngine().propose(champion, {"loss_rate": 0.8})
 
     changed = {
-        key for key in PolicyEvolutionEngine.MUTATION_FIELDS
+        key
+        for key in PolicyEvolutionEngine.MUTATION_FIELDS
         if getattr(champion, key) != getattr(candidate, key)
     }
     assert field == "min_vwap_bias"
@@ -230,15 +235,17 @@ def test_evolution_changes_exactly_one_policy_dimension() -> None:
 
 def test_carryover_position_can_exit_when_symbol_is_not_a_new_candidate() -> None:
     executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
-    executor.lots.append(PositionLot(
-        lot_id="old",
-        symbol="A",
-        acquired_date=date(2026, 8, 17),
-        shares=100,
-        remaining_shares=100,
-        entry_price=12,
-        entry_cost=5,
-    ))
+    executor.lots.append(
+        PositionLot(
+            lot_id="old",
+            symbol="A",
+            acquired_date=date(2026, 8, 17),
+            shares=100,
+            remaining_shares=100,
+            entry_price=12,
+            entry_cost=5,
+        )
+    )
     runtime = InvestmentExpertRuntime(
         session_id="s2",
         policy=ExpertPolicy(id="p2", version=2),

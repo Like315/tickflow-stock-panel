@@ -12,6 +12,7 @@
     {"type":"error","message":"..."}
     {"type":"done"}
 """
+
 from __future__ import annotations
 
 import json
@@ -105,6 +106,7 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的市场�
 # 用户消息构建(精简切片,控制 token)
 # ================================================================
 
+
 def _fmt_pct(v, suffix="%") -> str:
     if v is None:
         return "—"
@@ -138,25 +140,22 @@ def _build_breadth_block(overview: dict) -> str:
     amount_yi = total_amount / 1e8 if total_amount else 0
 
     lines = [
-        f"- 上涨/下跌/平盘: {b.get('up',0)} / {b.get('down',0)} / {b.get('flat',0)}"
-        f"  (上涨占比 {b.get('up_pct',0):.1f}%)",
-        f"- 涨停/炸板/跌停: {lim.get('limit_up',0)} / {lim.get('broken',0)} / {lim.get('limit_down',0)}"
-        f"  (封板率 {lim.get('seal_rate',0):.0f}%, 最高连板 {lim.get('max_boards',0)})",
+        f"- 上涨/下跌/平盘: {b.get('up', 0)} / {b.get('down', 0)} / {b.get('flat', 0)}"
+        f"  (上涨占比 {b.get('up_pct', 0):.1f}%)",
+        f"- 涨停/炸板/跌停: {lim.get('limit_up', 0)} / {lim.get('broken', 0)} / {lim.get('limit_down', 0)}"
+        f"  (封板率 {lim.get('seal_rate', 0):.0f}%, 最高连板 {lim.get('max_boards', 0)})",
     ]
     if lim.get("tiers"):
-        tiers_str = "、".join(
-            f"{t['boards']}板×{t['count']}"  # noqa: RUF001 - 用户界面的乘号
-            for t in lim["tiers"][:5]
-        )
+        tiers_str = "、".join(f"{t['boards']}板×{t['count']}" for t in lim["tiers"][:5])
         lines.append(f"- 连板梯队: {tiers_str}")
     lines.append(f"- 两市成交额: {amount_yi:.0f} 亿元")
     lines.append(
-        f"- 均线站位: MA5 {tr.get('above_ma5_pct',0):.0f}% / "
-        f"MA20 {tr.get('above_ma20_pct',0):.0f}% / MA60 {tr.get('above_ma60_pct',0):.0f}%"
+        f"- 均线站位: MA5 {tr.get('above_ma5_pct', 0):.0f}% / "
+        f"MA20 {tr.get('above_ma20_pct', 0):.0f}% / MA60 {tr.get('above_ma60_pct', 0):.0f}%"
     )
     lines.append(
-        f"- 量能: 平均换手 {act.get('avg_turnover',0):.2f}%, "
-        f"量比5日均 {act.get('vol_ratio',1):.2f}"
+        f"- 量能: 平均换手 {act.get('avg_turnover', 0):.2f}%, "
+        f"量比5日均 {act.get('vol_ratio', 1):.2f}"
     )
     return "\n".join(lines)
 
@@ -165,17 +164,16 @@ def _build_sector_block(rank: dict, label: str) -> str:
     """板块排名精简块(领涨/领跌 top5)。"""
     if not rank:
         return f"### {label}\n(暂无数据)"
+
     def _fmt(items):
         if not items:
             return "—"
         return "、".join(
-            f"{it.get('name')}({(it.get('avg_pct') or 0)*100:+.2f}%,领涨:{it.get('leader',{}).get('name','—')})"
+            f"{it.get('name')}({(it.get('avg_pct') or 0) * 100:+.2f}%,领涨:{it.get('leader', {}).get('name', '—')})"
             for it in items[:5]
         )
-    return (
-        f"- 领涨{label}: {_fmt(rank.get('leading'))}\n"
-        f"- 领跌{label}: {_fmt(rank.get('lagging'))}"
-    )
+
+    return f"- 领涨{label}: {_fmt(rank.get('leading'))}\n- 领跌{label}: {_fmt(rank.get('lagging'))}"
 
 
 def _build_emotion_block(overview: dict) -> str:
@@ -185,7 +183,7 @@ def _build_emotion_block(overview: dict) -> str:
     label = emo.get("label", "—")
     lines = [f"- 情绪温度: {score} ({label})"]
     if radar:
-        dims = "、".join(f"{r.get('label')}{r.get('value',0)}" for r in radar)
+        dims = "、".join(f"{r.get('label')}{r.get('value', 0)}" for r in radar)
         lines.append(f"- 六维雷达: {dims}")
     return "\n".join(lines)
 
@@ -264,19 +262,23 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str) -> str:
             summary = f"\n   摘要: {snippet}" if snippet else ""
             news_lines.append(
                 f"新闻{i}. [{tag}]《{title}》 ({meta}){context}{summary}"
-                if meta else f"新闻{i}. [{tag}]《{title}》{context}{summary}"
+                if meta
+                else f"新闻{i}. [{tag}]《{title}》{context}{summary}"
             )
         parts.extend(["", "## 近期市场新闻", "\n".join(news_lines)])
     else:
-        parts.extend([
-            "",
-            "## 近期市场新闻",
-            "(本次未检索到与盘面主线直接匹配的截止日前公开消息,或免费快讯源暂时不可用。"
-            "消息催化一节必须如实说明没有直接匹配,不得根据量价异动编造政策或消息原因,"
-            "也不要复述本说明。)",
-        ])
+        parts.extend(
+            [
+                "",
+                "## 近期市场新闻",
+                "(本次未检索到与盘面主线直接匹配的截止日前公开消息,或免费快讯源暂时不可用。"
+                "消息催化一节必须如实说明没有直接匹配,不得根据量价异动编造政策或消息原因,"
+                "也不要复述本说明。)",
+            ]
+        )
 
     from app.services.ai_provider import sanitize_focus
+
     safe_focus = sanitize_focus(focus)
     if safe_focus:
         parts.extend(["", f"本次复盘请特别关注: {safe_focus}"])
@@ -287,6 +289,7 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str) -> str:
 # ================================================================
 # 摘要生成(供 meta 事件 / 历史报告 summary)
 # ================================================================
+
 
 def _recap_summary(overview: dict) -> str:
     """一句话摘要(供 meta 事件与历史列表展示)。
@@ -299,19 +302,23 @@ def _recap_summary(overview: dict) -> str:
     amt = overview.get("amount") or {}
     total_amount = (amt.get("total") or 0) / 1e8
 
-    idx_str = "、".join(
-        f"{_INDEX_SHORT.get(i.get('name') or '', i.get('name') or '')}{(i.get('change_pct') or 0):+.2f}%"
-        for i in indices[:4]
-    ) or "指数缺失"
+    idx_str = (
+        "、".join(
+            f"{_INDEX_SHORT.get(i.get('name') or '', i.get('name') or '')}{(i.get('change_pct') or 0):+.2f}%"
+            for i in indices[:4]
+        )
+        or "指数缺失"
+    )
     return (
-        f"{idx_str} | 情绪{emo.get('score',50)}({emo.get('label','—')}) | "
-        f"涨停{lim.get('limit_up',0)} | 成交{total_amount:.0f}亿"
+        f"{idx_str} | 情绪{emo.get('score', 50)}({emo.get('label', '—')}) | "
+        f"涨停{lim.get('limit_up', 0)} | 成交{total_amount:.0f}亿"
     )
 
 
 # ================================================================
 # 流式主入口
 # ================================================================
+
 
 async def recap_market_stream(
     repo,
@@ -336,22 +343,28 @@ async def recap_market_stream(
     as_of_str = overview.get("as_of")
 
     if not as_of_str:
-        yield json.dumps({
-            "type": "error",
-            "message": "暂无市场数据,请先在「数据」页同步日 K 与指数后再复盘",
-        }, ensure_ascii=False)
+        yield json.dumps(
+            {
+                "type": "error",
+                "message": "暂无市场数据,请先在「数据」页同步日 K 与指数后再复盘",
+            },
+            ensure_ascii=False,
+        )
         return
 
     emo = overview.get("emotion") or {}
 
     # 2. meta 事件(前端据此先渲染信号灯/看板)
-    yield json.dumps({
-        "type": "meta",
-        "as_of": as_of_str,
-        "emotion_score": emo.get("score", 50),
-        "emotion_label": emo.get("label", "—"),
-        "summary": _recap_summary(overview),
-    }, ensure_ascii=False)
+    yield json.dumps(
+        {
+            "type": "meta",
+            "as_of": as_of_str,
+            "emotion_score": emo.get("score", 50),
+            "emotion_label": emo.get("label", "—"),
+            "summary": _recap_summary(overview),
+        },
+        ensure_ascii=False,
+    )
 
     # 3+4. 构建 prompt + 流式调用 LLM(整体 try-except,任何异常 yield error,避免前端卡死)
     try:

@@ -1,4 +1,5 @@
 """AI provider adapter for OpenAI-compatible APIs and local Codex CLI."""
+
 from __future__ import annotations
 
 import asyncio
@@ -101,7 +102,9 @@ def sanitize_focus(focus: str) -> str:
 
 
 def current_ai_provider() -> str:
-    return secrets_store.get_ai_config("ai_provider", settings.ai_provider) or OPENAI_COMPAT_PROVIDER
+    return (
+        secrets_store.get_ai_config("ai_provider", settings.ai_provider) or OPENAI_COMPAT_PROVIDER
+    )
 
 
 def current_ai_model() -> str:
@@ -328,7 +331,9 @@ def _openai_client(api_key: str, timeout: float):
     user_agent = secrets_store.get_ai_config("ai_user_agent", "") or settings.ai_user_agent
     return AsyncOpenAI(
         api_key=api_key,
-        base_url=normalize_openai_base_url(secrets_store.get_ai_config("ai_base_url", settings.ai_base_url)),
+        base_url=normalize_openai_base_url(
+            secrets_store.get_ai_config("ai_base_url", settings.ai_base_url)
+        ),
         timeout=timeout,
         max_retries=0,
         default_headers={"User-Agent": user_agent},
@@ -447,7 +452,9 @@ def _openai_error_detail(exc: Exception) -> str:
 
 def _looks_like_html(text: str, content_type: str) -> bool:
     sample = text.lstrip()[:200].lower()
-    return "html" in content_type or sample.startswith("<!doctype html") or sample.startswith("<html")
+    return (
+        "html" in content_type or sample.startswith("<!doctype html") or sample.startswith("<html")
+    )
 
 
 def _compact_error_text(text: str) -> str:

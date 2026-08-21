@@ -1,4 +1,5 @@
 """SQLite control plane and append-only audit ledger for the paper agent."""
+
 from __future__ import annotations
 
 import json
@@ -185,7 +186,9 @@ class PaperAgentStore:
 
     @staticmethod
     def _json(value: Any) -> str:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        return json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+        )
 
     @classmethod
     def _hash(cls, value: Any) -> str:
@@ -217,8 +220,12 @@ class PaperAgentStore:
                         VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
-                            policy.id, policy.version, policy.parent_id, self._json(payload),
-                            self._hash(payload), self._now(),
+                            policy.id,
+                            policy.version,
+                            policy.parent_id,
+                            self._json(payload),
+                            self._hash(payload),
+                            self._now(),
                         ),
                     )
             except sqlite3.IntegrityError as exc:
@@ -273,8 +280,13 @@ class PaperAgentStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    event["id"], policy_id, event["previous_policy_id"], "promote", reason,
-                    self._json(metrics), event["created_at"],
+                    event["id"],
+                    policy_id,
+                    event["previous_policy_id"],
+                    "promote",
+                    reason,
+                    self._json(metrics),
+                    event["created_at"],
                 ),
             )
         return event
@@ -340,12 +352,23 @@ class PaperAgentStore:
                 ) VALUES (?, ?, ?, ?, 'running', ?, ?, NULL, '{}')
                 ON CONFLICT(trade_date, policy_id, mode) DO NOTHING
                 """,
-                (session_id, trade_date.isoformat(), policy_id, mode, self._json(candidates), started_at),
+                (
+                    session_id,
+                    trade_date.isoformat(),
+                    policy_id,
+                    mode,
+                    self._json(candidates),
+                    started_at,
+                ),
             )
-            row = conn.execute("SELECT * FROM trading_sessions WHERE id = ?", (session_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM trading_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
         return dict(row)
 
-    def finish_session(self, session_id: str, summary: dict[str, Any], status: str = "succeeded") -> None:
+    def finish_session(
+        self, session_id: str, summary: dict[str, Any], status: str = "succeeded"
+    ) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
@@ -400,8 +423,15 @@ class PaperAgentStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    decision_id, session_id, symbol, decision_time.isoformat(), action,
-                    self._json(features), payload_hash, reason, self._now(),
+                    decision_id,
+                    session_id,
+                    symbol,
+                    decision_time.isoformat(),
+                    action,
+                    self._json(features),
+                    payload_hash,
+                    reason,
+                    self._now(),
                 ),
             )
         return {"id": decision_id, "feature_hash": payload_hash}
@@ -418,8 +448,13 @@ class PaperAgentStore:
                 """,
                 [
                     (
-                        event.id, session_id, event.event_type, event.occurred_at.isoformat(),
-                        event.order_id, event.symbol, self._json(event.model_dump(mode="json")),
+                        event.id,
+                        session_id,
+                        event.event_type,
+                        event.occurred_at.isoformat(),
+                        event.order_id,
+                        event.symbol,
+                        self._json(event.model_dump(mode="json")),
                     )
                     for event in events
                 ],
@@ -444,7 +479,15 @@ class PaperAgentStore:
                     id, session_id, as_of, cash, equity, payload_json, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (snapshot_id, session_id, as_of.isoformat(), cash, equity, self._json(payload), self._now()),
+                (
+                    snapshot_id,
+                    session_id,
+                    as_of.isoformat(),
+                    cash,
+                    equity,
+                    self._json(payload),
+                    self._now(),
+                ),
             )
         return snapshot_id
 
@@ -550,7 +593,9 @@ class PaperAgentStore:
             result.append(item)
         return result
 
-    def list_execution_events(self, *, session_id: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
+    def list_execution_events(
+        self, *, session_id: str | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
         query = "SELECT payload_json FROM execution_events"
         params: list[Any] = []
         if session_id:
@@ -595,28 +640,30 @@ class PaperAgentStore:
         history: list[dict[str, Any]] = []
         for row in rows:
             payload = json.loads(row["payload_json"])
-            history.append({
-                "id": payload.get("id"),
-                "session_id": row["session_id"],
-                "trade_date": row["trade_date"],
-                "order_id": row["order_id"],
-                "symbol": row["symbol"],
-                "side": payload.get("side"),
-                "occurred_at": row["occurred_at"],
-                "fill_status": row["event_type"],
-                "shares": int(payload.get("shares") or 0),
-                "price": payload.get("price"),
-                "fees": float(payload.get("fees") or 0.0),
-                "realized_pnl": payload.get("realized_pnl"),
-                "execution_reason": payload.get("reason"),
-                "decision_id": row["decision_id"],
-                "decision_time": row["decision_time"],
-                "decision_action": row["decision_action"],
-                "decision_reason": row["decision_reason"],
-                "decision_features": (
-                    json.loads(row["feature_json"]) if row["feature_json"] else None
-                ),
-            })
+            history.append(
+                {
+                    "id": payload.get("id"),
+                    "session_id": row["session_id"],
+                    "trade_date": row["trade_date"],
+                    "order_id": row["order_id"],
+                    "symbol": row["symbol"],
+                    "side": payload.get("side"),
+                    "occurred_at": row["occurred_at"],
+                    "fill_status": row["event_type"],
+                    "shares": int(payload.get("shares") or 0),
+                    "price": payload.get("price"),
+                    "fees": float(payload.get("fees") or 0.0),
+                    "realized_pnl": payload.get("realized_pnl"),
+                    "execution_reason": payload.get("reason"),
+                    "decision_id": row["decision_id"],
+                    "decision_time": row["decision_time"],
+                    "decision_action": row["decision_action"],
+                    "decision_reason": row["decision_reason"],
+                    "decision_features": (
+                        json.loads(row["feature_json"]) if row["feature_json"] else None
+                    ),
+                }
+            )
         return history
 
     def execution_statistics(self) -> dict[str, Any]:
@@ -674,12 +721,10 @@ class PaperAgentStore:
             closed = int(row["closed_trade_count"] or 0)
             wins = int(row["winning_trade_count"] or 0)
             average_win = (
-                float(row["average_win_pnl"])
-                if row["average_win_pnl"] is not None else None
+                float(row["average_win_pnl"]) if row["average_win_pnl"] is not None else None
             )
             average_loss = (
-                float(row["average_loss_pnl"])
-                if row["average_loss_pnl"] is not None else None
+                float(row["average_loss_pnl"]) if row["average_loss_pnl"] is not None else None
             )
             result = {
                 "filled_order_count": int(row["filled_order_count"] or 0),
@@ -691,12 +736,8 @@ class PaperAgentStore:
                 "breakeven_trade_count": int(row["breakeven_trade_count"] or 0),
                 "realized_pnl": round(float(row["realized_pnl"] or 0.0), 2),
                 "win_rate": round(wins / closed, 6) if closed else None,
-                "average_win_pnl": (
-                    round(average_win, 2) if average_win is not None else None
-                ),
-                "average_loss_pnl": (
-                    round(average_loss, 2) if average_loss is not None else None
-                ),
+                "average_win_pnl": (round(average_win, 2) if average_win is not None else None),
+                "average_loss_pnl": (round(average_loss, 2) if average_loss is not None else None),
                 "profit_loss_ratio": (
                     round(average_win / average_loss, 6)
                     if average_win is not None and average_loss not in (None, 0)
@@ -733,8 +774,14 @@ class PaperAgentStore:
                     finished_at = excluded.finished_at
                 """,
                 (
-                    resolved_id, status, start_date.isoformat(), end_date.isoformat(),
-                    self._json(manifest), error, now, now if finished else None,
+                    resolved_id,
+                    status,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                    self._json(manifest),
+                    error,
+                    now,
+                    now if finished else None,
                 ),
             )
         return resolved_id
@@ -774,8 +821,16 @@ class PaperAgentStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    experiment_id, champion_policy_id, candidate_policy_id, mutation_field, status,
-                    self._json(champion_metrics), self._json(candidate_metrics), reason, now, now,
+                    experiment_id,
+                    champion_policy_id,
+                    candidate_policy_id,
+                    mutation_field,
+                    status,
+                    self._json(champion_metrics),
+                    self._json(candidate_metrics),
+                    reason,
+                    now,
+                    now,
                 ),
             )
         return experiment_id

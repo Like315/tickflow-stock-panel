@@ -12,6 +12,7 @@
 
 不知道: HTTP、前端、配置持久化。
 """
+
 from __future__ import annotations
 
 import json
@@ -37,6 +38,7 @@ _STOCK_FINANCIAL_TABLES = ("metrics", "income", "balance_sheet", "cash_flow")
 # 数据加载
 # ================================================================
 
+
 def _load_kline(repo, symbol: str) -> pl.DataFrame:
     """读取该标的最近 N 根日 K(已含技术指标 / 信号)。
 
@@ -61,6 +63,7 @@ def _clean_rows(df: pl.DataFrame, keep_cols: list[str]) -> list[dict]:
     """
     import datetime
     import math
+
     cols = [c for c in keep_cols if c in df.columns]
     sub = df.select(cols)
     rows = []
@@ -192,6 +195,7 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的技术�
 # 用户消息构建
 # ================================================================
 
+
 def _build_user_prompt(
     kline_tail: list[dict],
     fins: dict[str, list[dict]],
@@ -218,33 +222,40 @@ def _build_user_prompt(
 
     has_fin = any(fins.values())
     if has_fin:
-        parts.extend([
-            "",
-            f"财务数据概览: {_summarize_financials(fins)}",
-            "以下是该标的最新财务数据(JSON,包含核心指标、利润表、资产负债表与现金流量表;"
-            "金额单位为元,比率类指标为百分点):",
-            "只能基于实际存在的表和字段分析;概览中标注无数据的维度应明确说明无法判断。",
-            "```json",
-            json.dumps(fins, ensure_ascii=False),
-            "```",
-        ])
+        parts.extend(
+            [
+                "",
+                f"财务数据概览: {_summarize_financials(fins)}",
+                "以下是该标的最新财务数据(JSON,包含核心指标、利润表、资产负债表与现金流量表;"
+                "金额单位为元,比率类指标为百分点):",
+                "只能基于实际存在的表和字段分析;概览中标注无数据的维度应明确说明无法判断。",
+                "```json",
+                json.dumps(fins, ensure_ascii=False),
+                "```",
+            ]
+        )
     elif asset_type in {"index", "etf"}:
         asset_label = "指数" if asset_type == "index" else "ETF"
-        parts.extend([
-            "",
-            f"(该标的为{asset_label}:公司财务报表不适用,且本次未提供成分权重、基金净值或指数估值数据。"
-            "请按系统提示词第 4 节说明不适用且无法评估,不要编造数据;"
-            "消息面维度基于价量异动推断即可。)",
-        ])
+        parts.extend(
+            [
+                "",
+                f"(该标的为{asset_label}:公司财务报表不适用,且本次未提供成分权重、基金净值或指数估值数据。"
+                "请按系统提示词第 4 节说明不适用且无法评估,不要编造数据;"
+                "消息面维度基于价量异动推断即可。)",
+            ]
+        )
     else:
-        parts.extend([
-            "",
-            "(该标的暂无财务数据:本地尚未同步该股票的财务报表。"
-            "请按系统提示词第 4 节说明盈利、偿债和现金流维度暂无法评估,"
-            "并提示可先在「财务分析」页同步相关财务表;不要编造数据。)",
-        ])
+        parts.extend(
+            [
+                "",
+                "(该标的暂无财务数据:本地尚未同步该股票的财务报表。"
+                "请按系统提示词第 4 节说明盈利、偿债和现金流维度暂无法评估,"
+                "并提示可先在「财务分析」页同步相关财务表;不要编造数据。)",
+            ]
+        )
 
     from app.services.ai_provider import sanitize_focus
+
     safe_focus = sanitize_focus(focus)
     if safe_focus:
         parts.extend(["", f"本次分析请特别关注: {safe_focus}"])
@@ -256,24 +267,49 @@ def _build_user_prompt(
 # ================================================================
 
 _KLINE_KEEP_COLS = [
-    "date", "open", "high", "low", "close", "volume", "change_pct",
-    "ma5", "ma10", "ma20", "ma60",
-    "macd_dif", "macd_dea", "macd_hist",
-    "kdj_k", "kdj_d", "kdj_j",
-    "rsi_6", "rsi_14", "rsi_24",
-    "boll_upper", "boll_mid", "boll_lower",
-    "atr_14", "vol_ratio_5d", "turnover_rate",
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "change_pct",
+    "ma5",
+    "ma10",
+    "ma20",
+    "ma60",
+    "macd_dif",
+    "macd_dea",
+    "macd_hist",
+    "kdj_k",
+    "kdj_d",
+    "kdj_j",
+    "rsi_6",
+    "rsi_14",
+    "rsi_24",
+    "boll_upper",
+    "boll_mid",
+    "boll_lower",
+    "atr_14",
+    "vol_ratio_5d",
+    "turnover_rate",
     "consecutive_limit_ups",
     # 信号类(布尔)——只挑对消息面推断有用的几个
-    "signal_limit_up", "signal_broken_limit_up", "signal_macd_golden",
-    "signal_macd_death", "signal_ma_golden_5_20", "signal_volume_surge",
-    "signal_boll_breakout_upper", "signal_boll_breakout_lower",
+    "signal_limit_up",
+    "signal_broken_limit_up",
+    "signal_macd_golden",
+    "signal_macd_death",
+    "signal_ma_golden_5_20",
+    "signal_volume_surge",
+    "signal_boll_breakout_upper",
+    "signal_boll_breakout_lower",
 ]
 
 
 # ================================================================
 # 流式分析入口
 # ================================================================
+
 
 async def analyze_stock_stream(
     repo,
@@ -292,10 +328,13 @@ async def analyze_stock_stream(
     # 1. 加载 K 线
     df = _load_kline(repo, symbol)
     if df.is_empty():
-        yield json.dumps({
-            "type": "error",
-            "message": f"标的 {symbol} 暂无日 K 数据,请先同步",
-        }, ensure_ascii=False)
+        yield json.dumps(
+            {
+                "type": "error",
+                "message": f"标的 {symbol} 暂无日 K 数据,请先同步",
+            },
+            ensure_ascii=False,
+        )
         return
 
     # 2. 价位计算(基于 K 线)
@@ -306,21 +345,31 @@ async def analyze_stock_stream(
     fins = _load_financials(data_dir, symbol)
 
     # 4. meta
-    yield json.dumps({
-        "type": "meta",
-        "symbol": symbol,
-        "summary": summarize_levels(levels, close),
-        "levels": levels,
-        "close": close,
-    }, ensure_ascii=False)
+    yield json.dumps(
+        {
+            "type": "meta",
+            "symbol": symbol,
+            "summary": summarize_levels(levels, close),
+            "levels": levels,
+            "close": close,
+        },
+        ensure_ascii=False,
+    )
 
     # 5+6. 构建提示词 + 流式调用 LLM(整体 try-except,任何异常都 yield error,避免前端卡死)
     try:
         from app.services.ai_provider import stream_ai_text
 
         kline_tail = _clean_rows(df, _KLINE_KEEP_COLS)
-        user_prompt = _build_user_prompt(kline_tail, fins, levels, close, symbol, focus,
-                                         asset_type=repo.resolve_asset_type(symbol))
+        user_prompt = _build_user_prompt(
+            kline_tail,
+            fins,
+            levels,
+            close,
+            symbol,
+            focus,
+            asset_type=repo.resolve_asset_type(symbol),
+        )
         async for delta in stream_ai_text(
             [
                 {"role": "system", "content": _SYSTEM_PROMPT},

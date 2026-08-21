@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { StrategyBacktestResult } from './api'
+import type { ApiRecord, StrategyBacktestResult, StrategyParamValue } from './api'
 
 /**
  * 全局回测任务管理 (SSE 模式 + 任务缓存 + 重连支持)。
@@ -175,8 +175,8 @@ export function startBacktest(params: {
   max_exposure_pct?: number
   initial_capital?: number
   position_sizing?: string
-  params?: Record<string, any> | null
-  overrides?: Record<string, any> | null
+  params?: Record<string, StrategyParamValue> | null
+  overrides?: ApiRecord | null
   mode?: 'position' | 'full'
   holding_days?: number
   asset_type?: 'stock' | 'etf'

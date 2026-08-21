@@ -102,6 +102,7 @@ reports/tickflow_pro_probe/
 .cursor/debug-*.log
 
 # ===== 打包产物 (本地构建的安装包,不入库) =====
+release-packages/
 backend/TickFlowStockPanel-win-x64.zip
 backend/TickFlowStockPanel-macos.zip
 backend/TickFlowStockPanel-linux-x64.tar.gz

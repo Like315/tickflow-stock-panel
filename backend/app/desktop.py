@@ -13,6 +13,7 @@
 
 不含: 业务逻辑、配置持久化、监控告警 (全在 app.main 里)。
 """
+
 from __future__ import annotations
 
 import logging
@@ -21,13 +22,23 @@ import sys
 import threading
 import time
 import traceback
-from pathlib import Path
+from contextlib import suppress
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
 _APP_NAME = "TickFlow 股票面板"
 _BASE_PORT = 3018
 _PORT_PROBE_RANGE = 50  # 从 3018 起最多试 50 个端口
+
+
+class _UvicornServer(Protocol):
+    """桌面生命周期管理依赖的最小 Uvicorn 服务协议。"""
+
+    should_exit: bool
+
+    def run(self) -> None:
+        """阻塞运行服务直到收到退出请求。"""
 
 
 def _ensure_data_dir_writable() -> None:
@@ -44,7 +55,7 @@ def _ensure_data_dir_writable() -> None:
         probe = data_root / ".write_probe"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink(missing_ok=True)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.error("数据目录不可写, 桌面版无法运行: %s (%s)", data_root, e)
         raise
 
@@ -63,7 +74,7 @@ def _acquire_single_instance() -> bool:
         try:
             pid_str = lock_path.read_text(encoding="utf-8").strip()
             pid = int(pid_str) if pid_str.isdigit() else None
-        except Exception:  # noqa: BLE001
+        except Exception:
             pid = None
 
         if pid is not None and _pid_alive(pid):
@@ -80,10 +91,8 @@ def _release_single_instance() -> None:
     from app.config import settings
 
     lock_path = settings.data_dir / ".desktop.lock"
-    try:
+    with suppress(Exception):
         lock_path.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def _guard_streams() -> None:
@@ -100,15 +109,24 @@ def _guard_streams() -> None:
     修法: console=False 下把 stdout/stderr 换成丢弃写入的空对象 (devnull),
     让 logging / reconfigure / 任何 print 都安全落地。console=True 不动 (有真控制台)。
     """
-    import os
 
     class _NullStream:
         """丢弃所有写入的空流 (替代 None 的 stdout/stderr)。"""
-        def write(self, _s): return 0
-        def flush(self): pass
-        def reconfigure(self, *a, **kw): pass
-        def isatty(self): return False
-        def fileno(self): raise OSError("no fileno")
+
+        def write(self, _s):
+            return 0
+
+        def flush(self):
+            pass
+
+        def reconfigure(self, *a, **kw):
+            pass
+
+        def isatty(self):
+            return False
+
+        def fileno(self):
+            raise OSError("no fileno")
 
     # 仅在 stdout/stderr 缺失或不可写时替换 (有真控制台时保持原样)
     for name in ("stdout", "stderr"):
@@ -135,15 +153,13 @@ def _setup_logging() -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
         handler = logging.FileHandler(
             log_dir / "desktop.log",
-            mode="a",            # 追加, 保留历史 (排查时往往需要对比多次启动)
+            mode="a",  # 追加, 保留历史 (排查时往往需要对比多次启动)
             encoding="utf-8",
-            errors="replace",    # 容错: 对齐 __init__.py 的 stderr 重配, 避免中文/emoji 触发 UnicodeEncodeError
+            errors="replace",  # 容错: 对齐 __init__.py 的 stderr 重配, 避免中文/emoji 触发 UnicodeEncodeError
         )
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
         logging.getLogger().addHandler(handler)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         # 日志落盘失败不阻断启动 (开发模式 data_dir 可能不可写)
         logger.warning("日志文件初始化失败, 仅输出到 stderr: %s", e)
 
@@ -162,7 +178,7 @@ def _show_crash(title: str, text: str) -> None:
             import ctypes
 
             ctypes.windll.user32.MessageBoxW(0, text, title, 0x10)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.error("弹框失败 (已写日志文件): %s", e)
     else:
         logger.error("%s: %s", title, text)
@@ -206,37 +222,37 @@ def _find_free_port(start: int, count: int = _PORT_PROBE_RANGE) -> int:
     return start
 
 
+def _create_uvicorn_server(port: int) -> _UvicornServer:
+    """延迟导入应用并创建仅监听本机的 Uvicorn 服务。"""
+    import uvicorn
+
+    # 延迟导入可确保 frozen 运行时先完成配置目录探测。
+    from app.main import app
+
+    config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="info",
+        access_log=False,
+        loop="auto",
+    )
+    server = uvicorn.Server(config)
+    server.config.callback_notify = None
+    return server
+
+
 def _run_uvmicorn(
     port: int,
     ready_event: threading.Event,
     startup_error: list[str] | None = None,
+    server_ref: list[_UvicornServer] | None = None,
 ) -> None:
-    """后台线程: 启动 uvicorn 服务。ready_event 在线程退出时置位 (通知主线程)。"""
+    """在后台线程运行 Uvicorn, 并向主线程保留服务引用和异常。"""
     try:
-        import uvicorn
-
-        # 延迟 import app, 确保配置层已就绪 (frozen 检测在 config.py 导入时完成)
-        # 放进 try: app.main 模块导入 (含 app.api.* 一长串 import) 若失败,
-        # 异常必须落到 except 记录, 否则主线程只能看到启动失败而查无 traceback。
-        from app.main import app
-    except Exception:
-        if startup_error is not None:
-            startup_error.append(traceback.format_exc())
-        logger.exception("后端模块导入失败 (app.main 或其依赖)")
-        ready_event.set()
-        return
-
-    try:
-        config = uvicorn.Config(
-            app,
-            host="127.0.0.1",  # 仅本机, 不暴露外网 (桌面版无需远程访问)
-            port=port,
-            log_level="info",
-            access_log=False,    # 桌面版不需要访问日志
-            loop="auto",
-        )
-        server = uvicorn.Server(config)
-        server.config.callback_notify = None  # 不用 notify 机制
+        server = _create_uvicorn_server(port)
+        if server_ref is not None:
+            server_ref.append(server)
         server.run()
     except Exception:
         if startup_error is not None:
@@ -248,6 +264,31 @@ def _run_uvmicorn(
         ready_event.set()
 
 
+def _shutdown_uvicorn(
+    server_ref: list[_UvicornServer],
+    server_thread: threading.Thread | None,
+    *,
+    timeout: float = 15.0,
+) -> None:
+    """请求 Uvicorn 正常退出并等待 lifespan 清理完成。
+
+    Args:
+        server_ref: 后台线程创建的服务引用容器。
+        server_thread: 运行 Uvicorn 的后台线程。
+        timeout: 等待正常退出的最长秒数。
+    """
+    if server_ref:
+        server_ref[0].should_exit = True
+    if (
+        server_thread is not None
+        and server_thread is not threading.current_thread()
+        and server_thread.is_alive()
+    ):
+        server_thread.join(timeout=timeout)
+        if server_thread.is_alive():
+            logger.warning("等待 uvicorn 退出超时,进程将继续结束")
+
+
 def _wait_for_server(
     port: int,
     timeout: float = 60.0,
@@ -257,8 +298,8 @@ def _wait_for_server(
 
     比 monkey-patch uvicorn 内部方法更健壮, 不依赖版本内部实现。
     """
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     url = f"http://127.0.0.1:{port}/health"
     deadline = time.monotonic() + timeout
@@ -279,7 +320,7 @@ def _open_window(url: str) -> None:
     """主线程: 用 pywebview 打开桌面窗口。"""
     import webview  # type: ignore[import-not-found]
 
-    window = webview.create_window(
+    webview.create_window(
         _APP_NAME,
         url,
         width=1440,
@@ -315,6 +356,8 @@ def main() -> int:
     if not _acquire_single_instance():
         return 0
 
+    server_ref: list[_UvicornServer] = []
+    server_thread: threading.Thread | None = None
     try:
         port = _find_free_port(_BASE_PORT)
         logger.info("桌面版后端将监听 127.0.0.1:%d", port)
@@ -323,7 +366,9 @@ def main() -> int:
         ready = threading.Event()
         startup_error: list[str] = []
         server_thread = threading.Thread(
-            target=_run_uvmicorn, args=(port, ready, startup_error), daemon=True,
+            target=_run_uvmicorn,
+            args=(port, ready, startup_error, server_ref),
+            daemon=True,
             name="uvicorn",
         )
         server_thread.start()
@@ -352,6 +397,7 @@ def main() -> int:
         _show_crash("TickFlow 启动失败", traceback.format_exc())
         return 1
     finally:
+        _shutdown_uvicorn(server_ref, server_thread)
         _release_single_instance()
 
 

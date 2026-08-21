@@ -26,15 +26,18 @@ class FakeService:
     store = FakeStore()
 
     async def chat_stream(self, question, symbol=None, context=None, fund_code=None):
-        yield json.dumps(
-            {
-                "type": "delta",
-                "content": question,
-                "context": context,
-                "fund_code": fund_code,
-            },
-            ensure_ascii=False,
-        ) + "\n"
+        yield (
+            json.dumps(
+                {
+                    "type": "delta",
+                    "content": question,
+                    "context": context,
+                    "fund_code": fund_code,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
         yield json.dumps({"type": "done"}, ensure_ascii=False) + "\n"
 
     async def run_recommendations(self, force=False, trigger="manual"):
@@ -69,7 +72,12 @@ def test_terms_and_stream_chat() -> None:
 def test_recommendation_review_and_status_contracts() -> None:
     client = _client()
     assert client.get("/api/research-agent/recommendations/latest").json()["batch"]["id"] == "rab_1"
-    assert client.get("/api/research-agent/recommendations?limit=5&offset=2").json()["batches"][0]["offset"] == 2
+    assert (
+        client.get("/api/research-agent/recommendations?limit=5&offset=2").json()["batches"][0][
+            "offset"
+        ]
+        == 2
+    )
     run = client.post("/api/research-agent/recommendations/run", json={"force": True}).json()
     assert run == {"status": "succeeded", "force": True, "trigger": "manual"}
     reviews = client.get("/api/research-agent/reviews?batch_id=rab_1&symbol=600000.sh").json()

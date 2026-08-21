@@ -5,10 +5,12 @@
   - 日 K 仅使用 `kline.daily.batch`
   - 除权因子仅使用 `adj_factor`
 """
+
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 
 import polars as pl
@@ -28,7 +30,14 @@ logger = logging.getLogger(__name__)
 
 # 标准列(无论 SDK 返回什么形状,我们把它规范成这套)
 CANONICAL_DAILY_COLS = [
-    "symbol", "date", "open", "high", "low", "close", "volume", "amount",
+    "symbol",
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
 ]
 
 
@@ -74,14 +83,16 @@ def _normalize_daily(df_in, default_symbol: str | None = None) -> pl.DataFrame:
     return df.select(keep)
 
 
-def sync_daily_batch(symbols: list[str],
-                     count: int | None = None,
-                     batch_size: int | None = None,
-                     rpm: int | None = None,
-                     start_time: datetime | None = None,
-                     end_time: datetime | None = None,
-                     on_chunk_done: Callable[[int, int], None] | None = None,
-                     failed_out: list[str] | None = None) -> pl.DataFrame:
+def sync_daily_batch(
+    symbols: list[str],
+    count: int | None = None,
+    batch_size: int | None = None,
+    rpm: int | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    on_chunk_done: Callable[[int, int], None] | None = None,
+    failed_out: list[str] | None = None,
+) -> pl.DataFrame:
     """批量拉取多股日 K。
 
     优先使用 start_time / end_time 区间 + count=10000,确保覆盖完整时间段。
@@ -100,18 +111,32 @@ def sync_daily_batch(symbols: list[str],
         try:
             if start_time and end_time:
                 raw = tf.klines.batch(
-                    chunk, period="1d", adjust="none",
+                    chunk,
+                    period="1d",
+                    adjust="none",
                     start_time=_datetime_to_ms(start_time),
                     end_time=_datetime_to_ms(end_time),
                     count=10000,
-                    as_dataframe=True, show_progress=False,
+                    as_dataframe=True,
+                    show_progress=False,
                 )
             else:
-                raw = tf.klines.batch(chunk, period="1d", count=count or 250, adjust="none",
-                                      as_dataframe=True, show_progress=False)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("batch fetch failed for %d symbols (chunk %d/%d): %s",
-                           len(chunk), i + 1, len(chunks), e)
+                raw = tf.klines.batch(
+                    chunk,
+                    period="1d",
+                    count=count or 250,
+                    adjust="none",
+                    as_dataframe=True,
+                    show_progress=False,
+                )
+        except Exception as e:
+            logger.warning(
+                "batch fetch failed for %d symbols (chunk %d/%d): %s",
+                len(chunk),
+                i + 1,
+                len(chunks),
+                e,
+            )
             failed_syms.extend(chunk)
             continue
 
@@ -129,8 +154,12 @@ def sync_daily_batch(symbols: list[str],
 
     # 部分失败可见化: 聚合一条 WARNING(而非只有逐块 debug/warning), 并回传出参。
     if failed_syms:
-        logger.warning("日K批量同步部分失败: %d/%d 标的未获取, 本轮保持旧数据 (样例: %s)",
-                       len(failed_syms), len(symbols), failed_syms[:10])
+        logger.warning(
+            "日K批量同步部分失败: %d/%d 标的未获取, 本轮保持旧数据 (样例: %s)",
+            len(failed_syms),
+            len(symbols),
+            failed_syms[:10],
+        )
         if failed_out is not None:
             failed_out.extend(failed_syms)
 
@@ -159,6 +188,7 @@ def sync_and_persist_daily_batch(
     provider_name = preferences.get_daily_data_provider()
     if provider_name != "tickflow":
         from app.data_providers import custom as custom_sources
+
         if custom_sources.provider_has_dataset(provider_name, "daily"):
             provider = custom_sources.get_provider(provider_name)
             end_time = end_date or datetime.now()
@@ -179,7 +209,7 @@ def sync_and_persist_daily_batch(
                     f"""CREATE OR REPLACE VIEW kline_daily AS
                         SELECT * FROM read_parquet('{d}/kline_daily/**/*.parquet', union_by_name=true)"""
                 )
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 logger.warning("refresh view failed: %s", e)
             return df.height
         # 自定义源未配置 daily → 回退 TickFlow
@@ -193,8 +223,12 @@ def sync_and_persist_daily_batch(
     start_time = start_date or (end_time - timedelta(days=365))
 
     df = sync_daily_batch(
-        symbols, count=count, batch_size=limit.batch, rpm=limit.rpm,
-        start_time=start_time, end_time=end_time,
+        symbols,
+        count=count,
+        batch_size=limit.batch,
+        rpm=limit.rpm,
+        start_time=start_time,
+        end_time=end_time,
         on_chunk_done=on_chunk_done,
     )
 
@@ -209,7 +243,7 @@ def sync_and_persist_daily_batch(
             f"""CREATE OR REPLACE VIEW kline_daily AS
                 SELECT * FROM read_parquet('{d}/kline_daily/**/*.parquet', union_by_name=true)"""
         )
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("refresh view failed: %s", e)
 
     return df.height
@@ -238,16 +272,17 @@ def sync_daily_by_quotes(repo: KlineRepository) -> int:
 
     records = []
     for q in resp:
-        ext = q.get("ext") or {}
-        records.append({
-            "symbol": q.get("symbol"),
-            "open": q.get("open"),
-            "high": q.get("high"),
-            "low": q.get("low"),
-            "close": q.get("last_price"),
-            "volume": q.get("volume"),
-            "amount": q.get("amount"),
-        })
+        records.append(
+            {
+                "symbol": q.get("symbol"),
+                "open": q.get("open"),
+                "high": q.get("high"),
+                "low": q.get("low"),
+                "close": q.get("last_price"),
+                "volume": q.get("volume"),
+                "amount": q.get("amount"),
+            }
+        )
 
     df = pl.DataFrame(records)
     if df.is_empty():
@@ -286,14 +321,27 @@ def _normalize_adj_factor(raw) -> pl.DataFrame:
     # 注意: 新版 SDK 可能同时返回 timestamp 和 trade_date (或 adj_factor 和 ex_factor),
     # 直接 rename 会产生重复列报错。仅当目标列不存在时才 rename。
     rename_map: dict[str, str] = {}
-    for src, dst in (("timestamp", "trade_date"), ("date", "trade_date"), ("adj_factor", "ex_factor")):
+    for src, dst in (
+        ("timestamp", "trade_date"),
+        ("date", "trade_date"),
+        ("adj_factor", "ex_factor"),
+    ):
         if src in df.columns and dst not in df.columns:
             rename_map[src] = dst
     df = df.rename(rename_map)
     if "trade_date" in df.columns:
-        if df.schema["trade_date"] in {pl.Int64, pl.Int32, pl.UInt64, pl.UInt32, pl.Float64, pl.Float32}:
+        if df.schema["trade_date"] in {
+            pl.Int64,
+            pl.Int32,
+            pl.UInt64,
+            pl.UInt32,
+            pl.Float64,
+            pl.Float32,
+        }:
             df = df.with_columns(
-                pl.from_epoch(pl.col("trade_date").cast(pl.Int64), time_unit="ms").dt.date().alias("trade_date")
+                pl.from_epoch(pl.col("trade_date").cast(pl.Int64), time_unit="ms")
+                .dt.date()
+                .alias("trade_date")
             )
         else:
             df = df.with_columns(pl.col("trade_date").cast(pl.Date, strict=False))
@@ -305,12 +353,15 @@ def _normalize_adj_factor(raw) -> pl.DataFrame:
     return df.select(cols).drop_nulls()
 
 
-def sync_adj_factor(symbols: list[str], repo: KlineRepository,
-                    capset: CapabilitySet,
-                    start_time: datetime | None = None,
-                    end_time: datetime | None = None,
-                    on_chunk_done: Callable[[int, int], None] | None = None,
-                    asset_type: str = "stock") -> tuple[int, list[str]]:
+def sync_adj_factor(
+    symbols: list[str],
+    repo: KlineRepository,
+    capset: CapabilitySet,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    on_chunk_done: Callable[[int, int], None] | None = None,
+    asset_type: str = "stock",
+) -> tuple[int, list[str]]:
     """同步除权因子(Starter+)。SDK 接口:`tf.klines.ex_factors(symbols=...)`。
 
     支持增量: 传 start_time/end_time 只拉取该时间范围内的新除权事件。
@@ -324,6 +375,7 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
         provider_name = preferences.get_daily_data_provider()
     if provider_name != "tickflow":
         from app.data_providers import custom as custom_sources
+
         if custom_sources.provider_has_dataset(provider_name, "adj_factor"):
             provider = custom_sources.get_provider(provider_name)
             new_data = provider.get_adj_factors(
@@ -342,9 +394,14 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
             if out.exists():
                 existing = pl.read_parquet(out)
                 before = existing.height
-                merged = pl.concat([existing, new_data]).unique(
-                    subset=["symbol", "trade_date"], keep="last",
-                ).sort(["symbol", "trade_date"])
+                merged = (
+                    pl.concat([existing, new_data])
+                    .unique(
+                        subset=["symbol", "trade_date"],
+                        keep="last",
+                    )
+                    .sort(["symbol", "trade_date"])
+                )
                 atomic_write_parquet(merged, out)
                 return merged.height - before, affected
             atomic_write_parquet(new_data.sort(["symbol", "trade_date"]), out)
@@ -382,7 +439,7 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
             if not normalized.is_empty():
                 all_dfs.append(normalized)
             logger.debug("adj_factor chunk %d/%d: %d symbols", i + 1, len(chunks), len(chunk))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("adj_factor chunk %d/%d failed: %s", i + 1, len(chunks), e)
             failed_syms.extend(chunk)
 
@@ -392,8 +449,12 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
     # 部分失败可见化: 失败分块的标的不在 affected 里 → enriched 不会重算它们,
     # 它们会保持**旧的前复权价**直到下次成功同步。聚合一条 WARNING 让其可见。
     if failed_syms:
-        logger.warning("adj_factor 同步部分失败: %d/%d 标的未获取复权因子, 将保持旧复权价 (样例: %s)",
-                       len(failed_syms), len(symbols), failed_syms[:10])
+        logger.warning(
+            "adj_factor 同步部分失败: %d/%d 标的未获取复权因子, 将保持旧复权价 (样例: %s)",
+            len(failed_syms),
+            len(symbols),
+            failed_syms[:10],
+        )
 
     if not all_dfs:
         return 0, []
@@ -410,13 +471,23 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
     if out.exists():
         existing = pl.read_parquet(out)
         before = existing.height
-        merged = pl.concat([existing, new_data]).unique(
-            subset=["symbol", "trade_date"], keep="last",
-        ).sort(["symbol", "trade_date"])
+        merged = (
+            pl.concat([existing, new_data])
+            .unique(
+                subset=["symbol", "trade_date"],
+                keep="last",
+            )
+            .sort(["symbol", "trade_date"])
+        )
         atomic_write_parquet(merged, out)
         added = merged.height - before
-        logger.info("adj_factor merged: %d total (+%d new), %d/%d symbols",
-                     merged.height, added, new_data.height, len(symbols))
+        logger.info(
+            "adj_factor merged: %d total (+%d new), %d/%d symbols",
+            merged.height,
+            added,
+            new_data.height,
+            len(symbols),
+        )
         return added, affected
     else:
         atomic_write_parquet(new_data.sort(["symbol", "trade_date"]), out)
@@ -427,7 +498,14 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
 # ===== 分钟 K 同步 =====
 
 CANONICAL_MINUTE_COLS = [
-    "symbol", "datetime", "open", "high", "low", "close", "volume", "amount",
+    "symbol",
+    "datetime",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
 ]
 
 
@@ -506,7 +584,8 @@ def _write_minute_partition(df: pl.DataFrame, minute_dir) -> int:
             if "datetime" in existing.columns:
                 existing = existing.filter(pl.col("datetime").is_not_null())
             day_df = pl.concat([existing, day_df.drop("_trade_date")]).unique(
-                subset=["symbol", "datetime"], keep="last",
+                subset=["symbol", "datetime"],
+                keep="last",
             )
         else:
             day_df = day_df.drop("_trade_date")
@@ -535,12 +614,13 @@ def _resolve_minute_provider(
     if provider_name == "tickflow":
         return (None, True, None)
     from app.data_providers import custom as custom_sources
+
     try:
         if not custom_sources.provider_has_dataset(provider_name, "minute"):
             return (None, True, None)
         provider = custom_sources.get_provider(provider_name)
         return (provider, False, None)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return (None, True, str(e))
 
 
@@ -575,26 +655,36 @@ def _try_custom_minute(
     provider, fallback, err = _resolve_minute_provider(provider_name)
     if fallback:
         if err is not None:
-            logger.warning("custom minute provider %s resolution failed, falling back to TickFlow: %s",
-                           provider_name, err)
+            logger.warning(
+                "custom minute provider %s resolution failed, falling back to TickFlow: %s",
+                provider_name,
+                err,
+            )
         return (None, True)
 
     # 包装 on_chunk_done: provider 调 2 参 → 补 seg_label="custom" → 转发上层 3 参
     wrapped_cb: Callable[[int, int], None] | None = None
     if on_chunk_done is not None:
+
         def _wrapped_cb(cur: int, total: int) -> None:
             on_chunk_done(cur, total, "custom")
+
         wrapped_cb = _wrapped_cb
 
     try:
         df = provider.get_minute(
-            symbols, start_time=start_time, end_time=end_time,
-            asset_type=asset_type, freq=freq, on_chunk_done=wrapped_cb,
+            symbols,
+            start_time=start_time,
+            end_time=end_time,
+            asset_type=asset_type,
+            freq=freq,
+            on_chunk_done=wrapped_cb,
         )
         return (df, False)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("custom minute provider %s call failed, falling back to TickFlow: %s",
-                       provider_name, e)
+    except Exception as e:
+        logger.warning(
+            "custom minute provider %s call failed, falling back to TickFlow: %s", provider_name, e
+        )
         return (None, True)
 
 
@@ -627,8 +717,12 @@ def sync_minute_batch(
         不传时 (如 get_minute_batch 的实时补拉) 保持原契约: 累积进 out 末尾一次性返回。
     """
     df, fallback = _try_custom_minute(
-        symbols, start_time=start_time, end_time=end_time,
-        asset_type=asset_type, freq="1m", on_chunk_done=on_chunk_done,
+        symbols,
+        start_time=start_time,
+        end_time=end_time,
+        asset_type=asset_type,
+        freq="1m",
+        on_chunk_done=on_chunk_done,
     )
     if not fallback:
         # 自定义源成功: 遵守与 TickFlow 路径一致的 on_segment 契约。
@@ -646,12 +740,12 @@ def sync_minute_batch(
     # TickFlow count 上限 10000 根/股, 1 天 240 根 → 单次最多约 41 个交易日。
     # 按 segment_trading_days 交易日分段 (交易日→自然日 ×7/5 换算, 含节假日余量)。
     seg_calendar_days = max(1, int(segment_trading_days * 7 / 5))
-    SEG_CHUNK = timedelta(days=seg_calendar_days)
+    seg_chunk = timedelta(days=seg_calendar_days)
     time_segments: list[tuple[datetime | None, datetime | None]] = []
     if start_time and end_time:
         seg_start = start_time
         while seg_start < end_time:
-            seg_end = min(seg_start + SEG_CHUNK, end_time)
+            seg_end = min(seg_start + seg_chunk, end_time)
             time_segments.append((seg_start, seg_end))
             seg_start = seg_end
     else:
@@ -664,32 +758,38 @@ def sync_minute_batch(
     # 段内累积: 每段拉完即 flush, 避免全量攒内存 (OOM 根因)
     seg_out: list[pl.DataFrame] = []
 
-    for seg_idx, (cur_start, cur_end) in enumerate(time_segments):
+    for cur_start, cur_end in time_segments:
         # 当前的日期段描述 (供进度展示)
         if cur_start and cur_end:
             seg_label = f"{cur_start.strftime('%m-%d')}~{cur_end.strftime('%m-%d')}"
         else:
             seg_label = "最新"
-        seg_total = len(time_segments)
         chunks = chunked(symbols, batch_size)
-        for i, chunk in enumerate(chunks):
+        for chunk in chunks:
             sleep_between_batches(step, rpm)
             step += 1
             try:
                 if cur_start and cur_end:
                     raw = tf.klines.batch(
-                        chunk, period="1m",
+                        chunk,
+                        period="1m",
                         start_time=_datetime_to_ms(cur_start),
                         end_time=_datetime_to_ms(cur_end),
                         count=10000,
                         adjust="forward",
-                        as_dataframe=True, show_progress=False,
+                        as_dataframe=True,
+                        show_progress=False,
                     )
                 else:
-                    raw = tf.klines.batch(chunk, period="1m", count=count or 1200,
-                                          adjust="forward",
-                                          as_dataframe=True, show_progress=False)
-            except Exception as e:  # noqa: BLE001
+                    raw = tf.klines.batch(
+                        chunk,
+                        period="1m",
+                        count=count or 1200,
+                        adjust="forward",
+                        as_dataframe=True,
+                        show_progress=False,
+                    )
+            except Exception as e:
                 logger.warning("minute batch fetch failed for %d symbols: %s", len(chunk), e)
                 continue
 
@@ -723,14 +823,20 @@ def intraday_monitor_support(capset: CapabilitySet | None) -> dict[str, object]:
     _, fallback, error = _resolve_minute_provider(provider_name)
     if not fallback:
         return {
-            "available": True, "source": "custom_minute", "max_symbols": 100,
+            "available": True,
+            "source": "custom_minute",
+            "max_symbols": 100,
             "reason": "使用已配置的分钟数据插件",
         }
     if error is not None:
-        logger.warning("minute provider resolution failed while checking monitor support: %s", error)
+        logger.warning(
+            "minute provider resolution failed while checking monitor support: %s", error
+        )
     if capset is None:
         return {
-            "available": False, "source": None, "max_symbols": 0,
+            "available": False,
+            "source": None,
+            "max_symbols": 0,
             "reason": "需要分钟 K 或日内分时数据权限",
         }
     for cap, source in (
@@ -740,7 +846,8 @@ def intraday_monitor_support(capset: CapabilitySet | None) -> dict[str, object]:
         if capset.has(cap):
             limits = capset.limits(cap)
             return {
-                "available": True, "source": source,
+                "available": True,
+                "source": source,
                 "max_symbols": max(1, int(limits.batch or 100)) if limits else 100,
                 "reason": "日内分时数据可用" if cap == Cap.INTRADAY_BATCH else "分钟 K 数据可用",
             }
@@ -750,11 +857,15 @@ def intraday_monitor_support(capset: CapabilitySet | None) -> dict[str, object]:
     ):
         if capset.has(cap):
             return {
-                "available": True, "source": source, "max_symbols": 1,
+                "available": True,
+                "source": source,
+                "max_symbols": 1,
                 "reason": "当前权限仅支持单标的分时监控",
             }
     return {
-        "available": False, "source": None, "max_symbols": 0,
+        "available": False,
+        "source": None,
+        "max_symbols": 0,
         "reason": "需要分钟 K 或日内分时数据权限",
     }
 
@@ -771,7 +882,10 @@ def _normalize_intraday_raw(raw, default_symbol: str | None = None) -> list[pl.D
 
 
 def fetch_intraday_monitor_batch(
-    symbols: list[str], capset: CapabilitySet | None, *, now: datetime | None = None,
+    symbols: list[str],
+    capset: CapabilitySet | None,
+    *,
+    now: datetime | None = None,
 ) -> pl.DataFrame:
     """按当前能力获取分时信号所需的当日分钟数据，不落盘。"""
     if not symbols:
@@ -784,9 +898,15 @@ def fetch_intraday_monitor_batch(
     start_time = now.replace(hour=9, minute=25, second=0, microsecond=0)
     source = support["source"]
     if source in {"custom_minute", "minute_batch"}:
-        limits = capset.limits(Cap.KLINE_MINUTE_BATCH) if capset and capset.has(Cap.KLINE_MINUTE_BATCH) else None
+        limits = (
+            capset.limits(Cap.KLINE_MINUTE_BATCH)
+            if capset and capset.has(Cap.KLINE_MINUTE_BATCH)
+            else None
+        )
         return sync_minute_batch(
-            symbols, start_time=start_time, end_time=now,
+            symbols,
+            start_time=start_time,
+            end_time=now,
             batch_size=limits.batch if limits else None,
             rpm=limits.rpm if limits else None,
         )
@@ -797,7 +917,10 @@ def fetch_intraday_monitor_batch(
         if source == "intraday_batch":
             limits = capset.limits(Cap.INTRADAY_BATCH) if capset else None
             raw = tf.klines.intraday_batch(
-                symbols, count=300, as_dataframe=True, show_progress=False,
+                symbols,
+                count=300,
+                as_dataframe=True,
+                show_progress=False,
                 batch_size=limits.batch if limits and limits.batch else 100,
             )
             frames.extend(_normalize_intraday_raw(raw))
@@ -807,8 +930,10 @@ def fetch_intraday_monitor_batch(
         elif source == "minute_single":
             raw = tf.klines.get(symbols[0], period="1m", count=300, as_dataframe=True)
             frames.extend(_normalize_intraday_raw(raw, default_symbol=symbols[0]))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("intraday monitor fetch failed (%s, %d symbols): %s", source, len(symbols), e)
+    except Exception as e:
+        logger.warning(
+            "intraday monitor fetch failed (%s, %d symbols): %s", source, len(symbols), e
+        )
         return pl.DataFrame()
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
 
@@ -820,14 +945,18 @@ def fetch_minute_single(
 ) -> pl.DataFrame:
     """实时拉取单股单日分钟 K(不写入本地)。优先自定义分钟源, 回退 TickFlow。"""
     from datetime import datetime
+
     start_time = datetime(trade_date.year, trade_date.month, trade_date.day, 9, 25, 0)
     end_time = datetime(trade_date.year, trade_date.month, trade_date.day, 15, 5, 0)
 
     # 自定义数据源分流: 与 sync_minute_batch 一致, 配了自定义分钟源时走 custom provider,
     # 避免无 TickFlow Pro+ 权限的用户分时图首次打开(本地无数据)时补拉失败返回空。
     df, fallback = _try_custom_minute(
-        [symbol], start_time=start_time, end_time=end_time,
-        asset_type=asset_type, freq="1m",
+        [symbol],
+        start_time=start_time,
+        end_time=end_time,
+        asset_type=asset_type,
+        freq="1m",
     )
     if not fallback:
         # 见 sync_minute_batch 同分支注释: df 在此必非 None。
@@ -836,12 +965,14 @@ def fetch_minute_single(
     tf = get_client()
     try:
         raw = tf.klines.batch(
-            [symbol], period="1m",
+            [symbol],
+            period="1m",
             start_time=_datetime_to_ms(start_time),
             end_time=_datetime_to_ms(end_time),
             count=10000,
             adjust="forward",
-            as_dataframe=True, show_progress=False,
+            as_dataframe=True,
+            show_progress=False,
         )
     except Exception as e:
         logger.warning("fetch_minute_single(%s, %s) failed: %s", symbol, trade_date, e)
@@ -864,7 +995,7 @@ def fetch_adj_factor_single(symbol: str) -> pl.DataFrame:
     tf = get_client()
     try:
         raw = tf.klines.ex_factors([symbol], as_dataframe=True, show_progress=False)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("fetch_adj_factor_single(%s) failed: %s", symbol, e)
         return pl.DataFrame()
     return _normalize_adj_factor(raw)
@@ -894,7 +1025,7 @@ def _latest_minute_datetime(
             if isinstance(d, datetime):
                 return d
             return datetime.fromisoformat(str(d))
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return None
 
@@ -912,7 +1043,7 @@ def _earliest_minute_datetime(
             if isinstance(d, datetime):
                 return d
             return datetime.fromisoformat(str(d))
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return None
 
@@ -937,7 +1068,7 @@ def _cleanup_null_datetime_minute(
                 f.unlink()
                 n += 1
             logger.info("cleaned %d corrupted minute-K parquet files (null datetime)", n)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.debug("minute cleanup check failed: %s", e)
 
 
@@ -966,7 +1097,7 @@ def _migrate_symbol_to_date_partition(
                     df = df.filter(pl.col("datetime").is_not_null())
                 if not df.is_empty():
                     all_frames.append(df)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     if not all_frames:
@@ -997,10 +1128,8 @@ def _migrate_symbol_to_date_partition(
             if f.is_file():
                 f.unlink()
         # 移除空目录
-        try:
+        with suppress(OSError):
             d.rmdir()
-        except OSError:
-            pass
 
     logger.info("minute-K migration done: %d rows migrated", combined.height)
 
@@ -1026,8 +1155,11 @@ def sync_and_persist_minute(
     _, fallback, resolve_err = _resolve_minute_provider(minute_provider)
     minute_is_custom = not fallback
     if resolve_err is not None:
-        logger.warning("custom minute provider %s resolution failed at sync_and_persist_minute, treating as non-custom: %s",
-                       minute_provider, resolve_err)
+        logger.warning(
+            "custom minute provider %s resolution failed at sync_and_persist_minute, treating as non-custom: %s",
+            minute_provider,
+            resolve_err,
+        )
     if not symbols:
         return 0
     if not minute_is_custom and not capset.has(Cap.KLINE_MINUTE_BATCH):
@@ -1060,10 +1192,7 @@ def sync_and_persist_minute(
     else:
         # 默认增量模式: 首次拉取回溯 N 天, 已有数据则从最新时间增量补到今天
         last_dt = _latest_minute_datetime(repo, asset_type)
-        if last_dt:
-            start_time = last_dt
-        else:
-            start_time = now - timedelta(days=days)
+        start_time = last_dt or now - timedelta(days=days)
         end_time = now
 
     limit = resolve_limit(
@@ -1084,8 +1213,11 @@ def sync_and_persist_minute(
 
     segment_days = preferences.get_minute_sync_segment_days()
     sync_minute_batch(
-        symbols, start_time=start_time, end_time=end_time,
-        batch_size=limit.batch, rpm=limit.rpm,
+        symbols,
+        start_time=start_time,
+        end_time=end_time,
+        batch_size=limit.batch,
+        rpm=limit.rpm,
         on_chunk_done=on_chunk_done,
         segment_trading_days=segment_days,
         on_segment=_persist,
@@ -1099,7 +1231,7 @@ def sync_and_persist_minute(
     # 刷新视图
     try:
         repo.refresh_minute_views(asset_type)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("refresh %s view failed: %s", table, e)
 
     logger.info(
@@ -1124,6 +1256,6 @@ def persist_minute_frame(
     if written:
         try:
             repo.refresh_minute_views(asset_type)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning("refresh %s view after on-demand persist failed: %s", table, e)
     return written

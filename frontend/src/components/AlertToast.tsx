@@ -2,82 +2,16 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Bell, TrendingUp, TrendingDown, X } from 'lucide-react'
-import type { AlertEvent } from '@/lib/api'
 import { fmtPct, fmtPrice } from '@/lib/format'
 import { cnSignal } from '@/lib/signals'
 import { cn } from '@/lib/cn'
-import { playNotificationSound } from '@/lib/notificationSound'
-import { speakAlerts } from '@/lib/voiceBroadcast'
 import { usePreferences } from '@/lib/useSharedQueries'
 import { strategyEventMeta, strategyName } from '@/lib/strategyMonitorEvents'
-
-/** 通知渠道分发 — 所有副作用渠道在此汇合, 新增渠道只改这里 */
-function dispatchSideEffects(alerts: AlertEvent[]) {
-  playNotificationSound()        // 提示音 (Web Audio 合成)
-  speakAlerts(alerts)            // 语音播报 (speechSynthesis, 各自独立开关)
-}
-
-// ===== 全局状态 (模块级, 仿 Toast.tsx 模式) =====
-type Item = { id: number; alert: AlertEvent }
-let _id = 0
-let _queue: Item[] = []
-const AUTO_DISMISS = 5000      // 5 秒自动消失
-const _listeners: Set<(items: Item[]) => void> = new Set()
-
-/** 从 localStorage 读取配置 */
-function getEnabled(): boolean {
-  try {
-    const v = localStorage.getItem('alert_toast_enabled')
-    return v === null ? true : v === '1'   // 默认开启
-  } catch { return true }
-}
-
-function getMaxVisible(): number {
-  try {
-    const v = parseInt(localStorage.getItem('alert_toast_max') || '', 10)
-    return v >= 1 && v <= 10 ? v : 3       // 默认 3, 范围 1-10
-  } catch { return 3 }
-}
-
-/** 通知外部配置变更后刷新 (设置页改了配置后调用) */
-export function refreshAlertToastConfig() {
-  _emit()
-}
-
-function _emit() { _listeners.forEach(fn => fn([..._queue])) }
-
-/** 推入单条监控告警通知 (兼容入口, 不发声 — 发声由批量入口统一处理) */
-export function pushAlertToast(alert: AlertEvent) {
-  pushAlertToasts([alert])
-}
-
-/**
- * 批量推入监控告警通知 (一轮 SSE 多只新命中时调用)。
- * - 每条都弹 Toast (受 maxVisible 上限, 超出丢最旧)
- * - 整批只播放一声通知音, 避免短时连续响多声刷屏
- */
-export function pushAlertToasts(alerts: AlertEvent[]) {
-  if (alerts.length === 0) return
-  if (!getEnabled()) return                  // 开关关闭: 不弹
-  const maxVisible = getMaxVisible()
-  const newItems = alerts.map(alert => ({ id: ++_id, alert }))
-  _queue = [..._queue, ...newItems]
-  // 超出上限: 丢弃最旧的
-  if (_queue.length > maxVisible) {
-    _queue = _queue.slice(-maxVisible)
-  }
-  _emit()
-  for (const item of newItems) {
-    setTimeout(() => dismiss(item.id), AUTO_DISMISS)
-  }
-  dispatchSideEffects(alerts)                  // 副作用分发: 提示音 + 语音 (整批各一次)
-}
-
-/** 手动关闭 */
-export function dismiss(id: number) {
-  _queue = _queue.filter(t => t.id !== id)
-  _emit()
-}
+import {
+  dismissAlertToast,
+  subscribeAlertToasts,
+  type AlertToastItem,
+} from '@/lib/alertToastStore'
 
 // ===== 配色 =====
 const SEVERITY_BAR: Record<string, string> = {
@@ -99,7 +33,7 @@ const SOURCE_BADGE: Record<string, { label: string; cls: string }> = {
 
 // ===== 容器 — 挂在 Layout =====
 export function AlertToastContainer() {
-  const [items, setItems] = useState<Item[]>([])
+  const [items, setItems] = useState<AlertToastItem[]>([])
   const navigate = useNavigate()
   const { data: prefs } = usePreferences()
   const extFields = prefs?.monitor_ext_fields ?? {
@@ -108,14 +42,13 @@ export function AlertToastContainer() {
   }
 
   const sub = useCallback(() => {
-    _listeners.add(setItems)
-    return () => { _listeners.delete(setItems) }
+    return subscribeAlertToasts(setItems)
   }, [])
   useEffect(sub, [sub])
 
   // 点击通知 → 跳转监控中心 + 关闭当前通知
   const handleClick = (id: number) => {
-    dismiss(id)
+    dismissAlertToast(id)
     navigate('/monitor')
   }
 
@@ -174,7 +107,7 @@ export function AlertToastContainer() {
                     {fmtPct(pct)}
                   </span>
                 )}
-                <button aria-label="关闭通知" onClick={(e) => { e.stopPropagation(); dismiss(item.id) }} className="shrink-0 p-0.5 rounded text-muted/50 hover:text-foreground hover:bg-elevated transition-colors cursor-pointer">
+                <button aria-label="关闭通知" onClick={(e) => { e.stopPropagation(); dismissAlertToast(item.id) }} className="shrink-0 p-0.5 rounded text-muted/50 hover:text-foreground hover:bg-elevated transition-colors cursor-pointer">
                   <X className="h-3 w-3" />
                 </button>
               </div>
@@ -224,7 +157,7 @@ export function AlertToastContainer() {
                   const key = item.field.replace('.', '__')
                   const v = (ev as Record<string, unknown>)[key]
                   if (v == null) continue
-                  let parts = String(v).split(/[、,，;；\-]/).map(s => s.trim()).filter(Boolean)
+                  let parts = String(v).split(/[-、,，;；]/).map(s => s.trim()).filter(Boolean)
                   const mt = item.maxTags ?? 0
                   if (mt > 0) parts = parts.slice(0, mt)
                   const hi = item.hiddenIndices

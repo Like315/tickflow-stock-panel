@@ -1,4 +1,5 @@
 """Stable contracts for the investment-expert paper agent."""
+
 from __future__ import annotations
 
 import math
@@ -171,8 +172,12 @@ class PositionLot(BaseModel):
 class ExecutionEvent(BaseModel):
     id: str
     event_type: Literal[
-        "order_submitted", "order_filled", "order_partially_filled", "order_rejected",
-        "order_blocked", "data_rejected",
+        "order_submitted",
+        "order_filled",
+        "order_partially_filled",
+        "order_rejected",
+        "order_blocked",
+        "data_rejected",
     ]
     occurred_at: datetime
     order_id: str | None = None
