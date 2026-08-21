@@ -1684,6 +1684,7 @@ export interface InvestmentExpertStatus {
     shares: number
     remaining_shares: number
     entry_price: number
+    current_price: number | null
   }>
   pending_order_count: number
   entries_enabled?: boolean

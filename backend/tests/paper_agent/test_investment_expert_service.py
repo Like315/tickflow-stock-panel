@@ -8,6 +8,7 @@ import polars as pl
 
 from app.api.investment_expert import status as investment_expert_status
 from app.market_time import CN_TZ
+from app.paper_agent.models import PositionLot
 from app.services.investment_expert import InvestmentExpertService
 from app.tickflow.capabilities import Cap, CapabilityLimits, CapabilitySet
 
@@ -530,3 +531,42 @@ def test_status_uses_live_app_capabilities_after_key_refresh(tmp_path: Path) -> 
 
     assert result["minute_capable"] is True
     assert service.capset is live_capset
+
+
+def test_status_includes_latest_price_for_current_positions(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 18)
+    repo = _Repo(trade_date)
+    service = InvestmentExpertService(repo, tmp_path)
+    lot = PositionLot(
+        lot_id="lot_test",
+        symbol=repo.symbols[0],
+        acquired_date=trade_date,
+        shares=100,
+        remaining_shares=100,
+        entry_price=10.0,
+        entry_cost=5.0,
+    )
+    try:
+        assert service._prepare_session(datetime(2026, 8, 18, 9, 15, tzinfo=CN_TZ))
+        service._executor.lots = [lot]
+        service._executor.last_prices[repo.symbols[0]] = 10.25
+
+        live_result = service.status()
+        service.store.save_portfolio_snapshot(
+            service._session["id"],
+            as_of=datetime(2026, 8, 18, 9, 16, tzinfo=CN_TZ),
+            cash=service._executor.cash,
+            equity=service._executor.equity(),
+            payload={
+                "lots": [lot.model_dump(mode="json")],
+                "last_prices": {repo.symbols[0]: 10.25},
+                "executor_state": {"pending": []},
+            },
+        )
+        service._executor = None
+        snapshot_result = service.status()
+    finally:
+        service.close()
+
+    assert live_result["positions"][0]["current_price"] == 10.25
+    assert snapshot_result["positions"][0]["current_price"] == 10.25

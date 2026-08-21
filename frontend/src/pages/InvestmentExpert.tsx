@@ -159,7 +159,7 @@ export function InvestmentExpert() {
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <h2 className="text-base font-semibold">自主模拟交易运行时</h2>
+                    <h2 className="text-base font-semibold text-foreground">自主模拟交易运行时</h2>
                     <span className={cn(
                       'rounded-full px-2 py-0.5 text-[10px] font-medium',
                       data?.running ? 'bg-emerald-400/10 text-emerald-400' : 'bg-zinc-400/10 text-muted',
@@ -253,6 +253,7 @@ export function InvestmentExpert() {
                         <th className="px-2 py-2 font-medium">买入日</th>
                         <th className="px-2 py-2 text-right font-medium">剩余股数</th>
                         <th className="px-2 py-2 text-right font-medium">成本价</th>
+                        <th className="px-2 py-2 text-right font-medium">现价</th>
                         <th className="px-2 py-2 text-right font-medium">T+1 状态</th>
                       </tr>
                     </thead>
@@ -272,6 +273,9 @@ export function InvestmentExpert() {
                           <td className="px-2 py-2.5 text-secondary">{position.acquired_date}</td>
                           <td className="px-2 py-2.5 text-right tabular-nums">{position.remaining_shares}</td>
                           <td className="px-2 py-2.5 text-right tabular-nums">{position.entry_price.toFixed(3)}</td>
+                          <td className="px-2 py-2.5 text-right tabular-nums">
+                            {position.current_price == null ? '--' : position.current_price.toFixed(3)}
+                          </td>
                           <td className="px-2 py-2.5 text-right text-muted">次交易日起可卖</td>
                         </tr>
                       ))}
@@ -474,7 +478,7 @@ function Panel({ title, subtitle, children }: { title: string; subtitle: string;
   return (
     <section className="rounded-xl border border-border bg-surface/80 p-4">
       <div className="mb-3">
-        <h3 className="text-sm font-semibold">{title}</h3>
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
         <p className="mt-0.5 text-[10px] text-muted">{subtitle}</p>
       </div>
       {children}

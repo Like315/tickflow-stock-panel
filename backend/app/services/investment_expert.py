@@ -1493,6 +1493,29 @@ class InvestmentExpertService:
         executor = self._executor
         snapshot = self.store.latest_portfolio_snapshot() if executor is None else None
         snapshot_payload = (snapshot or {}).get("payload") or {}
+        position_lots = (
+            [lot.model_dump(mode="json") for lot in executor.lots]
+            if executor
+            else list(snapshot_payload.get("lots") or [])
+        )
+        last_prices = (
+            executor.last_prices
+            if executor
+            else snapshot_payload.get("last_prices")
+            or (snapshot_payload.get("executor_state") or {}).get("last_prices")
+            or {}
+        )
+        positions = [
+            {
+                **lot,
+                "current_price": (
+                    float(last_prices[lot["symbol"]])
+                    if last_prices.get(lot.get("symbol")) is not None
+                    else None
+                ),
+            }
+            for lot in position_lots
+        ]
         future = self._active_future
         news_sentiment = None
         if self._news_sentiment_context is not None:
@@ -1515,10 +1538,7 @@ class InvestmentExpertService:
                 round(executor.equity(), 2) if executor
                 else round(float(snapshot["equity"]), 2) if snapshot else self.constitution.initial_capital
             ),
-            "positions": (
-                [lot.model_dump(mode="json") for lot in executor.lots]
-                if executor else snapshot_payload.get("lots", [])
-            ),
+            "positions": positions,
             "pending_order_count": (
                 len(executor.pending) if executor
                 else len((snapshot_payload.get("executor_state") or {}).get("pending", []))
