@@ -80,30 +80,92 @@ const DECISION_REASON_LABELS: Record<string, string> = {
   settled_position_vwap_breakdown: '价格跌破持仓退出 VWAP 阈值',
 }
 
-function featureNumber(trade: InvestmentExpertTrade, key: string): number | null {
-  const value = trade.decision_features?.[key]
+type DecisionFeatures = InvestmentExpertTrade['decision_features']
+
+function featureNumber(features: DecisionFeatures, key: string): number | null {
+  const value = features?.[key]
   if (value == null || value === '') return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
 }
 
-function tradeReason(trade: InvestmentExpertTrade): { summary: string; evidence: string } {
-  const summary = trade.decision_reason
-    ? DECISION_REASON_LABELS[trade.decision_reason] ?? trade.decision_reason
+function decisionReason(
+  reason: string | null | undefined,
+  features: DecisionFeatures,
+  executionReason?: string | null,
+): { summary: string; evidence: string } {
+  const summary = reason
+    ? DECISION_REASON_LABELS[reason] ?? reason
     : '历史成交已保存，但当时的决策原因快照缺失'
   const evidence: string[] = []
-  const candidateScore = featureNumber(trade, 'candidate_score')
-  const momentum = featureNumber(trade, 'daily_momentum_20d')
-  const vwapBias = featureNumber(trade, 'vwap_bias')
-  const breakout = featureNumber(trade, 'breakout_pct')
-  const probability = featureNumber(trade, 'model_probability')
+  const candidateScore = featureNumber(features, 'candidate_score')
+  const momentum = featureNumber(features, 'daily_momentum_20d')
+  const vwapBias = featureNumber(features, 'vwap_bias')
+  const breakout = featureNumber(features, 'breakout_pct')
+  const probability = featureNumber(features, 'model_probability')
   if (candidateScore != null) evidence.push(`候选分 ${candidateScore.toFixed(3)}`)
   if (momentum != null) evidence.push(`20日动量 ${percent(momentum)}`)
   if (vwapBias != null) evidence.push(`${vwapBias >= 0 ? '高于' : '低于'}VWAP ${percent(Math.abs(vwapBias))}`)
   if (breakout != null) evidence.push(`突破幅度 ${percent(breakout)}`)
   if (probability != null) evidence.push(`模型概率 ${percent(probability)}`)
-  if (trade.execution_reason === 'next_minute_open') evidence.push('下一分钟开盘撮合')
+  if (executionReason === 'next_minute_open') evidence.push('下一分钟开盘撮合')
   return { summary, evidence: evidence.join(' · ') }
+}
+
+function tradeReason(trade: InvestmentExpertTrade): { summary: string; evidence: string } {
+  return decisionReason(trade.decision_reason, trade.decision_features, trade.execution_reason)
+}
+
+function entryTradeReason(trade: InvestmentExpertTrade): { summary: string; evidence: string } {
+  return decisionReason(
+    trade.entry_decision_reason ?? (trade.side === 'buy' ? trade.decision_reason : null),
+    trade.entry_decision_features ?? (trade.side === 'buy' ? trade.decision_features : null),
+    trade.side === 'buy' ? trade.execution_reason : null,
+  )
+}
+
+function pnlExplanation(trade: InvestmentExpertTrade): { summary: string; evidence: string } {
+  if (trade.side !== 'sell') {
+    return {
+      summary: '这是买入成交；已实现盈亏会在对应卖出成交行计算',
+      evidence: `买入费用 ${money(trade.entry_fees ?? trade.fees)}`,
+    }
+  }
+  const entryPrice = trade.entry_price
+  const exitPrice = trade.exit_price ?? trade.price
+  const exitReason = trade.exit_decision_reason ?? trade.decision_reason
+  const exitLabel = exitReason ? DECISION_REASON_LABELS[exitReason] ?? exitReason : null
+  if (trade.pnl_reason === 'missing_entry_match' || entryPrice == null || exitPrice == null) {
+    return {
+      summary: '历史买入成交不完整，暂时无法自动还原本次盈亏来源',
+      evidence: exitLabel ? `退出原因：${exitLabel}` : '',
+    }
+  }
+
+  const summaries: Record<NonNullable<InvestmentExpertTrade['pnl_reason']>, string> = {
+    price_gain_after_costs: '卖出价高于买入均价，价差收益覆盖全部交易费用后仍有盈利',
+    price_loss_and_costs: '卖出价低于买入均价，价格下跌并叠加交易费用形成亏损',
+    costs_exceeded_price_gain: '卖出价虽高于买入均价，但价差收益不足以覆盖交易费用',
+    costs_caused_loss: '买卖价格基本持平，交易费用造成净亏损',
+    breakeven_after_costs: '价差收益与交易费用基本抵消，本次接近盈亏平衡',
+    missing_entry_match: '历史买入成交不完整，暂时无法自动还原本次盈亏来源',
+  }
+  const inferredReason = trade.realized_pnl == null
+    ? 'breakeven_after_costs'
+    : trade.realized_pnl > 0
+      ? 'price_gain_after_costs'
+      : trade.realized_pnl < 0
+        ? 'price_loss_and_costs'
+        : 'breakeven_after_costs'
+  const reason = trade.pnl_reason ?? inferredReason
+  const evidence = [
+    `买入 ${price(entryPrice)} → 卖出 ${price(exitPrice)}`,
+    trade.price_change_pct == null ? null : `价差 ${percent(trade.price_change_pct)}`,
+    trade.gross_pnl == null ? null : `毛盈亏 ${signedMoney(trade.gross_pnl)}`,
+    `总费用 ${money(trade.total_fees ?? trade.fees)}`,
+    exitLabel ? `退出原因：${exitLabel}` : null,
+  ].filter((item): item is string => Boolean(item))
+  return { summary: summaries[reason], evidence: evidence.join(' · ') }
 }
 
 function statusClass(status: string | null | undefined): string {
@@ -471,7 +533,7 @@ export function InvestmentExpert() {
 
           <Panel
             title="历史成交单"
-            subtitle={`最近 ${historicalTrades.length} 条真实成交 · 选择与退出原因来自当时保存的决策快照`}
+            subtitle={`最近 ${historicalTrades.length} 条真实成交 · 卖出行按 FIFO 配对买入价，并按扣费后净盈亏归因`}
           >
             {tradeHistory.isLoading ? (
               <div className="flex items-center justify-center gap-2 py-10 text-xs text-muted">
@@ -484,22 +546,28 @@ export function InvestmentExpert() {
               </div>
             ) : historicalTrades.length ? (
               <div className="max-h-[520px] overflow-auto">
-                <table className="min-w-[1060px] w-full text-left text-xs">
+                <table className="min-w-[1480px] w-full text-left text-xs">
                   <thead className="sticky top-0 z-10 border-b border-border bg-surface text-muted">
                     <tr>
                       <th className="px-2 py-2.5 font-medium">成交时间</th>
                       <th className="px-2 py-2.5 font-medium">标的</th>
-                      <th className="px-2 py-2.5 font-medium">方向</th>
-                      <th className="px-2 py-2.5 text-right font-medium">数量 / 成交价</th>
-                      <th className="px-2 py-2.5 text-right font-medium">费用</th>
-                      <th className="px-2 py-2.5 text-right font-medium">已实现盈亏</th>
-                      <th className="min-w-[360px] px-3 py-2.5 font-medium">为什么交易这只股票</th>
+                      <th className="px-2 py-2.5 font-medium">成交状态</th>
+                      <th className="px-2 py-2.5 text-right font-medium">数量</th>
+                      <th className="px-2 py-2.5 text-right font-medium">买入价</th>
+                      <th className="px-2 py-2.5 text-right font-medium">卖出价</th>
+                      <th className="px-2 py-2.5 text-right font-medium">净盈亏</th>
+                      <th className="min-w-[360px] px-3 py-2.5 font-medium">为什么盈利 / 亏损</th>
+                      <th className="min-w-[360px] px-3 py-2.5 font-medium">买入与退出原因</th>
                     </tr>
                   </thead>
                   <tbody>
                     {historicalTrades.map(trade => {
-                      const reason = tradeReason(trade)
+                      const entryReason = entryTradeReason(trade)
+                      const exitReason = trade.side === 'sell' ? tradeReason(trade) : null
+                      const pnlReason = pnlExplanation(trade)
                       const stockName = positionNames[trade.symbol] ?? trade.symbol
+                      const entryPrice = trade.entry_price ?? (trade.side === 'buy' ? trade.price : null)
+                      const exitPrice = trade.exit_price ?? (trade.side === 'sell' ? trade.price : null)
                       return (
                         <tr key={trade.id} className="border-b border-border/60 last:border-0">
                           <td className="whitespace-nowrap px-2 py-3 text-secondary">
@@ -525,24 +593,51 @@ export function InvestmentExpert() {
                               'rounded-full px-2 py-1 text-[10px] font-medium',
                               trade.side === 'buy' ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear',
                             )}>
-                              {trade.side === 'buy' ? '买入' : '卖出'}
+                              {trade.side === 'buy' ? '买入成交' : '卖出平仓'}
                             </span>
                             {trade.fill_status === 'order_partially_filled' && (
                               <div className="mt-1 text-[10px] text-amber-300">部分成交</div>
                             )}
                           </td>
                           <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums">
-                            <div>{trade.shares.toLocaleString('zh-CN')} 股</div>
-                            <div className="mt-0.5 text-[10px] text-muted">@ {price(trade.price)}</div>
+                            {trade.shares.toLocaleString('zh-CN')} 股
                           </td>
-                          <td className="px-2 py-3 text-right tabular-nums text-secondary">{money(trade.fees)}</td>
+                          <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums">
+                            <div>{price(entryPrice)}</div>
+                            <div className="mt-0.5 text-[10px] text-muted">
+                              费用 {money(trade.entry_fees ?? (trade.side === 'buy' ? trade.fees : null))}
+                            </div>
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums">
+                            <div>{price(exitPrice)}</div>
+                            <div className="mt-0.5 text-[10px] text-muted">
+                              费用 {money(trade.exit_fees ?? (trade.side === 'sell' ? trade.fees : null))}
+                            </div>
+                          </td>
                           <td className={cn('px-2 py-3 text-right font-medium tabular-nums', pnlClass(trade.realized_pnl))}>
-                            {trade.realized_pnl == null ? '--' : signedMoney(trade.realized_pnl)}
+                            <div>{trade.realized_pnl == null ? '--' : signedMoney(trade.realized_pnl)}</div>
+                            <div className="mt-0.5 text-[10px]">
+                              {trade.realized_pnl_pct == null ? '--' : percent(trade.realized_pnl_pct)}
+                            </div>
                           </td>
                           <td className="px-3 py-3">
-                            <div className="font-medium leading-5 text-foreground">{reason.summary}</div>
-                            {reason.evidence && (
-                              <div className="mt-1 text-[10px] leading-4 text-muted">{reason.evidence}</div>
+                            <div className="font-medium leading-5 text-foreground">{pnlReason.summary}</div>
+                            {pnlReason.evidence && (
+                              <div className="mt-1 text-[10px] leading-4 text-muted">{pnlReason.evidence}</div>
+                            )}
+                          </td>
+                          <td className="px-3 py-3">
+                            <div className="font-medium leading-5 text-foreground">买入：{entryReason.summary}</div>
+                            {entryReason.evidence && (
+                              <div className="mt-1 text-[10px] leading-4 text-muted">{entryReason.evidence}</div>
+                            )}
+                            {exitReason && (
+                              <div className="mt-2 border-t border-border/60 pt-2">
+                                <div className="font-medium leading-5 text-secondary">退出：{exitReason.summary}</div>
+                                {exitReason.evidence && (
+                                  <div className="mt-1 text-[10px] leading-4 text-muted">{exitReason.evidence}</div>
+                                )}
+                              </div>
                             )}
                           </td>
                         </tr>

@@ -138,7 +138,110 @@ def test_trade_history_joins_fill_to_recorded_decision_reason(tmp_path) -> None:
         "decision_action": "buy",
         "decision_reason": "vwap_and_opening_range_confirmed",
         "decision_features": features,
+        "entry_time": (decision_time + timedelta(minutes=1)).isoformat(),
+        "entry_price": 10.2,
+        "exit_price": None,
+        "entry_fees": 5.0,
+        "exit_fees": None,
+        "total_fees": 5.0,
+        "gross_pnl": None,
+        "price_change_pct": None,
+        "realized_pnl_pct": None,
+        "pnl_reason": None,
+        "entry_decision_reason": "vwap_and_opening_range_confirmed",
+        "entry_decision_features": features,
+        "exit_decision_reason": None,
     }]
+
+
+def test_trade_history_pairs_fifo_prices_and_explains_profit_and_loss(tmp_path) -> None:
+    store = PaperAgentStore(tmp_path)
+    policy = store.ensure_baseline_policy()
+    buy_session = store.start_session(
+        date(2026, 8, 18), policy.id, mode="paper", candidates=["A", "B"]
+    )
+    sell_session = store.start_session(
+        date(2026, 8, 19), policy.id, mode="paper", candidates=["A", "B"]
+    )
+    buy_time = datetime(2026, 8, 18, 9, 32, tzinfo=UTC)
+    sell_time = datetime(2026, 8, 19, 9, 32, tzinfo=UTC)
+    entry_features = {"candidate_score": 0.9, "vwap_bias": 0.01}
+
+    for symbol in ("A", "B"):
+        store.save_decision(
+            decision_id=f"decision_buy_{symbol}",
+            session_id=buy_session["id"],
+            symbol=symbol,
+            decision_time=buy_time,
+            action="buy",
+            features=entry_features,
+            reason="vwap_and_opening_range_confirmed",
+        )
+        store.save_execution_events(buy_session["id"], [ExecutionEvent(
+            id=f"evt_buy_{symbol}",
+            event_type="order_filled",
+            occurred_at=buy_time + timedelta(minutes=1),
+            order_id=f"order_decision_buy_{symbol}",
+            symbol=symbol,
+            side="buy",
+            shares=100,
+            price=10,
+            fees=5,
+            reason="next_minute_open",
+        )])
+
+    exits = (
+        ("A", 11.0, 89.0, "settled_position_take_profit"),
+        ("B", 9.0, -111.0, "settled_position_stop_loss"),
+    )
+    for symbol, exit_price, realized_pnl, reason in exits:
+        store.save_decision(
+            decision_id=f"decision_sell_{symbol}",
+            session_id=sell_session["id"],
+            symbol=symbol,
+            decision_time=sell_time,
+            action="sell",
+            features={"total_shares": 100},
+            reason=reason,
+        )
+        store.save_execution_events(sell_session["id"], [ExecutionEvent(
+            id=f"evt_sell_{symbol}",
+            event_type="order_filled",
+            occurred_at=sell_time + timedelta(minutes=1),
+            order_id=f"order_decision_sell_{symbol}",
+            symbol=symbol,
+            side="sell",
+            shares=100,
+            price=exit_price,
+            fees=6,
+            realized_pnl=realized_pnl,
+            reason="next_minute_open",
+        )])
+
+    history = store.list_trade_history(limit=10)
+    closed = {item["symbol"]: item for item in history if item["side"] == "sell"}
+
+    expected_a = {
+        "entry_price": 10.0,
+        "exit_price": 11.0,
+        "entry_fees": 5.0,
+        "exit_fees": 6.0,
+        "total_fees": 11.0,
+        "gross_pnl": 100.0,
+        "price_change_pct": 0.1,
+        "realized_pnl": 89.0,
+        "realized_pnl_pct": 0.088557,
+        "pnl_reason": "price_gain_after_costs",
+        "entry_decision_reason": "vwap_and_opening_range_confirmed",
+        "exit_decision_reason": "settled_position_take_profit",
+    }
+    assert {key: closed["A"][key] for key in expected_a} == expected_a
+    assert closed["B"]["entry_price"] == 10.0
+    assert closed["B"]["exit_price"] == 9.0
+    assert closed["B"]["gross_pnl"] == -100.0
+    assert closed["B"]["realized_pnl"] == -111.0
+    assert closed["B"]["pnl_reason"] == "price_loss_and_costs"
+    assert closed["B"]["exit_decision_reason"] == "settled_position_stop_loss"
 
 
 def test_execution_statistics_use_after_cost_closed_trades_and_refresh_cache(tmp_path) -> None:

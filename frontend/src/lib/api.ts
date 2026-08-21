@@ -1812,6 +1812,26 @@ export interface InvestmentExpertTrade {
   decision_action: 'buy' | 'sell' | null
   decision_reason: string | null
   decision_features: Record<string, number | string | boolean | null> | null
+  entry_time?: string | null
+  entry_price?: number | null
+  exit_price?: number | null
+  entry_fees?: number | null
+  exit_fees?: number | null
+  total_fees?: number | null
+  gross_pnl?: number | null
+  price_change_pct?: number | null
+  realized_pnl_pct?: number | null
+  pnl_reason?:
+    | 'price_gain_after_costs'
+    | 'price_loss_and_costs'
+    | 'costs_exceeded_price_gain'
+    | 'costs_caused_loss'
+    | 'breakeven_after_costs'
+    | 'missing_entry_match'
+    | null
+  entry_decision_reason?: string | null
+  entry_decision_features?: Record<string, number | string | boolean | null> | null
+  exit_decision_reason?: string | null
 }
 
 export interface InvestmentExpertExperiment {
