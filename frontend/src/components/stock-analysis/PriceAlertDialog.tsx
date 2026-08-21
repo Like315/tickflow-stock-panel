@@ -136,6 +136,11 @@ export function PriceAlertDialog({ symbol, name, onClose }: Props) {
       strategy_id: null,
       direction: 'entry',
       conditions: [{ field: 'close', op: direction === 'up' ? '>=' : '<=', value: targetValue }],
+      context_filters: {
+        overnight_us: { mode: 'off', threshold: -0.35 },
+        news: { mode: 'off', threshold: -0.35 },
+        unavailable_action: 'degrade',
+      },
       logic: 'and',
       cooldown_seconds: cooldown,
       severity: 'warn',

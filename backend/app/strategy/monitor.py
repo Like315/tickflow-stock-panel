@@ -330,6 +330,8 @@ class MonitorRuleEngine:
         self._name_map: dict[str, str] = {}
         # 策略选股池状态: (rule_id, strategy_id, asset_type) → 上期选股符号集合
         self._strategy_pools: dict[tuple[str, str, str], set[str]] = {}
+        # 应用市场增强条件后的可入场池, 只用于 pool_entry, 不用于 pool_exit。
+        self._strategy_eligible_pools: dict[tuple[str, str, str], set[str]] = {}
         # 策略信号状态: (rule_id, strategy_id, asset_type, event_type) → (K线日期, 命中集合)
         self._strategy_signal_state: dict[tuple[str, str, str, str], tuple[str, set[str]]] = {}
         # 同一根 K 线的信号即使盘中回落后再次命中也只通知一次。
@@ -355,6 +357,9 @@ class MonitorRuleEngine:
         self._latest_strategy_result_ids: set[str] = set()
         self._sector_monitor_service = None
         self._sector_condition_state: dict[tuple[str, str], bool] = {}
+        self._watchlist_symbols: set[str] = set()
+        self._market_context_service = None
+        self._strategy_event_context: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     def set_strategy_engine(self, engine) -> None:
         """注入 StrategyEngine, type=strategy 规则据此跑选股。"""
@@ -367,9 +372,39 @@ class MonitorRuleEngine:
     def set_sector_monitor_service(self, service) -> None:
         self._sector_monitor_service = service
 
+    def set_watchlist_symbols(self, symbols: list[str] | set[str]) -> None:
+        """原子替换“当前自选股”作用域使用的股票集合。"""
+        self._watchlist_symbols = {str(symbol) for symbol in symbols if symbol}
+
+    def set_market_context_service(self, service) -> None:
+        """注入只读市场上下文快照服务。"""
+        self._market_context_service = service
+        self._sync_market_context_service()
+
+    @staticmethod
+    def _uses_market_context(rule: dict) -> bool:
+        if rule.get("type") != "strategy" or not rule.get("enabled", True):
+            return False
+        filters = rule.get("context_filters") or {}
+        return any(
+            (filters.get(source) or {}).get("mode", "off") != "off"
+            for source in ("overnight_us", "news")
+        )
+
+    def _sync_market_context_service(self) -> None:
+        service = self._market_context_service
+        if service is None:
+            return
+        set_enabled = getattr(service, "set_enabled", None)
+        if set_enabled is not None:
+            set_enabled(any(
+                self._uses_market_context(rule) for rule in list(self._rules.values())
+            ))
+
     def invalidate_strategy_state(self) -> None:
         """策略注册表变更后清除选股池、结果和矩阵快照。"""
         self._strategy_pools.clear()
+        self._strategy_eligible_pools.clear()
         self._strategy_signal_state.clear()
         self._strategy_signal_seen.clear()
         self._latest_strategy_results = {}
@@ -411,6 +446,9 @@ class MonitorRuleEngine:
     # ── 规则管理 ───────────────────────────────────────
     @staticmethod
     def _rule_state_signature(rule: dict) -> tuple[Any, ...]:
+        context_filters = rule.get("context_filters") or {}
+        overnight = context_filters.get("overnight_us") or {}
+        news = context_filters.get("news") or {}
         return (
             rule.get("type"),
             rule.get("strategy_id"),
@@ -424,6 +462,11 @@ class MonitorRuleEngine:
             rule.get("direction"),
             rule.get("threshold_pct"),
             rule.get("window_minutes"),
+            overnight.get("mode", "off"),
+            overnight.get("threshold", -0.35),
+            news.get("mode", "off"),
+            news.get("threshold", -0.35),
+            context_filters.get("unavailable_action", "degrade"),
         )
 
     def set_rules(self, rules: list[dict]) -> None:
@@ -466,6 +509,12 @@ class MonitorRuleEngine:
             for key, value in list(self._sector_condition_state.items())
             if key[0] in active_ids
         }
+        self._strategy_eligible_pools = {
+            key: value
+            for key, value in list(self._strategy_eligible_pools.items())
+            if key[0] in active_ids
+        }
+        self._sync_market_context_service()
         logger.info("MonitorRuleEngine: 装载 %d 条规则", len(self._rules))
 
     def add_rule(self, rule: dict) -> None:
@@ -473,6 +522,7 @@ class MonitorRuleEngine:
             self._rules[rule["id"]] = rule
         else:
             self._rules.pop(rule["id"], None)
+        self._sync_market_context_service()
 
     def remove_rule(self, rule_id: str) -> None:
         self._rules.pop(rule_id, None)
@@ -489,14 +539,21 @@ class MonitorRuleEngine:
         self._sector_condition_state = {
             k: v for k, v in self._sector_condition_state.items() if k[0] != rule_id
         }
+        self._strategy_eligible_pools = {
+            k: v for k, v in list(self._strategy_eligible_pools.items()) if k[0] != rule_id
+        }
+        self._sync_market_context_service()
 
     def clear(self) -> None:
         self._rules.clear()
         self._last_fire.clear()
         self._strategy_pools.clear()
+        self._strategy_eligible_pools.clear()
         self._strategy_signal_state.clear()
         self._strategy_signal_seen.clear()
         self._sector_condition_state.clear()
+        self._strategy_event_context.clear()
+        self._sync_market_context_service()
 
     @property
     def rules(self) -> dict[str, dict]:
@@ -573,6 +630,7 @@ class MonitorRuleEngine:
 
         now = time.time()
         events: list[dict] = []
+        self._strategy_event_context = {}
         # 原子化: reset 轮 (股票轮) 时先把本轮结果写到临时容器, 算完后一次性替换
         # _latest_strategy_results。这样 /cached 并发读取永远拿到完整结果,
         # 不会在「清空 → 逐个回填」窗口里读到空中间态 (曾导致策略页闪烁)。
@@ -827,7 +885,7 @@ class MonitorRuleEngine:
     def _evaluate_rule(self, df: pl.DataFrame, rule: dict, now: float) -> list[dict]:
         """评估单条规则,返回触发的 events。"""
         # 1. 按 scope 过滤作用域
-        scoped = self._apply_scope(df, rule)
+        scoped = self._apply_scope(df, rule, self._watchlist_symbols)
         if scoped.is_empty():
             return []
 
@@ -867,6 +925,10 @@ class MonitorRuleEngine:
             self._last_fire[key] = now
 
             # 批量事件: name 存放预构建的消息文本
+            context_detail = self._strategy_event_context.pop(
+                (rule["id"], "_batch" if is_batch else sym, ev_type),
+                None,
+            )
             if is_batch:
                 resolved_name = ""
                 message = name  # name 字段即批量消息
@@ -877,6 +939,8 @@ class MonitorRuleEngine:
                     pct=pct, price=price,
                     conditions=list(rule.get("conditions", [])) if rule.get("type") != "strategy" else None,
                 )
+            if context_detail and context_detail.get("summary") and not rule.get("message"):
+                message = f"{message} · {context_detail['summary']}"
 
             ev = {
                 "ts": int(now * 1000),
@@ -896,6 +960,7 @@ class MonitorRuleEngine:
                 # 「命中了什么条件」。strategy 类型靠策略选股池 diff, 不写条件。
                 "conditions": list(rule.get("conditions", [])) if rtype != "strategy" else [],
                 "logic": rule.get("logic", "and") if rtype != "strategy" else "and",
+                "market_context": context_detail,
             }
             events.append(ev)
             if self._alert_handler:
@@ -907,7 +972,11 @@ class MonitorRuleEngine:
         return events
 
     @staticmethod
-    def _apply_scope(df: pl.DataFrame, rule: dict) -> pl.DataFrame:
+    def _apply_scope(
+        df: pl.DataFrame,
+        rule: dict,
+        watchlist_symbols: set[str] | None = None,
+    ) -> pl.DataFrame:
         """按 scope 过滤 DataFrame。"""
         scope = rule.get("scope", "symbols")
         if scope == "all":
@@ -917,6 +986,10 @@ class MonitorRuleEngine:
             if not syms:
                 return df.head(0)
             return df.filter(pl.col("symbol").is_in(syms))
+        if scope == "watchlist":
+            if not watchlist_symbols:
+                return df.head(0)
+            return df.filter(pl.col("symbol").is_in(sorted(watchlist_symbols)))
         if scope == "sector":
             # sector 过滤需 df 含板块列 (后续接入 ext_data JOIN)。在 JOIN 落地前
             # fail-closed 返回空 —— 绝不退化为「全市场」误触发 (旧行为 return df 会让
@@ -1056,6 +1129,21 @@ class MonitorRuleEngine:
         current_pool: set[str] = {r["symbol"] for r in result.rows}
         prev_pool = self._strategy_pools.get(pool_key)
         self._strategy_pools[pool_key] = current_pool
+        entry_hit_symbols = {
+            str(hit["symbol"]) for hit in result.entry_signal_hits if hit.get("symbol")
+        }
+        allowed_entries, context_details = self._entry_context_decisions(
+            rule,
+            current_pool | entry_hit_symbols,
+        )
+        prev_eligible_pool = self._strategy_eligible_pools.get(pool_key)
+        retained_eligible = (prev_eligible_pool or set()) & current_pool
+        eligible_pool = retained_eligible | (current_pool & allowed_entries)
+        self._strategy_eligible_pools[pool_key] = eligible_pool
+        allowed_entry_hits = [
+            hit for hit in result.entry_signal_hits
+            if str(hit.get("symbol") or "") in allowed_entries
+        ]
 
         notify_events = set(rule.get("notify_events") or ("pool_entry", "pool_exit"))
         sname = s.meta.get("name", "") or s.meta.get("id", sid)
@@ -1068,12 +1156,16 @@ class MonitorRuleEngine:
 
         changes: dict[str, set[str]] = {
             "buy_signal": self._new_strategy_signals(
-                pool_key, "buy_signal", result.as_of, result.entry_signal_hits,
+                pool_key, "buy_signal", result.as_of, allowed_entry_hits,
             ),
             "sell_signal": self._new_strategy_signals(
                 pool_key, "sell_signal", result.as_of, result.exit_signal_hits,
             ),
-            "pool_entry": set() if prev_pool is None else current_pool - prev_pool,
+            "pool_entry": (
+                set()
+                if prev_eligible_pool is None
+                else eligible_pool - prev_eligible_pool
+            ),
             "pool_exit": set() if prev_pool is None else prev_pool - current_pool,
         }
 
@@ -1113,6 +1205,15 @@ class MonitorRuleEngine:
                     for signal in signal_map.get(event_type, {}).get(symbol, [])
                 })
                 results.append((event_type, "_batch", message, None, None, hit_signals))
+                summaries = list(dict.fromkeys(
+                    str(context_details.get(symbol, {}).get("summary") or "")
+                    for symbol in symbol_list
+                    if context_details.get(symbol, {}).get("summary")
+                ))
+                if summaries:
+                    self._strategy_event_context[(rule["id"], "_batch", event_type)] = {
+                        "summary": summaries[0] if len(summaries) == 1 else "市场增强条件已通过",
+                    }
                 continue
             for symbol in symbol_list:
                 row = row_map.get(symbol, {})
@@ -1125,8 +1226,127 @@ class MonitorRuleEngine:
                     row.get("change_pct"),
                     signal_map.get(event_type, {}).get(symbol, []),
                 ))
+                detail = context_details.get(symbol)
+                if detail:
+                    self._strategy_event_context[(rule["id"], symbol, event_type)] = detail
 
         return results
+
+    def _entry_context_decisions(
+        self,
+        rule: dict,
+        symbols: set[str],
+    ) -> tuple[set[str], dict[str, dict[str, Any]]]:
+        """用内存市场快照过滤入场事件, 卖出与移出事件不经过这里。"""
+        if not symbols or not self._uses_market_context(rule):
+            return set(symbols), {}
+        filters = rule.get("context_filters") or {}
+        unavailable_action = filters.get("unavailable_action", "degrade")
+        service = self._market_context_service
+        if service is None:
+            snapshot = {
+                "overnight_us": {"available": False, "status": "not_configured"},
+                "news": {"available": False, "status": "not_configured"},
+                "candidate_news": {},
+            }
+        else:
+            try:
+                snapshot = service.snapshot_for(symbols)
+            except Exception:
+                logger.exception("monitor market context snapshot failed")
+                snapshot = {
+                    "overnight_us": {"available": False, "status": "unavailable"},
+                    "news": {"available": False, "status": "unavailable"},
+                    "candidate_news": {},
+                }
+
+        overnight_cfg = filters.get("overnight_us") or {}
+        news_cfg = filters.get("news") or {}
+        overnight = snapshot.get("overnight_us") or {}
+        news = snapshot.get("news") or {}
+        candidate_news = snapshot.get("candidate_news") or {}
+        allowed: set[str] = set()
+        details: dict[str, dict[str, Any]] = {}
+
+        for symbol in symbols:
+            permit = True
+            notes: list[str] = []
+            overnight_mode = overnight_cfg.get("mode", "off")
+            if overnight_mode != "off":
+                if not overnight.get("available"):
+                    permit = permit and unavailable_action != "pause"
+                    notes.append(
+                        "隔夜美股不可用 - 暂停入场"
+                        if unavailable_action == "pause"
+                        else "隔夜美股不可用 - 已降级"
+                    )
+                else:
+                    tilt = float(overnight.get("tilt") or 0.0)
+                    threshold = float(overnight_cfg.get("threshold", -0.35))
+                    if overnight_mode in {"risk_gate", "require_positive"} and tilt < threshold:
+                        permit = False
+                    notes.append(
+                        "隔夜美股偏强" if tilt >= 0.35
+                        else "隔夜美股偏弱" if tilt <= -0.35
+                        else "隔夜美股中性"
+                    )
+
+            news_mode = news_cfg.get("mode", "off")
+            news_status = str(news.get("status") or "")
+            news_usable = bool(news.get("available")) or news_status == "no_data"
+            candidate = candidate_news.get(symbol) or {}
+            news_score = float(candidate.get("score") or 0.0)
+            news_matches = int(candidate.get("matched_count") or 0)
+            if news_mode != "off":
+                if not news_usable:
+                    permit = permit and unavailable_action != "pause"
+                    notes.append(
+                        "新闻数据不可用 - 暂停入场"
+                        if unavailable_action == "pause"
+                        else "新闻数据不可用 - 已降级"
+                    )
+                else:
+                    threshold = float(news_cfg.get("threshold", -0.35))
+                    blocks_negative = (
+                        news_mode == "negative_veto"
+                        and news_matches
+                        and news_score <= threshold
+                    )
+                    lacks_positive = news_mode == "require_positive" and (
+                        not news_matches or news_score < threshold
+                    )
+                    if blocks_negative or lacks_positive:
+                        permit = False
+                    if news_matches == 0:
+                        notes.append("无相关负面新闻" if news_mode == "negative_veto" else "无相关新闻")
+                    elif news_score >= 0.35:
+                        notes.append("个股新闻偏正面")
+                    elif news_score <= -0.35:
+                        notes.append("个股新闻偏负面")
+                    else:
+                        notes.append("个股新闻中性")
+
+            if permit:
+                allowed.add(symbol)
+            details[symbol] = {
+                "allowed": permit,
+                "summary": "、".join(notes),
+                "overnight_us": {
+                    "available": bool(overnight.get("available")),
+                    "status": overnight.get("status"),
+                    "score": overnight.get("score"),
+                    "tilt": overnight.get("tilt"),
+                    "market_date": overnight.get("market_date"),
+                },
+                "news": {
+                    "available": news_usable,
+                    "status": news_status,
+                    "score": news_score,
+                    "matched_count": news_matches,
+                    "headlines": list(candidate.get("headlines") or []),
+                },
+            }
+        return allowed, details
 
     def _new_strategy_signals(
         self,

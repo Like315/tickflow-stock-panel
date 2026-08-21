@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # ── 常量 ────────────────────────────────────────────────
 ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 RULE_TYPES = {"strategy", "signal", "price", "market", "ladder", "sector"}
-SCOPES = {"symbols", "all", "sector"}
+SCOPES = {"symbols", "watchlist", "all", "sector"}
 LOGICS = {"and", "or"}
 DIRECTIONS = {"entry", "exit", "both"}
 STRATEGY_NOTIFY_EVENTS = {"buy_signal", "sell_signal", "pool_entry", "pool_exit"}
@@ -41,6 +41,9 @@ LADDER_DIRECTIONS = {"up", "down"}
 SECTOR_KINDS = {"index", "concept", "industry"}
 SECTOR_TRIGGERS = {"change_pct", "momentum"}
 SECTOR_WINDOWS = {1, 3, 5, 10, 15}
+OVERNIGHT_US_MODES = {"off", "risk_gate", "require_positive", "display_only"}
+NEWS_CONTEXT_MODES = {"off", "negative_veto", "require_positive", "display_only"}
+CONTEXT_UNAVAILABLE_ACTIONS = {"degrade", "pause"}
 
 # 布尔信号列前缀 (op=truth 时 field 取这些)
 _SIGNAL_PREFIXES = ("signal_", "csg_")
@@ -132,6 +135,32 @@ def validate(rule: dict) -> None:
         invalid_events = set(notify_events) - STRATEGY_NOTIFY_EVENTS
         if invalid_events:
             raise ValueError(f"notify_events 包含非法事件: {sorted(invalid_events)}")
+        context_filters = rule.get("context_filters")
+        if not isinstance(context_filters, dict):
+            raise ValueError("context_filters 格式错误")
+        overnight = context_filters.get("overnight_us")
+        news = context_filters.get("news")
+        if not isinstance(overnight, dict) or not isinstance(news, dict):
+            raise ValueError("市场增强条件格式错误")
+        overnight_mode = overnight.get("mode", "off")
+        news_mode = news.get("mode", "off")
+        if overnight_mode not in OVERNIGHT_US_MODES:
+            raise ValueError(f"overnight_us.mode 必须是 {OVERNIGHT_US_MODES} 之一")
+        if news_mode not in NEWS_CONTEXT_MODES:
+            raise ValueError(f"news.mode 必须是 {NEWS_CONTEXT_MODES} 之一")
+        if context_filters.get("unavailable_action", "degrade") not in CONTEXT_UNAVAILABLE_ACTIONS:
+            raise ValueError(
+                f"unavailable_action 必须是 {CONTEXT_UNAVAILABLE_ACTIONS} 之一"
+            )
+        for label, item in (("overnight_us", overnight), ("news", news)):
+            threshold = item.get("threshold")
+            if not isinstance(threshold, (int, float)) or not -1 <= threshold <= 1:
+                raise ValueError(f"{label}.threshold 必须在 -1 到 1 之间")
+        if (
+            rule.get("asset_type", "stock") != "stock"
+            and (overnight_mode != "off" or news_mode != "off")
+        ):
+            raise ValueError("市场增强条件首版仅支持股票策略监控")
     elif rule.get("type") == "ladder":
         # 连板梯队封单监控: 需 metric + threshold + direction(up/down), 不用 conditions
         if rule.get("metric", "sealed_vol") not in LADDER_METRICS:
@@ -239,6 +268,26 @@ def normalize(rule: dict) -> dict:
     else:
         r.pop("notify_events", None)
     r.setdefault("conditions", [])
+    context_filters = r.get("context_filters")
+    if not isinstance(context_filters, dict):
+        context_filters = {}
+    overnight = context_filters.get("overnight_us")
+    if not isinstance(overnight, dict):
+        overnight = {}
+    news = context_filters.get("news")
+    if not isinstance(news, dict):
+        news = {}
+    r["context_filters"] = {
+        "overnight_us": {
+            "mode": overnight.get("mode", "off"),
+            "threshold": overnight.get("threshold", -0.35),
+        },
+        "news": {
+            "mode": news.get("mode", "off"),
+            "threshold": news.get("threshold", -0.35),
+        },
+        "unavailable_action": context_filters.get("unavailable_action", "degrade"),
+    }
     # ladder 专属默认字段
     r.setdefault("metric", "sealed_vol")
     r.setdefault("threshold", 0)

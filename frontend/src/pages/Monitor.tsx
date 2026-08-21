@@ -794,6 +794,9 @@ function RulesList({ rulesQuery, onEdit }: {
                   {r.asset_type === 'index' && (
                     <span className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-sky-500/10 text-sky-400">指数</span>
                   )}
+                  {r.scope === 'watchlist' && (
+                    <span className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-violet-500/10 text-violet-400">当前自选</span>
+                  )}
                   {/* 个股类型: 直接显示可点击的代码+名称; 其他类型显示规则名 */}
                   {r.scope === 'symbols' && r.symbols.length > 0 ? (
                     <button
@@ -882,6 +885,16 @@ function RulesList({ rulesQuery, onEdit }: {
                       </span>
                     ) : null
                   })}
+                  {r.context_filters?.overnight_us.mode !== 'off' && (
+                    <span className="rounded bg-blue-500/8 px-1.5 py-0.5 text-[9px] text-blue-500">
+                      隔夜美股
+                    </span>
+                  )}
+                  {r.context_filters?.news.mode !== 'off' && (
+                    <span className="rounded bg-emerald-500/8 px-1.5 py-0.5 text-[9px] text-emerald-500">
+                      新闻过滤
+                    </span>
+                  )}
                 </div>
               ) : r.conditions.length > 0 && (
                 <div className="mt-0.5 flex items-center gap-1 pl-0.5">

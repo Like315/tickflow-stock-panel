@@ -671,6 +671,15 @@ export interface MonitorCondition {
 
 export type StrategyNotifyEvent = 'buy_signal' | 'sell_signal' | 'pool_entry' | 'pool_exit'
 
+export type OvernightUsContextMode = 'off' | 'risk_gate' | 'require_positive' | 'display_only'
+export type NewsContextMode = 'off' | 'negative_veto' | 'require_positive' | 'display_only'
+
+export interface MonitorContextFilters {
+  overnight_us: { mode: OvernightUsContextMode; threshold: number }
+  news: { mode: NewsContextMode; threshold: number }
+  unavailable_action: 'degrade' | 'pause'
+}
+
 export type SectorKind = 'index' | 'concept' | 'industry'
 
 export interface SectorMonitorTarget {
@@ -693,7 +702,7 @@ export interface MonitorRule {
   enabled: boolean
   type: 'strategy' | 'signal' | 'price' | 'market' | 'ladder' | 'sector'
   asset_type?: 'stock' | 'etf' | 'index'
-  scope: 'symbols' | 'all' | 'sector'
+  scope: 'symbols' | 'watchlist' | 'all' | 'sector'
   symbols: string[]
   sector?: string | null
   sector_kind?: SectorKind | null
@@ -705,6 +714,7 @@ export interface MonitorRule {
   direction: 'entry' | 'exit' | 'both' | 'up' | 'down'
   notify_events?: StrategyNotifyEvent[]
   conditions: MonitorCondition[]
+  context_filters: MonitorContextFilters
   logic: 'and' | 'or'
   cooldown_seconds: number
   severity: 'info' | 'warn' | 'critical'
@@ -754,6 +764,12 @@ export interface AlertEvent {
   strategy_id?: string
   conditions?: MonitorCondition[]
   logic?: 'and' | 'or'
+  market_context?: {
+    allowed?: boolean
+    summary?: string
+    overnight_us?: Record<string, unknown>
+    news?: Record<string, unknown>
+  } | null
   sector_kind?: SectorKind
   sector_key?: string
   sector_name?: string
