@@ -30,6 +30,35 @@ from app.tickflow.rate_limits import resolve_limit
 logger = logging.getLogger(__name__)
 
 
+_OVERNIGHT_US_MODULE_RULES: tuple[
+    tuple[tuple[str, ...], tuple[str, ...], float], ...
+] = (
+    (("半导体", "集成电路", "芯片"), ("XSD.US", "XLK.US"), 1.00),
+    (("软件", "IT服务", "计算机应用", "互联网服务"), ("XSW.US", "XLK.US"), 1.00),
+    (("生物科技", "生物制品"), ("XBI.US", "XLV.US"), 1.00),
+    (("制药", "医药商业", "中药"), ("XPH.US", "XLV.US"), 1.00),
+    (("医疗器械", "医疗设备"), ("XHE.US", "XLV.US"), 1.00),
+    (("银行",), ("KBE.US", "KRE.US", "XLF.US"), 1.00),
+    (("零售", "商贸"), ("XRT.US", "XLY.US"), 1.00),
+    (("住宅开发", "房地产开发", "家居用品"), ("XHB.US", "XLRE.US"), 1.00),
+    (("油气", "石油", "天然气"), ("XOP.US", "XLE.US"), 1.00),
+    (("金属", "钢铁", "矿业", "矿物制品"), ("XME.US", "XLB.US"), 1.00),
+    (("航空航天", "国防军工", "军工装备"), ("XAR.US", "XLI.US"), 1.00),
+    (("通信设备", "电信运营"), ("XTL.US", "XLC.US"), 1.00),
+    (("电子", "计算机", "科技"), ("XLK.US",), 0.75),
+    (("传媒", "通信服务"), ("XLC.US",), 0.75),
+    (("汽车", "家用电器", "可选消费", "消费者服务"), ("XLY.US",), 0.75),
+    (("食品饮料", "农林牧渔", "日常消费", "纺织服饰"), ("XLP.US",), 0.75),
+    (("证券", "保险", "非银金融", "金融"), ("XLF.US",), 0.75),
+    (("医疗保健", "医药"), ("XLV.US",), 0.75),
+    (("机械", "工业", "建筑", "交通运输", "电力设备"), ("XLI.US",), 0.75),
+    (("能源", "煤炭"), ("XLE.US",), 0.75),
+    (("基础材料", "原材料", "化工", "建筑材料"), ("XLB.US",), 0.75),
+    (("房地产",), ("XLRE.US",), 0.75),
+    (("公用事业", "电力", "燃气", "水务"), ("XLU.US",), 0.75),
+)
+
+
 class InvestmentExpertService:
     def __init__(
         self,
@@ -242,6 +271,7 @@ class InvestmentExpertService:
         executor = self._restore_executor()
         held_symbols = {lot.symbol for lot in executor.lots if lot.remaining_shares > 0}
         context.update(self._load_symbol_context(held_symbols - set(candidates), now.date()))
+        self._attach_overnight_module_context(context, overnight_context)
         active_model = self.store.get_active_model()
         self._runtime = InvestmentExpertRuntime(
             session_id=session["id"],
@@ -317,25 +347,50 @@ class InvestmentExpertService:
                 benchmark_returns[symbol] = change_pct
                 weighted_sum += weight * change_pct
                 available_weight += weight
-            if available_weight < 0.60:
+            proxy_symbols = [
+                str(row.get("symbol") or "").upper()
+                for key in ("sectors", "themes")
+                for row in (overview.get(key) or [])
+                if row.get("symbol")
+            ]
+            proxy_volatilities: dict[str, float] = {}
+            volatility_loader = getattr(
+                self.us_market_service,
+                "get_proxy_volatilities",
+                None,
+            )
+            if callable(volatility_loader) and proxy_symbols:
+                try:
+                    proxy_volatilities = volatility_loader(proxy_symbols, window=20)
+                except Exception:
+                    logger.exception("investment expert US module volatility unavailable")
+            modules = self._overnight_us_modules(overview, proxy_volatilities)
+            if not modules:
                 return self._unavailable_overnight_us_context(
                     "incomplete",
                     market_date=market_date,
                 )
-            index_return = weighted_sum / available_weight
+            market_background_available = available_weight >= 0.60
+            index_return = (
+                weighted_sum / available_weight
+                if market_background_available
+                else 0.0
+            )
             breadth = overview.get("breadth") or {}
             up_ratio = float(breadth.get("up_ratio") or 0.0)
             down_ratio = float(breadth.get("down_ratio") or 0.0)
             breadth_return = max(-1.0, min(1.0, up_ratio - down_ratio)) * 0.01
-            score = 0.8 * index_return + 0.2 * breadth_return
+            market_score = 0.8 * index_return + 0.2 * breadth_return
             return {
                 "available": True,
                 "status": str(overview.get("status") or "unknown"),
                 "market_date": market_date.isoformat(),
                 "as_of": overview.get("as_of"),
-                "score": round(score, 8),
-                "tilt": round(max(-1.0, min(1.0, score / 0.02)), 8),
+                "score": round(market_score, 8),
+                "tilt": round(max(-1.0, min(1.0, market_score / 0.02)), 8),
+                "market_background_available": market_background_available,
                 "benchmarks": benchmark_returns,
+                "modules": modules,
                 "breadth": {
                     "up_ratio": up_ratio,
                     "down_ratio": down_ratio,
@@ -344,6 +399,39 @@ class InvestmentExpertService:
         except (AttributeError, TypeError, ValueError, RuntimeError):
             logger.exception("investment expert US overnight context unavailable")
             return self._unavailable_overnight_us_context("unavailable")
+
+    @staticmethod
+    def _overnight_us_modules(
+        overview: dict[str, Any],
+        volatilities: dict[str, float],
+    ) -> dict[str, dict[str, Any]]:
+        modules: dict[str, dict[str, Any]] = {}
+        for kind, key in (("sector", "sectors"), ("theme", "themes")):
+            for row in overview.get(key) or []:
+                symbol = str(row.get("symbol") or "").upper()
+                value = row.get("change_pct")
+                if not symbol or value is None:
+                    continue
+                change_pct = float(value)
+                if not math.isfinite(change_pct):
+                    continue
+                raw_volatility = float(volatilities.get(symbol) or 0.0)
+                has_observed_volatility = (
+                    math.isfinite(raw_volatility) and raw_volatility > 0
+                )
+                volatility = max(raw_volatility, 0.008) if has_observed_volatility else 0.02
+                data_confidence = 1.0 if has_observed_volatility else 0.75
+                normalized_signal = math.tanh(change_pct / volatility)
+                modules[symbol] = {
+                    "symbol": symbol,
+                    "name": str(row.get("name") or symbol),
+                    "kind": kind,
+                    "change_pct": round(change_pct, 8),
+                    "volatility_20d": round(volatility, 8),
+                    "normalized_signal": round(normalized_signal, 8),
+                    "data_confidence": data_confidence,
+                }
+        return modules
 
     @staticmethod
     def _unavailable_overnight_us_context(
@@ -357,7 +445,9 @@ class InvestmentExpertService:
             "market_date": market_date.isoformat() if market_date else None,
             "score": 0.0,
             "tilt": 0.0,
+            "market_background_available": False,
             "benchmarks": {},
+            "modules": {},
         }
 
     def _load_news_sentiment_context(self, as_of: datetime) -> dict[str, Any]:
@@ -469,6 +559,145 @@ class InvestmentExpertService:
         }
         return executor
 
+    @staticmethod
+    def _canonical_cn_symbol(symbol: str) -> str:
+        value = str(symbol).strip().upper()
+        parts = value.split(".")
+        if len(parts) == 2 and parts[0] in {"SH", "SZ", "BJ"}:
+            return f"{parts[1]}.{parts[0]}"
+        return value
+
+    def _candidate_classification_texts(
+        self,
+        instrument_map: dict[str, dict[str, Any]],
+    ) -> dict[str, tuple[str, bool]]:
+        industry_fields = (
+            "industry",
+            "industry_name",
+            "sector",
+            "所属行业",
+            "所属同花顺行业",
+            "concept",
+            "所属概念",
+        )
+        industries: dict[str, list[str]] = {}
+        names: dict[str, str] = {}
+        for symbol, row in instrument_map.items():
+            key = self._canonical_cn_symbol(symbol)
+            names[key] = str(row.get("name") or "").strip()
+            industries[key] = [
+                str(row.get(field) or "").strip()
+                for field in industry_fields
+                if str(row.get(field) or "").strip()
+            ]
+
+        industry_path = self.data_dir / "ext_data" / "ext_hy_ths" / "part.parquet"
+        if industry_path.exists():
+            try:
+                industry_frame = pl.read_parquet(industry_path)
+                if {"symbol", "所属同花顺行业"}.issubset(industry_frame.columns):
+                    for row in industry_frame.select(
+                        "symbol", "所属同花顺行业"
+                    ).iter_rows(named=True):
+                        key = self._canonical_cn_symbol(str(row["symbol"]))
+                        industry = str(row.get("所属同花顺行业") or "").strip()
+                        if industry:
+                            industries.setdefault(key, []).append(industry)
+            except (OSError, TypeError, ValueError):
+                logger.exception("investment expert A-share industry snapshot unavailable")
+
+        result: dict[str, tuple[str, bool]] = {}
+        for key in set(industries) | set(names):
+            labels = industries.get(key) or []
+            has_industry = bool(labels)
+            text = " ".join(labels or [names.get(key, "")]).strip()
+            result[key] = (text, has_industry)
+        return result
+
+    def _score_candidate_overnight_modules(
+        self,
+        instrument_map: dict[str, dict[str, Any]],
+        overnight_context: dict[str, Any] | None,
+    ) -> dict[str, dict[str, Any]]:
+        modules = (overnight_context or {}).get("modules") or {}
+        if not modules:
+            return {}
+        classifications = self._candidate_classification_texts(instrument_map)
+        result: dict[str, dict[str, Any]] = {}
+        for symbol in instrument_map:
+            text, has_industry = classifications.get(
+                self._canonical_cn_symbol(symbol),
+                ("", False),
+            )
+            if not text:
+                continue
+            matched = None
+            match_confidence = 0.0
+            for keywords, proxy_symbols, base_confidence in _OVERNIGHT_US_MODULE_RULES:
+                if not any(keyword in text for keyword in keywords):
+                    continue
+                matched = next(
+                    (modules[proxy] for proxy in proxy_symbols if proxy in modules),
+                    None,
+                )
+                if matched is not None:
+                    match_confidence = base_confidence * (1.0 if has_industry else 0.60)
+                    break
+            if matched is None:
+                continue
+            normalized_signal = float(matched.get("normalized_signal") or 0.0)
+            data_confidence = float(matched.get("data_confidence") or 0.0)
+            factor = max(
+                -1.0,
+                min(1.0, normalized_signal * data_confidence * match_confidence),
+            )
+            result[symbol] = {
+                **matched,
+                "factor": round(factor, 8),
+                "match_confidence": round(match_confidence, 4),
+            }
+        return result
+
+    def _attach_overnight_module_context(
+        self,
+        context: dict[str, dict[str, Any]],
+        overnight_context: dict[str, Any] | None,
+    ) -> None:
+        instruments = self.repo.get_instruments()
+        instrument_map = {
+            str(row["symbol"]): row
+            for row in instruments.iter_rows(named=True)
+        } if not instruments.is_empty() and "symbol" in instruments.columns else {}
+        factors = self._score_candidate_overnight_modules(
+            instrument_map,
+            overnight_context,
+        )
+        factors_by_symbol = {
+            self._canonical_cn_symbol(symbol): factor
+            for symbol, factor in factors.items()
+        }
+        market_score = float((overnight_context or {}).get("score") or 0.0)
+        for symbol, row in context.items():
+            factor = factors_by_symbol.get(self._canonical_cn_symbol(symbol))
+            row["overnight_us_market_score"] = market_score
+            row["overnight_us_available"] = factor is not None
+            row["overnight_us_score"] = (
+                float(factor["change_pct"]) if factor is not None else None
+            )
+            row["overnight_us_tilt"] = (
+                float(factor["normalized_signal"]) if factor is not None else 0.0
+            )
+            row["overnight_us_factor"] = (
+                float(factor["factor"]) if factor is not None else 0.0
+            )
+            row["overnight_us_module"] = factor.get("name") if factor else None
+            row["overnight_us_module_symbol"] = (
+                factor.get("symbol") if factor else None
+            )
+            row["overnight_us_match_confidence"] = (
+                float(factor["match_confidence"]) if factor is not None else 0.0
+            )
+
     def _select_candidates(
         self,
         trade_date: date,
@@ -571,26 +800,61 @@ class InvestmentExpertService:
             )
         else:
             latest = latest.with_columns(pl.lit(0.0).alias("_strategy_score"))
-        overnight_available = bool(
-            overnight_context is not None
-            and overnight_context.get("available", True)
+        module_factors = self._score_candidate_overnight_modules(
+            instrument_map,
+            overnight_context,
         )
-        overnight_score = float((overnight_context or {}).get("score") or 0.0)
-        overnight_tilt = float((overnight_context or {}).get("tilt") or 0.0)
-        applied_weight = min(max(overnight_weight, 0.0), 0.5) * abs(overnight_tilt)
-        preference = (
-            pl.col("_momentum_score")
-            if overnight_tilt >= 0
-            else pl.col("_defensive_score")
-        )
+        if module_factors:
+            module_frame = pl.DataFrame({
+                "symbol": list(module_factors),
+                "_overnight_us_factor": [
+                    float(value["factor"]) for value in module_factors.values()
+                ],
+                "_overnight_us_score": [
+                    float(value["change_pct"]) for value in module_factors.values()
+                ],
+                "_overnight_us_tilt": [
+                    float(value["normalized_signal"])
+                    for value in module_factors.values()
+                ],
+                "_overnight_us_module": [
+                    str(value["name"]) for value in module_factors.values()
+                ],
+                "_overnight_us_module_symbol": [
+                    str(value["symbol"]) for value in module_factors.values()
+                ],
+                "_overnight_us_match_confidence": [
+                    float(value["match_confidence"])
+                    for value in module_factors.values()
+                ],
+            })
+            latest = latest.join(module_frame, on="symbol", how="left")
+        else:
+            latest = latest.with_columns(
+                pl.lit(None, dtype=pl.Float64).alias("_overnight_us_factor"),
+                pl.lit(None, dtype=pl.Float64).alias("_overnight_us_score"),
+                pl.lit(None, dtype=pl.Float64).alias("_overnight_us_tilt"),
+                pl.lit(None, dtype=pl.Utf8).alias("_overnight_us_module"),
+                pl.lit(None, dtype=pl.Utf8).alias("_overnight_us_module_symbol"),
+                pl.lit(None, dtype=pl.Float64).alias(
+                    "_overnight_us_match_confidence"
+                ),
+            )
+        applied_weight = min(max(overnight_weight, 0.0), 0.5)
         latest = latest.with_columns(
+            pl.col("_overnight_us_factor").fill_null(0.0),
+            pl.col("_overnight_us_tilt").fill_null(0.0),
+            pl.col("_overnight_us_match_confidence").fill_null(0.0),
+        ).with_columns(
+            (applied_weight * pl.col("_overnight_us_factor")).alias(
+                "_overnight_us_adjustment"
+            ),
             (
-                (1 - applied_weight) * pl.col("_score")
-                + applied_weight * preference
-            ).alias("_score"),
+                pl.col("_score")
+                + applied_weight * pl.col("_overnight_us_factor")
+            ).clip(0.0, 1.0).alias("_score"),
             pl.col("_momentum_score").alias("_news_momentum_preference"),
             pl.col("_defensive_score").alias("_news_defensive_preference"),
-            preference.alias("_overnight_fit"),
         )
         latest = latest.with_columns(pl.col("_score").alias("_market_score"))
         news_available = bool((news_context or {}).get("available"))
@@ -660,10 +924,25 @@ class InvestmentExpertService:
                 "market_score": float(row["_market_score"]),
                 "momentum_score": float(row["_news_momentum_preference"]),
                 "defensive_score": float(row["_news_defensive_preference"]),
-                "overnight_us_available": overnight_available,
-                "overnight_us_score": overnight_score,
-                "overnight_us_tilt": overnight_tilt,
-                "overnight_us_fit": float(row["_overnight_fit"]),
+                "overnight_us_available": row["_overnight_us_score"] is not None,
+                "overnight_us_market_score": float(
+                    (overnight_context or {}).get("score") or 0.0
+                ),
+                "overnight_us_score": (
+                    float(row["_overnight_us_score"])
+                    if row["_overnight_us_score"] is not None
+                    else None
+                ),
+                "overnight_us_tilt": float(row["_overnight_us_tilt"]),
+                "overnight_us_factor": float(row["_overnight_us_factor"]),
+                "overnight_us_module": row["_overnight_us_module"],
+                "overnight_us_module_symbol": row["_overnight_us_module_symbol"],
+                "overnight_us_match_confidence": float(
+                    row["_overnight_us_match_confidence"]
+                ),
+                "overnight_us_adjustment": float(
+                    row["_overnight_us_adjustment"]
+                ),
                 "news_sentiment_available": news_available,
                 "news_sentiment_score": global_news_score,
                 "news_sentiment_confidence": news_confidence,

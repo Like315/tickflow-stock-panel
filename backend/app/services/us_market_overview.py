@@ -13,6 +13,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -431,6 +432,8 @@ class UsMarketOverviewService:
         self._cache: dict[str, Any] | None = None
         self._cache_at = 0.0
         self._market_rows: list[dict[str, Any]] = []
+        self._proxy_volatility_cache: dict[str, float] = {}
+        self._proxy_volatility_cache_at = 0.0
 
     def get_overview(self, *, force: bool = False) -> dict[str, Any]:
         with self._condition:
@@ -543,6 +546,97 @@ class UsMarketOverviewService:
             if row is not None and _valid_market_row(row):
                 rows.append(row)
         return rows
+
+    def get_proxy_volatilities(
+        self,
+        symbols: list[str],
+        *,
+        window: int = 20,
+    ) -> dict[str, float]:
+        """Return cached daily-return volatility for sector/theme ETF proxies."""
+        normalized_symbols = list(dict.fromkeys(
+            str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()
+        ))
+        if not normalized_symbols:
+            return {}
+        now = self._monotonic()
+        with self._condition:
+            cache_is_fresh = now - self._proxy_volatility_cache_at < 6 * 60 * 60
+            if cache_is_fresh and all(
+                symbol in self._proxy_volatility_cache for symbol in normalized_symbols
+            ):
+                return {
+                    symbol: self._proxy_volatility_cache[symbol]
+                    for symbol in normalized_symbols
+                }
+            cached = {
+                symbol: self._proxy_volatility_cache[symbol]
+                for symbol in normalized_symbols
+                if symbol in self._proxy_volatility_cache
+            }
+
+        client = self._history_client_factory()
+        result = dict(cached)
+        sample_size = max(5, min(int(window), 60))
+        frames: dict[str, Any] = {}
+        batch_loader = getattr(client.klines, "batch", None)
+        if callable(batch_loader):
+            try:
+                batch_frames = batch_loader(
+                    normalized_symbols,
+                    period="1d",
+                    adjust="none",
+                    count=sample_size + 1,
+                )
+                if isinstance(batch_frames, Mapping):
+                    frames.update(batch_frames)
+            except Exception as exc:
+                logger.info("美股 ETF 波动率批量读取失败,改用单标的读取: %s", exc)
+        for symbol in normalized_symbols:
+            try:
+                frame = frames.get(symbol)
+                if frame is None:
+                    frame = client.klines.get(
+                        symbol,
+                        period="1d",
+                        adjust="none",
+                        count=sample_size + 1,
+                        as_dataframe=False,
+                    )
+                rows = _frame_records(frame)
+                rows.sort(
+                    key=lambda row: _timestamp_ms(
+                        row.get("timestamp") or row.get("date")
+                    ) or 0
+                )
+                closes = [
+                    close
+                    for row in rows
+                    if (close := _finite(row.get("close"))) is not None and close > 0
+                ]
+                returns = [
+                    current / previous - 1
+                    for previous, current in pairwise(closes)
+                    if previous > 0
+                ][-sample_size:]
+                if len(returns) < 5:
+                    continue
+                mean = sum(returns) / len(returns)
+                variance = sum((value - mean) ** 2 for value in returns) / len(returns)
+                volatility = math.sqrt(variance)
+                if math.isfinite(volatility) and volatility > 0:
+                    result[symbol] = volatility
+            except Exception as exc:
+                logger.info("美股 ETF 波动率读取失败 (%s): %s", symbol, exc)
+
+        with self._condition:
+            self._proxy_volatility_cache.update(result)
+            self._proxy_volatility_cache_at = now
+        return {
+            symbol: result[symbol]
+            for symbol in normalized_symbols
+            if symbol in result
+        }
 
     def _fetch_realtime_proxies(self) -> dict[str, Any]:
         client = self._realtime_client_factory()

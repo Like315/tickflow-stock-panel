@@ -93,6 +93,14 @@ class InvestmentExpertRuntime:
         features["overnight_us_available"] = context.get("overnight_us_available")
         features["overnight_us_score"] = context.get("overnight_us_score")
         features["overnight_us_tilt"] = context.get("overnight_us_tilt")
+        features["overnight_us_factor"] = context.get("overnight_us_factor")
+        features["overnight_us_module"] = context.get("overnight_us_module")
+        features["overnight_us_module_symbol"] = context.get(
+            "overnight_us_module_symbol"
+        )
+        features["overnight_us_match_confidence"] = context.get(
+            "overnight_us_match_confidence"
+        )
         features["news_sentiment_score"] = context.get("news_sentiment_score")
         features["candidate_news_sentiment"] = context.get("candidate_news_sentiment")
         features["news_sentiment_confidence"] = context.get("news_sentiment_confidence")
@@ -141,6 +149,24 @@ class InvestmentExpertRuntime:
         settled = int(features["settled_shares"])
         vwap_bias = features["vwap_bias"]
         breakout = features["breakout_pct"]
+        overnight_factor = max(
+            -1.0,
+            min(1.0, float(features.get("overnight_us_factor") or 0.0)),
+        )
+        overnight_exit_adjustment = (
+            overnight_factor * self.policy.overnight_us_exit_weight * 0.01
+        )
+        effective_exit_vwap_bias = (
+            self.policy.exit_vwap_bias - overnight_exit_adjustment
+        )
+        effective_take_profit_pct = max(
+            0.001,
+            self.policy.take_profit_pct
+            + overnight_factor * self.policy.overnight_us_exit_weight * 0.10,
+        )
+        features["overnight_us_exit_adjustment"] = overnight_exit_adjustment
+        features["effective_exit_vwap_bias"] = effective_exit_vwap_bias
+        features["effective_take_profit_pct"] = effective_take_profit_pct
         if settled > 0:
             lots = [lot for lot in self.executor.lots if lot.symbol == bar.symbol]
             invested = sum(lot.remaining_shares * lot.entry_price for lot in lots)
@@ -149,12 +175,12 @@ class InvestmentExpertRuntime:
             pnl_pct = bar.raw_close / entry_price - 1 if entry_price else None
             if pnl_pct is not None and pnl_pct <= self.policy.stop_loss_pct:
                 return "sell", "settled_position_stop_loss"
-            if pnl_pct is not None and pnl_pct >= self.policy.take_profit_pct:
+            if pnl_pct is not None and pnl_pct >= effective_take_profit_pct:
                 return "sell", "settled_position_take_profit"
             oldest_date = min(lot.acquired_date for lot in lots)
             if (bar.datetime.date() - oldest_date).days >= self.policy.max_hold_days:
                 return "sell", "settled_position_max_hold"
-            if vwap_bias is not None and vwap_bias <= self.policy.exit_vwap_bias:
+            if vwap_bias is not None and vwap_bias <= effective_exit_vwap_bias:
                 return "sell", "settled_position_vwap_breakdown"
         if shares > 0:
             return "hold", "position_not_sellable_or_exit_not_triggered"
@@ -166,13 +192,6 @@ class InvestmentExpertRuntime:
             return "abstain", "outside_entry_window"
         if int(features["bars"]) < self.policy.min_completed_bars:
             return "abstain", "insufficient_completed_bars"
-        overnight_us_score = features.get("overnight_us_score")
-        if (
-            features.get("overnight_us_available") is not False
-            and overnight_us_score is not None
-            and float(overnight_us_score) < self.policy.min_overnight_us_score
-        ):
-            return "abstain", "overnight_us_market_risk_off"
         news_factor_score = max(
             -1.0,
             min(1.0, float(features.get("news_factor_score") or 0.0)),
@@ -180,14 +199,50 @@ class InvestmentExpertRuntime:
         news_confirmation_bias = (
             news_factor_score * self.policy.news_candidate_weight * 0.004
         )
-        required_vwap_bias = self.policy.min_vwap_bias - news_confirmation_bias
+        raw_overnight_entry_adjustment = (
+            overnight_factor * self.policy.overnight_us_entry_weight * 0.01
+        )
+        if raw_overnight_entry_adjustment > 0:
+            positive_adjustment_cap = max(
+                0.0,
+                min(
+                    self.policy.min_vwap_bias - news_confirmation_bias,
+                    self.policy.min_breakout_pct - news_confirmation_bias,
+                ) * 0.5,
+            )
+            overnight_entry_adjustment = min(
+                raw_overnight_entry_adjustment,
+                positive_adjustment_cap,
+            )
+        else:
+            overnight_entry_adjustment = raw_overnight_entry_adjustment
+        required_vwap_bias = (
+            self.policy.min_vwap_bias
+            - news_confirmation_bias
+            - overnight_entry_adjustment
+        )
         required_breakout_pct = max(
             0.0,
-            self.policy.min_breakout_pct - news_confirmation_bias,
+            self.policy.min_breakout_pct
+            - news_confirmation_bias
+            - overnight_entry_adjustment,
+        )
+        required_probability = max(
+            0.50,
+            min(
+                0.95,
+                self.policy.entry_probability_threshold
+                - overnight_factor * self.policy.overnight_us_entry_weight * 0.10,
+            ),
         )
         features["news_confirmation_bias"] = news_confirmation_bias
+        features["raw_overnight_us_entry_adjustment"] = (
+            raw_overnight_entry_adjustment
+        )
+        features["overnight_us_entry_adjustment"] = overnight_entry_adjustment
         features["required_vwap_bias"] = required_vwap_bias
         features["required_breakout_pct"] = required_breakout_pct
+        features["required_probability"] = required_probability
         if vwap_bias is None or vwap_bias < required_vwap_bias:
             return "abstain", "vwap_confirmation_missing"
         if breakout is None or breakout < required_breakout_pct:
@@ -195,7 +250,7 @@ class InvestmentExpertRuntime:
         probability = features.get("model_probability")
         if self.decision_model is not None and probability is None:
             return "abstain", "model_features_incomplete"
-        if probability is not None and probability < self.policy.entry_probability_threshold:
+        if probability is not None and probability < required_probability:
             return "abstain", "trained_probability_below_threshold"
         return "buy", "vwap_and_opening_range_confirmed"
 

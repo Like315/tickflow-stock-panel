@@ -18,7 +18,11 @@ import { PageHeader } from '@/components/PageHeader'
 import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/cn'
-import { investmentExpertStatusLabel, investmentExpertTaskLabel } from '@/lib/investmentExpertLabels'
+import {
+  investmentExpertExperimentStatusLabel,
+  investmentExpertStatusLabel,
+  investmentExpertTaskLabel,
+} from '@/lib/investmentExpertLabels'
 import { QK } from '@/lib/queryKeys'
 
 function money(value: number | null | undefined): string {
@@ -53,7 +57,7 @@ function reasonLabel(reason: string): string {
     protected_evaluation_passed: '保护集评估通过，候选策略已晋升',
     anti_cheat_or_data_quality_violation: '存在防作弊或数据质量违规',
     no_protected_evaluation_data: '没有可用的保护集评估数据',
-    insufficient_closed_trades: '已平仓交易数量不足，进入影子观察',
+    insufficient_closed_trades: '有效平仓样本不足，无法完成晋升判定',
     expectancy_did_not_improve: '交易期望未优于原冠军策略',
     max_drawdown_regressed: '最大回撤明显退化',
     net_return_regressed: '净收益低于原冠军策略',
@@ -118,6 +122,10 @@ export function InvestmentExpert() {
   const displayModel = activeModel ?? latestModel
   const protectedMetrics = displayModel?.metrics.protected_test
   const manifest = data?.dataset?.manifest
+  const overnightModules = Object.values(data?.overnight_us_market?.modules ?? {})
+    .sort((left, right) => right.change_pct - left.change_pct)
+  const strongestOvernightModule = overnightModules[0]
+  const weakestOvernightModule = overnightModules[overnightModules.length - 1]
 
   return (
     <>
@@ -198,13 +206,19 @@ export function InvestmentExpert() {
             )}
             {data?.overnight_us_market && !data.overnight_us_market.available && (
               <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-xs text-amber-200">
-                昨夜美股数据缺失或已过期，当日会话仍会正常创建；候选按本地因子排序，隔夜阈值不参与新买入判断。
+                昨夜美股行业数据缺失或已过期，当日会话仍会正常创建；行业因子按中性处理，不影响原策略交易。
               </div>
             )}
-            {data?.overnight_us_market?.available && (
+            {data?.overnight_us_market?.available && overnightModules.length > 0 && (
               <div className="mt-3 rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2 text-xs text-blue-200">
-                隔夜美股因子：{data.overnight_us_market.market_date} · 综合涨跌 {percent(data.overnight_us_market.score)}。
-                已用于候选排序，低于策略阈值时禁止新买入。
+                隔夜美股行业因子：{data.overnight_us_market.market_date} · 已读取 {overnightModules.length} 个行业/主题。
+                候选按所属行业独立加减分，买入同向调整、卖出反向调整；
+                {data.overnight_us_market.market_background_available === false
+                  ? '大盘背景数据不完整，不参与评分。'
+                  : `大盘综合 ${percent(data.overnight_us_market.score)} 仅作背景。`}
+                {strongestOvernightModule && weakestOvernightModule && (
+                  <> 最强：{strongestOvernightModule.name} {percent(strongestOvernightModule.change_pct)}；最弱：{weakestOvernightModule.name} {percent(weakestOvernightModule.change_pct)}。</>
+                )}
               </div>
             )}
             {data?.news_sentiment?.available ? (
@@ -336,7 +350,7 @@ export function InvestmentExpert() {
               </div>
             </Panel>
 
-            <Panel title="进化实验" subtitle="单变量变异 · 失败不替换冠军策略">
+            <Panel title="进化实验" subtitle="单变量变异 · 未晋升不替换冠军策略">
               <div className="space-y-2">
                 {(experiments.data?.experiments ?? []).slice(0, 8).map(experiment => {
                   const expanded = expandedExperimentId === experiment.id
@@ -353,7 +367,7 @@ export function InvestmentExpert() {
                           <div className="mt-1 text-[10px] text-muted">变异项：{mutationLabel(experiment.mutation_field)}</div>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
-                          <span className={cn('rounded-full px-2 py-0.5 text-[10px]', statusClass(experiment.status))}>{investmentExpertStatusLabel(experiment.status)}</span>
+                          <span className={cn('rounded-full px-2 py-0.5 text-[10px]', statusClass(experiment.status))}>{investmentExpertExperimentStatusLabel(experiment.status)}</span>
                           <ChevronDown className={cn('h-3.5 w-3.5 text-muted transition-transform', expanded && 'rotate-180')} />
                         </div>
                       </button>

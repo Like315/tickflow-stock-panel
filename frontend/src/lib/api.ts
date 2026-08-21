@@ -1636,7 +1636,8 @@ export interface InvestmentExpertPolicy {
   min_breakout_pct: number
   entry_probability_threshold: number
   overnight_us_candidate_weight: number
-  min_overnight_us_score: number
+  overnight_us_entry_weight: number
+  overnight_us_exit_weight: number
   news_candidate_weight: number
   stop_loss_pct: number
 }
@@ -1695,7 +1696,17 @@ export interface InvestmentExpertStatus {
     as_of?: number | null
     score: number
     tilt: number
+    market_background_available?: boolean
     benchmarks: Record<string, number>
+    modules?: Record<string, {
+      symbol: string
+      name: string
+      kind: 'sector' | 'theme'
+      change_pct: number
+      volatility_20d: number
+      normalized_signal: number
+      data_confidence: number
+    }>
     breadth?: { up_ratio: number; down_ratio: number }
   } | null
   news_sentiment?: {

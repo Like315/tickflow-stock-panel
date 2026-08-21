@@ -48,34 +48,43 @@ def test_runtime_submits_only_after_completed_bar_confirmation() -> None:
     assert third.execution_events[0].event_type in {"order_filled", "order_partially_filled"}
 
 
-def test_runtime_blocks_new_entry_when_overnight_us_market_is_risk_off() -> None:
-    executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
+def test_runtime_applies_overnight_module_factor_to_entry_confirmation() -> None:
     policy = ExpertPolicy(
-        id="risk-off",
+        id="module-entry",
         version=1,
         min_completed_bars=2,
-        min_vwap_bias=0,
-        min_breakout_pct=0,
-        min_overnight_us_score=-0.02,
+        min_vwap_bias=0.001,
+        min_breakout_pct=0.001,
+        overnight_us_entry_weight=0.10,
     )
-    runtime = InvestmentExpertRuntime(
-        session_id="risk-off-session",
+    positive = InvestmentExpertRuntime(
+        session_id="positive-module",
         policy=policy,
         candidates={"A"},
-        executor=executor,
-        candidate_context={"A": {"overnight_us_score": -0.03}},
+        executor=StrictMinuteExecutor(RiskConstitution(slippage_bps=0)),
+        candidate_context={"A": {"overnight_us_factor": 1.0}},
+    )
+    negative = InvestmentExpertRuntime(
+        session_id="negative-module",
+        policy=policy,
+        candidates={"A"},
+        executor=StrictMinuteExecutor(RiskConstitution(slippage_bps=0)),
+        candidate_context={"A": {"overnight_us_factor": -1.0}},
     )
 
-    runtime.on_bar(_bar(31, 10.0, 100_000))
-    second = runtime.on_bar(_bar(32, 10.2, 102_000))
+    positive.on_bar(_bar(31, 10.0, 100_000))
+    positive_step = positive.on_bar(_bar(32, 10.016, 100_160))
+    negative.on_bar(_bar(31, 10.0, 100_000))
+    negative_step = negative.on_bar(_bar(32, 10.016, 100_160))
 
-    assert second.decision is not None
-    assert second.decision["action"] == "abstain"
-    assert second.decision["reason"] == "overnight_us_market_risk_off"
-    assert second.submitted_event is None
+    assert positive_step.decision is not None
+    assert positive_step.decision["action"] == "buy"
+    assert negative_step.decision is not None
+    assert negative_step.decision["action"] == "abstain"
+    assert negative_step.decision["reason"] == "vwap_confirmation_missing"
 
 
-def test_runtime_does_not_apply_overnight_threshold_when_data_is_unavailable() -> None:
+def test_runtime_treats_unavailable_overnight_module_data_as_neutral() -> None:
     executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
     policy = ExpertPolicy(
         id="missing-us-data",
@@ -83,7 +92,6 @@ def test_runtime_does_not_apply_overnight_threshold_when_data_is_unavailable() -
         min_completed_bars=2,
         min_vwap_bias=0,
         min_breakout_pct=0,
-        min_overnight_us_score=-0.02,
     )
     runtime = InvestmentExpertRuntime(
         session_id="missing-us-data-session",
@@ -94,6 +102,7 @@ def test_runtime_does_not_apply_overnight_threshold_when_data_is_unavailable() -
             "A": {
                 "overnight_us_available": False,
                 "overnight_us_score": -1.0,
+                "overnight_us_factor": 0.0,
             }
         },
     )
@@ -104,6 +113,69 @@ def test_runtime_does_not_apply_overnight_threshold_when_data_is_unavailable() -
     assert second.decision is not None
     assert second.decision["action"] == "buy"
     assert second.submitted_event is not None
+
+
+def test_runtime_applies_inverse_overnight_module_factor_to_soft_exit() -> None:
+    policy = ExpertPolicy(
+        id="module-exit",
+        version=1,
+        exit_vwap_bias=-0.0005,
+        overnight_us_exit_weight=0.08,
+    )
+
+    def runtime(factor: float) -> InvestmentExpertRuntime:
+        executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
+        executor.lots.append(PositionLot(
+            lot_id=f"lot-{factor}",
+            symbol="A",
+            acquired_date=date(2026, 8, 17),
+            shares=100,
+            remaining_shares=100,
+            entry_price=10,
+            entry_cost=5,
+        ))
+        return InvestmentExpertRuntime(
+            session_id=f"module-exit-{factor}",
+            policy=policy,
+            candidates={"A"},
+            executor=executor,
+            candidate_context={"A": {"overnight_us_factor": factor}},
+        )
+
+    weak_module_step = runtime(-1.0).on_bar(_bar(31, 10.0, 100_000))
+    strong_module_step = runtime(1.0).on_bar(_bar(31, 10.0, 100_000))
+
+    assert weak_module_step.decision is not None
+    assert weak_module_step.decision["action"] == "sell"
+    assert weak_module_step.decision["reason"] == "settled_position_vwap_breakdown"
+    assert strong_module_step.decision is not None
+    assert strong_module_step.decision["action"] == "hold"
+
+
+def test_positive_overnight_module_factor_never_weakens_hard_stop_loss() -> None:
+    executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
+    executor.lots.append(PositionLot(
+        lot_id="hard-stop",
+        symbol="A",
+        acquired_date=date(2026, 8, 17),
+        shares=100,
+        remaining_shares=100,
+        entry_price=10,
+        entry_cost=5,
+    ))
+    runtime = InvestmentExpertRuntime(
+        session_id="hard-stop",
+        policy=ExpertPolicy(id="hard-stop", version=1),
+        candidates={"A"},
+        executor=executor,
+        candidate_context={"A": {"overnight_us_factor": 1.0}},
+    )
+
+    step = runtime.on_bar(_bar(31, 9.4, 94_000))
+
+    assert step.decision is not None
+    assert step.decision["action"] == "sell"
+    assert step.decision["reason"] == "settled_position_stop_loss"
 
 
 def test_news_factor_softens_but_does_not_replace_price_confirmation() -> None:
@@ -188,5 +260,8 @@ def test_ratchet_requires_evidence_and_never_accepts_constraint_violation() -> N
     better = EvaluationMetrics(0.07, -0.07, 45, 0.6, 0.002, 0, 200)
 
     assert PolicyEvolutionEngine.gate(base, unsafe)[0] == "rejected"
-    assert PolicyEvolutionEngine.gate(base, sparse)[0] == "shadow"
+    assert PolicyEvolutionEngine.gate(base, sparse) == (
+        "inconclusive",
+        "insufficient_closed_trades",
+    )
     assert PolicyEvolutionEngine.gate(base, better)[0] == "promoted"
