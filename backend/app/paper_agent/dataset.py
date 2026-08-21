@@ -72,6 +72,7 @@ def build_point_in_time_candidates(
 class TrainingDatasetBuilder:
     def __init__(self, repo, data_dir: Path, minute_provider) -> None:
         self.repo = repo
+        self.data_dir = data_dir
         self.root = data_dir / "user_data" / "investment_expert" / "training"
         self.minute_provider = minute_provider
 
@@ -82,6 +83,7 @@ class TrainingDatasetBuilder:
         end_date: date,
         candidate_limit: int = 50,
         download_minutes: bool = True,
+        remote_minutes_enabled: bool = True,
         progress_cb=None,
     ) -> dict[str, Any]:
         latest_available = self.repo.latest_daily_date()
@@ -119,12 +121,20 @@ class TrainingDatasetBuilder:
         date_groups = self._ordered_date_groups(candidates)
         written_candidate_rows = 0
         downloaded_minute_rows = 0
+        local_minute_rows = 0
+        local_minute_dates = 0
         skipped_minute_dates = 0
         total = len(date_groups)
         missing_minute_dates: list[str] = []
         previous_symbols: list[str] = []
         minute_rows_total = 0
         minute_dates_available = 0
+        audited_gap_pairs: set[tuple[date, str]] = set()
+        audited_gaps = (
+            self._load_audited_minute_gaps()
+            if not remote_minutes_enabled
+            else pl.DataFrame()
+        )
         for index, (trade_date, group) in enumerate(date_groups, start=1):
             candidate_path = candidate_dir / f"date={trade_date}" / "part.parquet"
             candidate_path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,6 +149,11 @@ class TrainingDatasetBuilder:
             # Carry-over symbols remain excluded from today's buy candidates.
             symbols = sorted(set(current_symbols) | set(previous_symbols))
             required_symbols = self._tradable_symbols(daily, trade_date, symbols)
+            allowed_missing_symbols = self._audited_gap_symbols(
+                audited_gaps,
+                trade_date,
+                required_symbols,
+            )
             if (
                 download_minutes
                 and minute_path.exists()
@@ -146,23 +161,45 @@ class TrainingDatasetBuilder:
                     minute_path,
                     required_symbols,
                     trade_date=trade_date,
+                    allowed_missing_symbols=allowed_missing_symbols,
                 )
             ):
+                if allowed_missing_symbols:
+                    resumed = pl.read_parquet(minute_path)
+                    audited_gap_pairs.update(
+                        (trade_date, symbol)
+                        for symbol in self._missing_symbols(resumed, required_symbols)
+                        if symbol in allowed_missing_symbols
+                    )
                 skipped_minute_dates += 1
                 minute_dates_available += 1
                 minute_rows_total += self._parquet_row_count(minute_path)
             elif download_minutes:
                 start_time = datetime.combine(trade_date, time(9, 15), tzinfo=CN_TZ)
                 end_time = datetime.combine(trade_date, time(15, 5), tzinfo=CN_TZ)
-                minute = self.minute_provider.get_minute(
-                    symbols,
-                    start_time=start_time,
-                    end_time=end_time,
-                    asset_type="stock",
-                    freq="1m",
-                )
+                local = pl.DataFrame()
+                if remote_minutes_enabled:
+                    minute = self.minute_provider.get_minute(
+                        symbols,
+                        start_time=start_time,
+                        end_time=end_time,
+                        asset_type="stock",
+                        freq="1m",
+                    )
+                else:
+                    local = self._load_local_minute(symbols, trade_date)
+                    minute = local
                 if minute.is_empty():
-                    provider_name = getattr(self.minute_provider, "name", "configured provider")
+                    if not remote_minutes_enabled:
+                        raise HistoricalMinuteDataError(
+                            "minute dataset incomplete: canonical local stock/index/ETF "
+                            f"partitions returned no 1m data for {trade_date}"
+                        )
+                    provider_name = getattr(
+                        self.minute_provider,
+                        "name",
+                        "configured provider",
+                    )
                     raise HistoricalMinuteDataError(
                         "minute dataset incomplete: "
                         f"historical minute provider '{provider_name}' returned no 1m data "
@@ -173,18 +210,34 @@ class TrainingDatasetBuilder:
                     raise HistoricalMinuteDataError(
                         f"historical minute response contains no rows for requested date {trade_date}"
                     )
+                minute = self._ensure_raw_price_columns(minute)
                 minute = self._add_execution_flags(minute, daily, trade_date)
-                if not self._minute_frame_valid(minute, required_symbols, trade_date=trade_date):
+                if not self._minute_frame_valid(
+                    minute,
+                    required_symbols,
+                    trade_date=trade_date,
+                    allowed_missing_symbols=allowed_missing_symbols,
+                ):
                     missing = self._missing_symbols(minute, required_symbols)
-                    suffix = f": {', '.join(missing[:5])}" if missing else ""
+                    unexpected = sorted(set(missing) - set(allowed_missing_symbols))
+                    suffix = f": {', '.join(unexpected[:5])}" if unexpected else ""
                     raise HistoricalMinuteDataError(
                         f"historical minute coverage is incomplete for {trade_date}{suffix}"
                     )
+                audited_gap_pairs.update(
+                    (trade_date, symbol)
+                    for symbol in self._missing_symbols(minute, required_symbols)
+                    if symbol in allowed_missing_symbols
+                )
                 minute_path.parent.mkdir(parents=True, exist_ok=True)
                 minute_tmp = minute_path.with_suffix(".parquet.tmp")
                 minute.write_parquet(minute_tmp)
                 minute_tmp.replace(minute_path)
-                downloaded_minute_rows += minute.height
+                if local.height:
+                    local_minute_dates += 1
+                    local_minute_rows += local.height
+                elif remote_minutes_enabled:
+                    downloaded_minute_rows += minute.height
                 minute_rows_total += minute.height
                 minute_dates_available += 1
             previous_symbols = current_symbols
@@ -200,7 +253,7 @@ class TrainingDatasetBuilder:
 
         manifest = {
             "schema_version": 1,
-            "source": "tickflow",
+            "source": "provider_or_canonical_local_fallback",
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
@@ -208,10 +261,15 @@ class TrainingDatasetBuilder:
             "candidate_dates": total,
             "candidate_rows": written_candidate_rows,
             "minute_source": getattr(self.minute_provider, "name", "unknown"),
+            "minute_remote_enabled": remote_minutes_enabled,
             "minute_dates_available": minute_dates_available,
             "minute_rows": minute_rows_total,
             "minute_rows_downloaded": downloaded_minute_rows,
+            "minute_dates_local": local_minute_dates,
+            "minute_rows_local": local_minute_rows,
             "minute_dates_resumed": skipped_minute_dates,
+            "audited_minute_gap_symbol_dates": len(audited_gap_pairs),
+            "audited_minute_gap_handling": "skip_unlabelable_samples_without_synthesis",
             "price_contract": {
                 "features": "daily enriched / minute OHLC",
                 "execution": "raw_open/raw_high/raw_low/raw_close",
@@ -277,6 +335,84 @@ class TrainingDatasetBuilder:
             return pl.DataFrame()
         return minute.filter(pl.col("datetime").cast(pl.Datetime, strict=False).dt.date() == trade_date)
 
+    def _load_local_minute(self, symbols: list[str], trade_date: date) -> pl.DataFrame:
+        loader = getattr(self.repo, "get_minute_batch", None)
+        if not callable(loader):
+            return pl.DataFrame()
+        frames = []
+        remaining = list(symbols)
+        for asset_type in ("stock", "index", "etf"):
+            minute = loader(remaining, trade_date, asset_type=asset_type)
+            minute = self._filter_trade_date(minute, trade_date)
+            if not minute.is_empty():
+                frames.append(minute)
+                remaining = self._missing_symbols(minute, remaining)
+                if not remaining:
+                    break
+        if not frames:
+            return pl.DataFrame()
+        minute = (
+            pl.concat(frames, how="diagonal_relaxed")
+            .unique(subset=["symbol", "datetime"], keep="first")
+            .sort(["symbol", "datetime"])
+        )
+        return self._ensure_raw_price_columns(minute)
+
+    def _load_audited_minute_gaps(self) -> pl.DataFrame:
+        path = (
+            self.data_dir
+            / "user_data"
+            / "investment_expert"
+            / "history_backfill"
+            / "huggingface_no_bar_day_classification.parquet"
+        )
+        if not path.exists():
+            return pl.DataFrame()
+        try:
+            audit = pl.read_parquet(
+                path,
+                columns=["symbol", "exchange", "date", "classification"],
+            )
+        except (OSError, pl.exceptions.PolarsError):
+            return pl.DataFrame()
+        return (
+            audit.filter(
+                pl.col("classification") == "verified_trading_day_missing_minutes"
+            )
+            .with_columns(
+                (pl.col("symbol") + pl.lit(".") + pl.col("exchange")).alias("symbol")
+            )
+            .select(pl.col("date").alias("trade_date"), "symbol")
+            .unique()
+        )
+
+    @staticmethod
+    def _audited_gap_symbols(
+        audit: pl.DataFrame,
+        trade_date: date,
+        required_symbols: list[str],
+    ) -> list[str]:
+        if audit.is_empty():
+            return []
+        return sorted(
+            str(value)
+            for value in audit.filter(
+                (pl.col("trade_date") == trade_date)
+                & pl.col("symbol").is_in(required_symbols)
+            )["symbol"].to_list()
+        )
+
+    @staticmethod
+    def _ensure_raw_price_columns(minute: pl.DataFrame) -> pl.DataFrame:
+        if minute.is_empty():
+            return minute
+        aliases = [
+            pl.col(column).cast(pl.Float64, strict=False).alias(f"raw_{column}")
+            for column in ("open", "high", "low", "close")
+            if f"raw_{column}" not in minute.columns and column in minute.columns
+        ]
+        return minute.with_columns(aliases) if aliases else minute
+
     @staticmethod
     def _missing_symbols(frame: pl.DataFrame, required_symbols: list[str]) -> list[str]:
         if frame.is_empty() or "symbol" not in frame.columns:
@@ -292,6 +428,7 @@ class TrainingDatasetBuilder:
         required_symbols: list[str],
         *,
         trade_date: date,
+        allowed_missing_symbols: list[str] | None = None,
     ) -> bool:
         required_columns = {
             "symbol",
@@ -309,7 +446,8 @@ class TrainingDatasetBuilder:
             return False
         if cls._filter_trade_date(frame, trade_date).height != frame.height:
             return False
-        return not cls._missing_symbols(frame, required_symbols)
+        missing = set(cls._missing_symbols(frame, required_symbols))
+        return not missing.difference(allowed_missing_symbols or [])
 
     @staticmethod
     def _parquet_row_count(path: Path) -> int:
@@ -321,6 +459,7 @@ class TrainingDatasetBuilder:
         required_symbols: list[str],
         *,
         trade_date: date,
+        allowed_missing_symbols: list[str] | None = None,
     ) -> bool:
         required_columns = {
             "symbol",
@@ -345,6 +484,7 @@ class TrainingDatasetBuilder:
             frame,
             required_symbols,
             trade_date=trade_date,
+            allowed_missing_symbols=allowed_missing_symbols,
         )
 
     @staticmethod

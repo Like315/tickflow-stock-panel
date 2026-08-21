@@ -1,4 +1,6 @@
 """指数资产路由 — repository 层测试。"""
+import datetime as _dt
+
 import polars as pl
 import pytest
 
@@ -27,6 +29,28 @@ def test_name_map_includes_index(repo):
     assert "600000.SH" not in names  # 未收录不造名
 
 
+def test_minute_date_bounds_route_to_each_asset_partition(repo):
+    coverage = {
+        "stock": ("kline_minute", "2023-08-21", "2026-08-20"),
+        "index": ("kline_index_minute", "2024-01-02", "2026-08-19"),
+        "etf": ("kline_etf_minute", "2025-08-11", "2026-08-18"),
+    }
+    for directory, start, end in coverage.values():
+        for value in (start, end):
+            partition = repo.store.data_dir / directory / f"date={value}"
+            partition.mkdir(parents=True)
+            pl.DataFrame({"symbol": ["fixture"]}).write_parquet(
+                partition / "part.parquet"
+            )
+        (repo.store.data_dir / directory / "date=invalid").mkdir(parents=True)
+
+    for asset_type, (_directory, start, end) in coverage.items():
+        assert repo.minute_date_bounds(asset_type) == (
+            _dt.date.fromisoformat(start),
+            _dt.date.fromisoformat(end),
+        )
+
+
 def test_name_map_stock_beats_index(repo):
     """同名 symbol 同时出现在股票/指数维表时, 股票名称优先。"""
     _write_index_instruments(repo, {
@@ -42,9 +66,6 @@ def test_name_map_stock_beats_index(repo):
     }).write_parquet(repo.store.data_dir / "instruments" / "instruments.parquet")
     repo._refresh_instruments()
     assert repo.get_name_map(["600000.SH"]).get("600000.SH") == "浦发银行"
-
-
-import datetime as _dt
 
 
 def _write_index_enriched(repo, dates_rows):

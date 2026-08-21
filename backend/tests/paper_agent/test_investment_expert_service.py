@@ -590,6 +590,91 @@ def test_three_year_dataset_is_blocked_for_tickflow_pro(tmp_path: Path, monkeypa
     assert status["historical_minute_max_years"] == 1
 
 
+def test_three_year_dataset_falls_back_to_local_partitions_without_remote_permission(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    trade_date = date(2026, 8, 18)
+    capset = CapabilitySet({
+        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
+    })
+    monkeypatch.setattr(
+        "app.services.investment_expert.base_tier_name",
+        lambda: "pro",
+    )
+
+    class LocalRepo(_Repo):
+        def __init__(self, value: date) -> None:
+            super().__init__(value)
+            self.bound_calls: list[str] = []
+
+        def minute_date_bounds(self, asset_type: str):
+            self.bound_calls.append(asset_type)
+            if asset_type == "etf":
+                return date(2020, 1, 1), date(2030, 1, 1)
+            return None, None
+
+    repo = LocalRepo(trade_date)
+    service = InvestmentExpertService(repo, tmp_path, capset=capset)
+    submitted = []
+    monkeypatch.setattr(
+        service._executor_pool,
+        "submit",
+        lambda function, *args: (
+            submitted.append((function, args))
+            or SimpleNamespace(done=lambda: True)
+        ),
+    )
+    try:
+        result = service.submit_dataset_bootstrap(years=3)
+        status = service.status()
+    finally:
+        service.close()
+
+    assert result["status"] == "started"
+    assert submitted[0][1][-1] is False
+    assert {"stock", "index", "etf"}.issubset(repo.bound_calls)
+    assert status["historical_minute_remote_three_year_capable"] is False
+    assert status["historical_minute_local_three_year_capable"] is True
+    assert status["historical_minute_three_year_capable"] is True
+
+
+def test_three_year_dataset_prefers_permitted_remote_source_over_local(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    trade_date = date(2026, 8, 18)
+    capset = CapabilitySet({
+        Cap.KLINE_MINUTE_BATCH: CapabilityLimits(rpm=30, batch=100),
+    })
+    monkeypatch.setattr(
+        "app.services.investment_expert.base_tier_name",
+        lambda: "enterprise",
+    )
+
+    class LocalRepo(_Repo):
+        def minute_date_bounds(self, _asset_type: str):
+            return date(2020, 1, 1), date(2030, 1, 1)
+
+    service = InvestmentExpertService(LocalRepo(trade_date), tmp_path, capset=capset)
+    submitted = []
+    monkeypatch.setattr(
+        service._executor_pool,
+        "submit",
+        lambda function, *args: (
+            submitted.append((function, args))
+            or SimpleNamespace(done=lambda: True)
+        ),
+    )
+    try:
+        result = service.submit_dataset_bootstrap(years=3)
+    finally:
+        service.close()
+
+    assert result["status"] == "started"
+    assert submitted[0][1][-1] is True
+
+
 def test_status_exposes_position_profit_and_execution_performance(tmp_path: Path) -> None:
     trade_date = date(2026, 8, 18)
     service = InvestmentExpertService(_Repo(trade_date), tmp_path)

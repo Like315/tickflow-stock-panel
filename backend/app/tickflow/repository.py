@@ -1559,6 +1559,27 @@ class KlineRepository:
             logger.warning("分钟K按日期查询失败: %s", e)
             return pl.DataFrame()
 
+    def minute_date_bounds(
+        self,
+        asset_type: str = "stock",
+    ) -> tuple[date | None, date | None]:
+        """Return local minute partition bounds without scanning parquet rows."""
+        base = Path(self._minute_glob_for(asset_type)).parents[1]
+        dates: list[date] = []
+        try:
+            for partition in base.glob("date=*"):
+                if not partition.is_dir() or not any(partition.glob("*.parquet")):
+                    continue
+                try:
+                    dates.append(date.fromisoformat(partition.name.removeprefix("date=")))
+                except ValueError:
+                    continue
+        except OSError:
+            return None, None
+        if not dates:
+            return None, None
+        return min(dates), max(dates)
+
     # ================================================================
     # Polars 查询内部方法
     # ================================================================

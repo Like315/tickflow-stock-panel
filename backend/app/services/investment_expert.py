@@ -199,6 +199,80 @@ class InvestmentExpertService:
         # TickFlow's published Pro coverage is one year of minute history.
         return 1 if base_tier_name() == "pro" else None
 
+    def _remote_historical_minute_capable(self, years: int) -> bool:
+        if self._historical_minute_provider_error is not None:
+            return False
+        if getattr(self.historical_minute_provider, "name", "tickflow") == "tickflow":
+            if self.capset is not None and not self.capset.has(Cap.KLINE_MINUTE_BATCH):
+                return False
+            max_years = self._historical_minute_max_years()
+            return max_years is None or years <= max_years
+        return True
+
+    @staticmethod
+    def _dataset_window(years: int) -> tuple[date, date]:
+        current = cn_now()
+        end_date = (
+            current.date()
+            if current.time() >= time(16, 0)
+            else current.date() - timedelta(days=1)
+        )
+        return end_date - timedelta(days=365 * years), end_date
+
+    def _local_historical_minute_bounds(
+        self,
+    ) -> dict[str, tuple[date | None, date | None]]:
+        loader = getattr(self.repo, "minute_date_bounds", None)
+        if not callable(loader):
+            return {}
+        bounds: dict[str, tuple[date | None, date | None]] = {}
+        for asset_type in ("stock", "index", "etf"):
+            try:
+                bounds[asset_type] = loader(asset_type)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                logger.exception(
+                    "failed to inspect local %s minute coverage",
+                    asset_type,
+                )
+                bounds[asset_type] = (None, None)
+        return bounds
+
+    def _local_historical_minute_capable(self, years: int) -> bool:
+        required_start, required_end = self._dataset_window(years)
+        return any(
+            local_start is not None
+            and local_end is not None
+            and local_start <= required_start
+            and local_end >= required_end
+            for local_start, local_end in self._local_historical_minute_bounds().values()
+        )
+
+    def _historical_minute_unavailable_reason(self, years: int) -> str:
+        provider_reason = self._historical_minute_provider_error
+        max_years = self._historical_minute_max_years()
+        if provider_reason is None and max_years is not None and years > max_years:
+            provider_reason = f"TickFlow Pro 分钟历史仅覆盖近 {max_years} 年"
+        elif provider_reason is None:
+            provider_reason = "当前历史分钟数据源没有目标年限权限"
+        labels = {"stock": "股票", "index": "指数", "etf": "ETF"}
+        local_ranges = []
+        local_bounds = self._local_historical_minute_bounds()
+        for asset_type in ("stock", "index", "etf"):
+            local_start, local_end = local_bounds.get(
+                asset_type,
+                (None, None),
+            )
+            value = (
+                f"{local_start.isoformat()} 至 {local_end.isoformat()}"
+                if local_start is not None and local_end is not None
+                else "无可用分区"
+            )
+            local_ranges.append(f"{labels[asset_type]} {value}")
+        return (
+            f"{provider_reason}; 本地分钟库覆盖: {'; '.join(local_ranges)}, "
+            f"仍不足以构建 {years} 年样本"
+        )
+
     def boot_check(self) -> None:
         if self.store.get_runtime_setting("enabled", False):
             self.start()
@@ -1386,29 +1460,16 @@ class InvestmentExpertService:
         download_minutes: bool = True,
     ) -> dict[str, Any]:
         self._refresh_historical_minute_provider()
-        if download_minutes and self._historical_minute_provider_error:
+        remote_minutes_enabled = bool(
+            download_minutes and self._remote_historical_minute_capable(years)
+        )
+        local_minutes_enabled = bool(
+            download_minutes and self._local_historical_minute_capable(years)
+        )
+        if download_minutes and not remote_minutes_enabled and not local_minutes_enabled:
             return {
                 "status": "blocked",
-                "reason": self._historical_minute_provider_error,
-            }
-        max_years = self._historical_minute_max_years()
-        if download_minutes and max_years is not None and years > max_years:
-            return {
-                "status": "blocked",
-                "reason": (
-                    f"TickFlow Pro 分钟历史仅覆盖近 {max_years} 年。"
-                    "三年样本请在设置中选择具备三年覆盖的历史分钟源"
-                ),
-            }
-        if (
-            download_minutes
-            and getattr(self.historical_minute_provider, "name", "tickflow") == "tickflow"
-            and self.capset is not None
-            and not self.capset.has(Cap.KLINE_MINUTE_BATCH)
-        ):
-            return {
-                "status": "blocked",
-                "reason": "tickflow_minute_batch_capability_required",
+                "reason": self._historical_minute_unavailable_reason(years),
             }
         if (
             download_minutes
@@ -1426,15 +1487,18 @@ class InvestmentExpertService:
                 years,
                 candidate_limit,
                 download_minutes,
+                remote_minutes_enabled,
             )
         return {"status": "started", "task": "dataset_bootstrap"}
 
     def _run_dataset_bootstrap(
-        self, years: int, candidate_limit: int, download_minutes: bool
+        self,
+        years: int,
+        candidate_limit: int,
+        download_minutes: bool,
+        remote_minutes_enabled: bool,
     ) -> dict[str, Any]:
-        current = cn_now()
-        end_date = current.date() if current.time() >= time(16, 0) else current.date() - timedelta(days=1)
-        start_date = end_date - timedelta(days=365 * years)
+        start_date, end_date = self._dataset_window(years)
         if not self._operation_lock.acquire(blocking=False):
             return {"status": "reused"}
         run_id: str | None = None
@@ -1472,6 +1536,7 @@ class InvestmentExpertService:
                 end_date=end_date,
                 candidate_limit=candidate_limit,
                 download_minutes=download_minutes,
+                remote_minutes_enabled=remote_minutes_enabled,
                 progress_cb=report_progress,
             )
             self.store.record_dataset_run(
@@ -1728,16 +1793,13 @@ class InvestmentExpertService:
             )
         )
         max_history_years = self._historical_minute_max_years()
-        three_year_capable = bool(
-            historical_capable
-            and (max_history_years is None or max_history_years >= 3)
-        )
+        remote_three_year_capable = self._remote_historical_minute_capable(3)
+        local_three_year_capable = self._local_historical_minute_capable(3)
+        local_minute_bounds = self._local_historical_minute_bounds()
+        three_year_capable = remote_three_year_capable or local_three_year_capable
         three_year_error = None
-        if historical_capable and not three_year_capable:
-            three_year_error = (
-                f"TickFlow Pro 分钟历史仅覆盖近 {max_history_years} 年。"
-                "请在设置 → 数据源选择具备三年覆盖的历史分钟源"
-            )
+        if not three_year_capable:
+            three_year_error = self._historical_minute_unavailable_reason(3)
         news_sentiment = None
         if self._news_sentiment_context is not None:
             news_sentiment = {
@@ -1775,6 +1837,15 @@ class InvestmentExpertService:
             "historical_minute_error": self._historical_minute_provider_error,
             "historical_minute_capable": historical_capable,
             "historical_minute_max_years": max_history_years,
+            "historical_minute_remote_three_year_capable": remote_three_year_capable,
+            "historical_minute_local_three_year_capable": local_three_year_capable,
+            "historical_minute_local_coverage": {
+                asset_type: {
+                    "start": start.isoformat() if start else None,
+                    "end": end.isoformat() if end else None,
+                }
+                for asset_type, (start, end) in local_minute_bounds.items()
+            },
             "historical_minute_three_year_capable": three_year_capable,
             "historical_minute_three_year_error": three_year_error,
             "live_minute_mode": (
