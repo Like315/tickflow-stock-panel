@@ -32,10 +32,13 @@ interface NavEntry {
 
 const BUILTIN_PAGES: NavEntry[] = [
   { id: '/', label: '看板', type: 'builtin', visible: true },
+  { id: '/us-market', label: '美股看板', type: 'builtin', visible: true },
   { id: '/holdings', label: '持股', type: 'builtin', visible: true },
+  { id: '/funds', label: '基金账户', type: 'builtin', visible: true },
   { id: '/watchlist', label: '自选', type: 'builtin', visible: true },
   { id: '/screener', label: '策略', type: 'builtin', visible: true },
   { id: '/backtest', label: '回测', type: 'builtin', visible: true },
+  { id: '/investment-expert', label: 'AI 投资专家', type: 'builtin', visible: true },
   { id: '/limit-ladder', label: '连板梯队', type: 'builtin', visible: true },
   { id: '/concept-analysis', label: '概念分析', type: 'builtin', visible: true },
   { id: '/industry-analysis', label: '行业分析', type: 'builtin', visible: true },
