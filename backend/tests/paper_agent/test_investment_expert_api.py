@@ -160,3 +160,37 @@ def test_portfolio_sync_api_maps_conflicts() -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"] == "请先停止 AI 投资专家盯盘"
+
+
+def test_strategy_lab_task_routes_forward_to_service() -> None:
+    """策略优化和生成接口必须把任务转发给服务层。"""
+
+    class Service:
+        """记录策略实验接口所需的最小服务替身。"""
+
+        @staticmethod
+        def submit_strategy_optimization() -> dict[str, str]:
+            """模拟提交策略参数优化任务。"""
+            return {"status": "started", "task": "strategy_optimization"}
+
+        @staticmethod
+        def submit_strategy_generation() -> dict[str, str]:
+            """模拟提交 AI 策略生成任务。"""
+            return {"status": "started", "task": "strategy_generation"}
+
+    app = FastAPI()
+    app.state.investment_expert_service = Service()
+    app.include_router(router)
+    client = TestClient(app)
+
+    optimized = client.post("/api/investment-expert/strategy/optimize")
+    generated = client.post("/api/investment-expert/strategy/generate")
+
+    assert optimized.status_code == 200
+    assert optimized.json() == {
+        "status": "started",
+        "task": "strategy_optimization",
+        "reason": None,
+    }
+    assert generated.status_code == 200
+    assert generated.json() == {"status": "started", "task": "strategy_generation", "reason": None}

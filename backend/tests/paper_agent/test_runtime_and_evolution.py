@@ -5,11 +5,12 @@ from datetime import UTC, date, datetime, timedelta
 from app.paper_agent.evolution import EvaluationMetrics, PolicyEvolutionEngine
 from app.paper_agent.execution import StrictMinuteExecutor
 from app.paper_agent.models import ExpertPolicy, MinuteBar, PositionLot, RiskConstitution
-from app.paper_agent.runtime import InvestmentExpertRuntime
+from app.paper_agent.runtime import InvestmentExpertRuntime, InvestmentExpertRuntimeConfig
 
 
-def _bar(minute: int, close: float, amount: float) -> MinuteBar:
-    start = datetime(2026, 8, 18, 9, minute, tzinfo=UTC)
+def _bar(minute: int, close: float, amount: float, *, day: int = 18) -> MinuteBar:
+    """构造指定交易日和分钟的完整分钟线。"""
+    start = datetime(2026, 8, day, 9, minute, tzinfo=UTC)
     return MinuteBar(
         symbol="A",
         datetime=start,
@@ -33,7 +34,9 @@ def test_runtime_submits_only_after_completed_bar_confirmation() -> None:
         min_breakout_pct=0,
     )
     runtime = InvestmentExpertRuntime(
-        session_id="s1", policy=policy, candidates={"A"}, executor=executor
+        InvestmentExpertRuntimeConfig(
+            session_id="s1", policy=policy, candidates={"A"}, executor=executor
+        )
     )
 
     first = runtime.on_bar(_bar(31, 10.0, 100_000))
@@ -58,18 +61,22 @@ def test_runtime_applies_overnight_module_factor_to_entry_confirmation() -> None
         overnight_us_entry_weight=0.10,
     )
     positive = InvestmentExpertRuntime(
-        session_id="positive-module",
-        policy=policy,
-        candidates={"A"},
-        executor=StrictMinuteExecutor(RiskConstitution(slippage_bps=0)),
-        candidate_context={"A": {"overnight_us_factor": 1.0}},
+        InvestmentExpertRuntimeConfig(
+            session_id="positive-module",
+            policy=policy,
+            candidates={"A"},
+            executor=StrictMinuteExecutor(RiskConstitution(slippage_bps=0)),
+            candidate_context={"A": {"overnight_us_factor": 1.0}},
+        )
     )
     negative = InvestmentExpertRuntime(
-        session_id="negative-module",
-        policy=policy,
-        candidates={"A"},
-        executor=StrictMinuteExecutor(RiskConstitution(slippage_bps=0)),
-        candidate_context={"A": {"overnight_us_factor": -1.0}},
+        InvestmentExpertRuntimeConfig(
+            session_id="negative-module",
+            policy=policy,
+            candidates={"A"},
+            executor=StrictMinuteExecutor(RiskConstitution(slippage_bps=0)),
+            candidate_context={"A": {"overnight_us_factor": -1.0}},
+        )
     )
 
     positive.on_bar(_bar(31, 10.0, 100_000))
@@ -94,17 +101,19 @@ def test_runtime_treats_unavailable_overnight_module_data_as_neutral() -> None:
         min_breakout_pct=0,
     )
     runtime = InvestmentExpertRuntime(
-        session_id="missing-us-data-session",
-        policy=policy,
-        candidates={"A"},
-        executor=executor,
-        candidate_context={
-            "A": {
-                "overnight_us_available": False,
-                "overnight_us_score": -1.0,
-                "overnight_us_factor": 0.0,
-            }
-        },
+        InvestmentExpertRuntimeConfig(
+            session_id="missing-us-data-session",
+            policy=policy,
+            candidates={"A"},
+            executor=executor,
+            candidate_context={
+                "A": {
+                    "overnight_us_available": False,
+                    "overnight_us_score": -1.0,
+                    "overnight_us_factor": 0.0,
+                }
+            },
+        )
     )
 
     runtime.on_bar(_bar(31, 10.0, 100_000))
@@ -124,7 +133,7 @@ def test_runtime_applies_inverse_overnight_module_factor_to_soft_exit() -> None:
     )
 
     def runtime(factor: float) -> InvestmentExpertRuntime:
-        executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
+        executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0, min_hold_trading_days=1))
         executor.lots.append(
             PositionLot(
                 lot_id=f"lot-{factor}",
@@ -137,11 +146,13 @@ def test_runtime_applies_inverse_overnight_module_factor_to_soft_exit() -> None:
             )
         )
         return InvestmentExpertRuntime(
-            session_id=f"module-exit-{factor}",
-            policy=policy,
-            candidates={"A"},
-            executor=executor,
-            candidate_context={"A": {"overnight_us_factor": factor}},
+            InvestmentExpertRuntimeConfig(
+                session_id=f"module-exit-{factor}",
+                policy=policy,
+                candidates={"A"},
+                executor=executor,
+                candidate_context={"A": {"overnight_us_factor": factor}},
+            )
         )
 
     weak_module_step = runtime(-1.0).on_bar(_bar(31, 10.0, 100_000))
@@ -168,11 +179,13 @@ def test_positive_overnight_module_factor_never_weakens_hard_stop_loss() -> None
         )
     )
     runtime = InvestmentExpertRuntime(
-        session_id="hard-stop",
-        policy=ExpertPolicy(id="hard-stop", version=1),
-        candidates={"A"},
-        executor=executor,
-        candidate_context={"A": {"overnight_us_factor": 1.0}},
+        InvestmentExpertRuntimeConfig(
+            session_id="hard-stop",
+            policy=ExpertPolicy(id="hard-stop", version=1),
+            candidates={"A"},
+            executor=executor,
+            candidate_context={"A": {"overnight_us_factor": 1.0}},
+        )
     )
 
     step = runtime.on_bar(_bar(31, 9.4, 94_000))
@@ -182,7 +195,104 @@ def test_positive_overnight_module_factor_never_weakens_hard_stop_loss() -> None
     assert step.decision["reason"] == "settled_position_stop_loss"
 
 
-def test_news_factor_softens_but_does_not_replace_price_confirmation() -> None:
+def _minimum_hold_runtime() -> InvestmentExpertRuntime:
+    """构造持有一手股票的最短持有期测试运行时。"""
+    executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
+    executor.lots.append(
+        PositionLot(
+            lot_id="minimum-hold",
+            symbol="A",
+            acquired_date=date(2026, 8, 17),
+            shares=100,
+            remaining_shares=100,
+            entry_price=10,
+            entry_cost=5,
+        )
+    )
+    return InvestmentExpertRuntime(
+        InvestmentExpertRuntimeConfig(
+            session_id="minimum-hold",
+            policy=ExpertPolicy(id="minimum-hold", version=1),
+            candidates={"A"},
+            executor=executor,
+        )
+    )
+
+
+def test_runtime_blocks_soft_exit_until_three_trading_days() -> None:
+    """普通止盈和信号退出必须等待三个 A 股交易日。"""
+
+    early = _minimum_hold_runtime().on_bar(_bar(31, 10.9, 109_000, day=18))
+    eligible_runtime = _minimum_hold_runtime()
+    eligible = eligible_runtime.on_bar(_bar(31, 10.9, 109_000, day=20))
+
+    assert early.decision is not None
+    assert early.decision["action"] == "hold"
+    assert early.decision["reason"] == "position_min_hold_not_reached"
+    assert early.decision["features"]["oldest_hold_trading_days"] == 1
+    assert eligible.decision is not None
+    assert eligible.decision["action"] == "sell"
+    assert eligible.decision["reason"] == "settled_position_take_profit"
+    assert eligible.submitted_event is not None
+    assert eligible.submitted_event.order_id is not None
+    assert (
+        eligible_runtime.executor.pending[eligible.submitted_event.order_id].remaining_shares == 100
+    )
+
+
+def _runtime_with_mixed_age_lots() -> tuple[InvestmentExpertRuntime, StrictMinuteExecutor]:
+    """构造同时包含到期和未到期批次的测试运行时。"""
+    executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
+    executor.lots.extend(
+        [
+            PositionLot(
+                lot_id="expired",
+                symbol="A",
+                acquired_date=date(2026, 8, 3),
+                shares=100,
+                remaining_shares=100,
+                entry_price=10,
+                entry_cost=5,
+            ),
+            PositionLot(
+                lot_id="young",
+                symbol="A",
+                acquired_date=date(2026, 8, 20),
+                shares=100,
+                remaining_shares=100,
+                entry_price=10,
+                entry_cost=5,
+            ),
+        ]
+    )
+    runtime = InvestmentExpertRuntime(
+        InvestmentExpertRuntimeConfig(
+            session_id="maximum-hold",
+            policy=ExpertPolicy(id="maximum-hold", version=1),
+            candidates={"A"},
+            executor=executor,
+        )
+    )
+    return runtime, executor
+
+
+def test_runtime_max_hold_sells_only_expired_lots_after_fifteen_trading_days() -> None:
+    """持有满十五个交易日时只能卖出已经到期的批次。"""
+    runtime, executor = _runtime_with_mixed_age_lots()
+
+    step = runtime.on_bar(_bar(31, 10.0, 100_000, day=24))
+
+    assert step.decision is not None
+    assert step.decision["action"] == "sell"
+    assert step.decision["reason"] == "settled_position_max_hold"
+    assert step.decision["features"]["max_hold_expired_shares"] == 100
+    assert step.submitted_event is not None
+    assert step.submitted_event.order_id is not None
+    assert executor.pending[step.submitted_event.order_id].remaining_shares == 100
+
+
+def _news_factor_runtime(factor: float) -> InvestmentExpertRuntime:
+    """构造指定新闻因子的入场确认测试运行时。"""
     policy = ExpertPolicy(
         id="news-factor",
         version=1,
@@ -191,23 +301,21 @@ def test_news_factor_softens_but_does_not_replace_price_confirmation() -> None:
         min_breakout_pct=0.001,
         news_candidate_weight=0.25,
     )
-    positive_executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
-    positive = InvestmentExpertRuntime(
-        session_id="positive-news",
-        policy=policy,
-        candidates={"A"},
-        executor=positive_executor,
-        candidate_context={"A": {"news_factor_score": 1.0}},
-    )
-    negative_executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
-    negative = InvestmentExpertRuntime(
-        session_id="negative-news",
-        policy=policy,
-        candidates={"A"},
-        executor=negative_executor,
-        candidate_context={"A": {"news_factor_score": -1.0}},
+    return InvestmentExpertRuntime(
+        InvestmentExpertRuntimeConfig(
+            session_id=f"news-{factor}",
+            policy=policy,
+            candidates={"A"},
+            executor=StrictMinuteExecutor(RiskConstitution(slippage_bps=0)),
+            candidate_context={"A": {"news_factor_score": factor}},
+        )
     )
 
+
+def test_news_factor_softens_but_does_not_replace_price_confirmation() -> None:
+    """新闻因子只能软化阈值，不能替代价格确认。"""
+    positive = _news_factor_runtime(1.0)
+    negative = _news_factor_runtime(-1.0)
     positive.on_bar(_bar(31, 10.0, 100_000))
     positive_step = positive.on_bar(_bar(32, 10.01, 100_100))
     negative.on_bar(_bar(31, 10.0, 100_000))
@@ -247,10 +355,12 @@ def test_carryover_position_can_exit_when_symbol_is_not_a_new_candidate() -> Non
         )
     )
     runtime = InvestmentExpertRuntime(
-        session_id="s2",
-        policy=ExpertPolicy(id="p2", version=2),
-        candidates=set(),
-        executor=executor,
+        InvestmentExpertRuntimeConfig(
+            session_id="s2",
+            policy=ExpertPolicy(id="p2", version=2),
+            candidates=set(),
+            executor=executor,
+        )
     )
 
     step = runtime.on_bar(_bar(31, 10.0, 100_000))

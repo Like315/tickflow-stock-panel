@@ -474,6 +474,8 @@ def _resolve_base_columns(features: set[str]) -> frozenset[str]:
 
 @dataclass
 class StrategyBacktestConfig:
+    """单策略回测的日期、成交和组合配置。"""
+
     strategy_id: str
     symbols: list[str] | None
     start: date
@@ -495,6 +497,7 @@ class StrategyBacktestConfig:
     mode: Literal["position", "full"] = "position"
     asset_type: str = "stock"
     holding_days: int = 5
+    min_hold_days: int = 1
     # 分钟K精确成交: 开启后用当日分钟K确定穿越价/VWAP (需 Pro+ 分钟K能力)
     minute_fill: bool = False
     # 市场环境过滤: {"states": ["strong",...], "min_score": 60}。
@@ -502,10 +505,13 @@ class StrategyBacktestConfig:
     regime_filter: dict | None = None
 
     def __post_init__(self) -> None:
+        """解析兼容成交口径并校验最短持有期。"""
         if self.entry_fill is None:
             self.entry_fill = self.matching
         if self.exit_fill is None:
             self.exit_fill = self.matching
+        if self.min_hold_days < 1:
+            raise ValueError("min_hold_days must be at least 1")
 
 
 @dataclass
@@ -1165,6 +1171,7 @@ class StrategyBacktestService:
             trailing_stop_pct=trailing_stop,
             trailing_take_profit_activate_pct=trailing_take_profit_activate,
             trailing_take_profit_drawdown_pct=trailing_take_profit_drawdown,
+            min_hold_days=config.min_hold_days,
             max_hold_days=max_hold_days,
             max_positions=config.max_positions,
             max_exposure_pct=config.max_exposure_pct,
@@ -2066,12 +2073,16 @@ class StrategyBacktestService:
             "exit_value": t.exit_value,
             "pnl_amount": t.pnl_amount,
             "entry_score": getattr(t, "entry_score", None),
-            "entry_signal_date": str(t.entry_signal_date)
-            if getattr(t, "entry_signal_date", None) is not None
-            else None,
-            "exit_signal_date": str(t.exit_signal_date)
-            if getattr(t, "exit_signal_date", None) is not None
-            else None,
+            "entry_signal_date": (
+                str(t.entry_signal_date)
+                if getattr(t, "entry_signal_date", None) is not None
+                else None
+            ),
+            "exit_signal_date": (
+                str(t.exit_signal_date)
+                if getattr(t, "exit_signal_date", None) is not None
+                else None
+            ),
             "blocked_exit_days": getattr(t, "blocked_exit_days", 0),
             "entry_signal_id": getattr(t, "entry_signal_id", None),
             "exit_signal_id": getattr(t, "exit_signal_id", None),

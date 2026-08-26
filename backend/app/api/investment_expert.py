@@ -120,7 +120,16 @@ class TaskSubmissionResponse(BaseModel):
     """后台任务提交响应。"""
 
     status: Literal["started", "reused", "deferred"]
-    task: Literal["dataset_bootstrap", "evolution", "model_training"] | None = None
+    task: (
+        Literal[
+            "dataset_bootstrap",
+            "evolution",
+            "model_training",
+            "strategy_optimization",
+            "strategy_generation",
+        ]
+        | None
+    ) = None
     reason: str | None = None
 
 
@@ -288,10 +297,16 @@ class InvestmentExpertStatusResponse(BaseModel):
     portfolio_baseline_equity: float
     portfolio_sync: PortfolioSyncStatusResponse | None = None
     pending_order_count: int = Field(ge=0)
+    holding_period: dict[str, JsonValue] = Field(default_factory=dict)
     entries_enabled: bool
     risk_trip_reason: str | None = None
     overnight_us_market: dict[str, JsonValue] | None = None
     news_sentiment: dict[str, JsonValue] | None = None
+    strategy_orchestration: dict[str, JsonValue] | None = None
+    expert_strategies: list[dict[str, JsonValue]] = Field(default_factory=list)
+    strategy_parameter_versions: dict[str, dict[str, JsonValue]] = Field(default_factory=dict)
+    strategy_parameter_experiments: list[dict[str, JsonValue]] = Field(default_factory=list)
+    ai_strategy_generation_available: bool = False
     session_prepare_error: str | None = None
     minute_capable: bool
     live_minute_source: str
@@ -372,6 +387,18 @@ def bootstrap_dataset(
 @router.post("/evolution/run", response_model=TaskSubmissionResponse)
 def run_evolution(request: Request) -> TaskSubmissionResponse:
     return TaskSubmissionResponse.model_validate(_service(request).submit_evolution())
+
+
+@router.post("/strategy/optimize", response_model=TaskSubmissionResponse)
+def optimize_active_strategies(request: Request) -> TaskSubmissionResponse:
+    """提交当前活动内置策略的参数优化任务。"""
+    return TaskSubmissionResponse.model_validate(_service(request).submit_strategy_optimization())
+
+
+@router.post("/strategy/generate", response_model=TaskSubmissionResponse)
+def generate_expert_strategy(request: Request) -> TaskSubmissionResponse:
+    """提交 AI 投资专家策略生成与保护集评估任务。"""
+    return TaskSubmissionResponse.model_validate(_service(request).submit_strategy_generation())
 
 
 @router.post("/training/run", response_model=TaskSubmissionResponse)

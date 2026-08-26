@@ -16,7 +16,7 @@ from app.paper_agent.models import (
     RiskConstitution,
     TrainedDecisionModel,
 )
-from app.paper_agent.runtime import InvestmentExpertRuntime
+from app.paper_agent.runtime import InvestmentExpertRuntime, InvestmentExpertRuntimeConfig
 
 
 @dataclass(frozen=True)
@@ -84,12 +84,14 @@ class PolicyEvaluator:
                 for row in candidate_frame.iter_rows(named=True)
             }
             runtime = InvestmentExpertRuntime(
-                session_id=f"replay_{trade_date}_{policy.id}",
-                policy=policy,
-                candidates=candidates,
-                executor=executor,
-                candidate_context=candidate_context,
-                decision_model=self.decision_model,
+                InvestmentExpertRuntimeConfig(
+                    session_id=f"replay_{trade_date}_{policy.id}",
+                    policy=policy,
+                    candidates=candidates,
+                    executor=executor,
+                    candidate_context=candidate_context,
+                    decision_model=self.decision_model,
+                )
             )
             minute = pl.read_parquet(minute_path).sort(["datetime", "symbol"])
             for row in minute.iter_rows(named=True):

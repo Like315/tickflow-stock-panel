@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
 import logging
 import math
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import polars as pl
@@ -23,10 +26,23 @@ from app.market_calendar import is_cn_trading_day
 from app.market_time import CN_TZ, cn_now
 from app.paper_agent.dataset import TrainingDatasetBuilder
 from app.paper_agent.evolution import PolicyEvaluator, PolicyEvolutionEngine
+from app.paper_agent.exceptions import StrategyDependencyUnavailableError, StrategyLabError
 from app.paper_agent.execution import StrictMinuteExecutor
-from app.paper_agent.models import MinuteBar, PositionLot, RiskConstitution
-from app.paper_agent.runtime import InvestmentExpertRuntime
+from app.paper_agent.models import (
+    ExpertStrategyRecord,
+    MinuteBar,
+    PositionLot,
+    RiskConstitution,
+    StrategyParameterCandidate,
+)
+from app.paper_agent.runtime import InvestmentExpertRuntime, InvestmentExpertRuntimeConfig
 from app.paper_agent.store import PaperAgentStore
+from app.paper_agent.strategy_orchestrator import (
+    MarketRegime,
+    classify_market_regime,
+    plan_strategy_allocation,
+    weighted_consensus_scores,
+)
 from app.paper_agent.training import ExpertModelTrainer
 from app.price_limits import is_risk_warning_name, price_limit_pct
 from app.services import preferences
@@ -34,6 +50,11 @@ from app.services.kline_sync import sync_and_persist_daily_batch
 from app.tickflow.capabilities import Cap, CapabilitySet
 from app.tickflow.policy import base_tier_name
 from app.tickflow.rate_limits import resolve_limit
+
+if TYPE_CHECKING:
+    from app.backtest.optimizer import OptimizeConfig, StrategyOptimizer
+    from app.backtest.strategy import StrategyBacktestResult, StrategyBacktestService
+    from app.strategy.engine import StrategyDef
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +107,48 @@ class DatasetBootstrapRunState:
     run_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class BacktestWindow:
+    """一次策略回测使用的闭区间日期窗口。"""
+
+    start: date
+    end: date
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyOptimizationWindows:
+    """策略参数优化的训练窗口与独立保护窗口。"""
+
+    train: BacktestWindow
+    protected: BacktestWindow
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyOptimizationContext:
+    """单批内置策略优化共享的只读依赖。"""
+
+    service: StrategyBacktestService
+    optimizer: StrategyOptimizer
+    active_params: dict[str, dict[str, Any]]
+    windows: StrategyOptimizationWindows
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedStrategyEvaluation:
+    """AI 候选策略的优化参数与独立保护集结果。"""
+
+    params: dict[str, Any]
+    optimization: dict[str, Any]
+    result: StrategyBacktestResult
+    windows: StrategyOptimizationWindows
+
+
+OptimizationOutcome = Literal["promoted", "rejected"]
+
+
 class InvestmentExpertService:
+    """协调投资专家模拟交易、策略实验和持续演进。"""
+
     def __init__(
         self,
         repo,
@@ -157,6 +219,7 @@ class InvestmentExpertService:
         self._risk_trip_reason: str | None = None
         self._overnight_us_context: dict[str, Any] | None = None
         self._news_sentiment_context: dict[str, Any] | None = None
+        self._strategy_orchestration: dict[str, Any] | None = None
         self._next_news_refresh_at: datetime | None = None
         self._prepare_failure_reason: str | None = None
 
@@ -414,6 +477,7 @@ class InvestmentExpertService:
             overnight_weight=champion.overnight_us_candidate_weight,
             news_context=news_context,
             news_weight=champion.news_candidate_weight,
+            strategy_weight=champion.strategy_consensus_weight,
         )
         if not candidates:
             self._prepare_failure_reason = "no_point_in_time_candidates"
@@ -421,19 +485,27 @@ class InvestmentExpertService:
         session = self.store.start_session(
             now.date(), champion.id, mode="paper", candidates=candidates
         )
+        if self._strategy_orchestration is not None:
+            self.store.save_strategy_orchestration(
+                session["id"],
+                now.date(),
+                self._strategy_orchestration,
+            )
         executor = self._restore_executor()
         held_symbols = {lot.symbol for lot in executor.lots if lot.remaining_shares > 0}
         context.update(self._load_symbol_context(held_symbols - set(candidates), now.date()))
         self._attach_overnight_module_context(context, overnight_context)
         active_model = self.store.get_active_model()
         self._runtime = InvestmentExpertRuntime(
-            session_id=session["id"],
-            policy=champion,
-            candidates=set(candidates),
-            executor=executor,
-            candidate_context=context,
-            decision_model=active_model,
-            entry_guard=self._refresh_risk_state,
+            InvestmentExpertRuntimeConfig(
+                session_id=session["id"],
+                policy=champion,
+                candidates=set(candidates),
+                executor=executor,
+                candidate_context=context,
+                decision_model=active_model,
+                entry_guard=self._refresh_risk_state,
+            )
         )
         self._executor = executor
         self._session = session
@@ -670,7 +742,7 @@ class InvestmentExpertService:
             if not instruments.is_empty()
             else {}
         )
-        context = {
+        context: dict[str, dict[str, Any]] = {
             symbol: {
                 "source_date": None,
                 "previous_close": None,
@@ -734,9 +806,13 @@ class InvestmentExpertService:
         symbol = str(raw.get("symbol") or "").strip().upper()
         name = str(raw.get("name") or "").strip()
         display_name = name or symbol or "未知股票"
+        raw_quantity = raw.get("quantity")
+        raw_entry_price = raw.get("buy_price")
+        if raw_quantity is None or raw_entry_price is None:
+            return None, f"{display_name} 的数量或成本价无效", None
         try:
-            quantity_value = float(raw.get("quantity"))
-            entry_price = float(raw.get("buy_price"))
+            quantity_value = float(raw_quantity)
+            entry_price = float(raw_entry_price)
         except (TypeError, ValueError):
             return None, f"{display_name} 的数量或成本价无效", None
         quantity = round(quantity_value)
@@ -1121,6 +1197,7 @@ class InvestmentExpertService:
         overnight_weight: float = 0.15,
         news_context: dict[str, Any] | None = None,
         news_weight: float = 0.25,
+        strategy_weight: float = 0.35,
     ) -> tuple[list[str], dict[str, dict[str, Any]]]:
         instruments = self.repo.get_instruments()
         if instruments.is_empty() or "symbol" not in instruments.columns:
@@ -1200,8 +1277,24 @@ class InvestmentExpertService:
                 + 0.3 * (1 - (pl.col("_amount_rank") - 1) / pl.col("_count"))
             ).alias("_score"),
         )
-        strategy_scores = self._strategy_consensus_scores(latest_date)
+        regime = classify_market_regime(
+            latest,
+            source_date=latest_date,
+            overnight_context=overnight_context,
+            news_context=news_context,
+        )
+        strategy_scores, orchestration = self._strategy_consensus_scores(
+            latest_date,
+            regime,
+        )
+        orchestration["trade_date"] = trade_date.isoformat()
+        orchestration["strategy_consensus_weight"] = round(
+            min(max(float(strategy_weight), 0.0), 0.75),
+            6,
+        )
+        self._strategy_orchestration = orchestration
         if strategy_scores:
+            applied_strategy_weight = min(max(float(strategy_weight), 0.0), 0.75)
             strategy_frame = pl.DataFrame(
                 {
                     "symbol": list(strategy_scores),
@@ -1210,9 +1303,10 @@ class InvestmentExpertService:
             )
             latest = latest.join(strategy_frame, on="symbol", how="left").with_columns(
                 pl.col("_strategy_score").fill_null(0.0),
-                (0.75 * pl.col("_score") + 0.25 * pl.col("_strategy_score").fill_null(0.0)).alias(
-                    "_score"
-                ),
+                (
+                    (1 - applied_strategy_weight) * pl.col("_score")
+                    + applied_strategy_weight * pl.col("_strategy_score").fill_null(0.0)
+                ).alias("_score"),
             )
         else:
             latest = latest.with_columns(pl.lit(0.0).alias("_strategy_score"))
@@ -1330,6 +1424,7 @@ class InvestmentExpertService:
                 "score": float(row["_score"]),
                 "daily_momentum_20d": float(row["_momentum"]),
                 "strategy_consensus": float(row["_strategy_score"]),
+                "strategy_regime": regime.state,
                 "market_score": float(row["_market_score"]),
                 "momentum_score": float(row["_news_momentum_preference"]),
                 "defensive_score": float(row["_news_defensive_preference"]),
@@ -1371,37 +1466,95 @@ class InvestmentExpertService:
             logger.exception("investment expert candidate news scoring unavailable")
             return {}
 
-    def _strategy_consensus_scores(self, as_of: date) -> dict[str, float]:
+    def _strategy_consensus_scores(
+        self,
+        as_of: date,
+        regime: MarketRegime,
+    ) -> tuple[dict[str, float], dict[str, Any]]:
         if self.strategy_engine is None or self.screener_service is None:
-            return {}
-        preferred = (
-            "bullish_alignment",
-            "trend_breakout",
-            "volume_price_surge",
-            "pullback_ma20_bounce",
-            "ma_golden_cross",
+            return {}, {
+                "status": "degraded",
+                "reason": "strategy_runtime_unavailable",
+                "regime": regime.as_dict(),
+                "considered_count": 0,
+                "active_count": 0,
+                "allocations": [],
+                "errors": [],
+            }
+
+        catalog = self.strategy_engine.list_strategies()
+        active_params = self.store.active_strategy_parameters()
+        allocations, payload = plan_strategy_allocation(
+            catalog,
+            regime,
+            promoted_ai_strategy_ids=self.store.promoted_expert_strategy_ids(),
         )
-        available = {str(item["id"]) for item in self.strategy_engine.list_strategies()}
-        strategy_ids = [strategy_id for strategy_id in preferred if strategy_id in available]
-        if not strategy_ids:
-            return {}
+        payload.update({"status": "active" if allocations else "degraded", "errors": []})
+        if not allocations:
+            payload["reason"] = "no_compatible_strategies"
+            return {}, payload
+
+        strategy_ids = [allocation.strategy_id for allocation in allocations]
+        params_map = {
+            strategy_id: dict(active_params[strategy_id]["params"])
+            for strategy_id in strategy_ids
+            if strategy_id in active_params
+        }
+        shared_context = None
         try:
-            context = self.screener_service.build_strategy_context(
+            shared_context = self.screener_service.build_strategy_context(
                 self.strategy_engine,
                 as_of,
                 strategy_ids,
+                params_map=params_map,
             )
-            results = self.strategy_engine.run_all(context, strategy_ids=strategy_ids)
-        except Exception:
-            logger.exception("investment expert strategy consensus failed; using rank baseline")
-            return {}
-        votes: dict[str, int] = {}
-        for result in results.values():
-            for row in result.rows:
-                symbol = str(row.get("symbol") or "")
-                if symbol:
-                    votes[symbol] = votes.get(symbol, 0) + 1
-        return {symbol: count / len(strategy_ids) for symbol, count in votes.items()}
+        except Exception as exc:
+            logger.warning(
+                "investment expert shared strategy context failed; isolating strategies: %s",
+                exc,
+            )
+            payload["errors"].append(
+                {"strategy_id": "*", "error": f"shared_context: {str(exc)[:300]}"}
+            )
+
+        results: dict[str, Any] = {}
+        for allocation in allocations:
+            strategy_id = allocation.strategy_id
+            try:
+                context = shared_context
+                if context is None:
+                    context = self.screener_service.build_strategy_context(
+                        self.strategy_engine,
+                        as_of,
+                        [strategy_id],
+                        params_map=params_map,
+                    )
+                results[strategy_id] = self.strategy_engine.run(
+                    strategy_id,
+                    context,
+                    params=params_map.get(strategy_id),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "investment expert strategy %s failed; excluding from consensus: %s",
+                    strategy_id,
+                    exc,
+                )
+                payload["errors"].append({"strategy_id": strategy_id, "error": str(exc)[:300]})
+
+        scores, match_counts = weighted_consensus_scores(allocations, results)
+        for item in payload["allocations"]:
+            strategy_id = str(item["strategy_id"])
+            item["match_count"] = match_counts.get(strategy_id, 0)
+            parameter_state = active_params.get(strategy_id)
+            item["parameter_version_id"] = (
+                parameter_state.get("version_id") if parameter_state else None
+            )
+        if not results:
+            payload["status"] = "degraded"
+            payload["reason"] = "all_strategies_failed"
+        payload["successful_count"] = len(results)
+        return scores, payload
 
     def _refresh_news_sentiment_context(self, now: datetime) -> None:
         if self._runtime is None or self._session is None:
@@ -1630,9 +1783,11 @@ class InvestmentExpertService:
                 sum(value < 0 for value in realized) / len(realized) if realized else 0.5
             ),
             "realized_pnl": sum(realized),
-            "lesson": "insufficient evidence"
-            if not realized
-            else "learn from realized after-cost outcomes",
+            "lesson": (
+                "insufficient evidence"
+                if not realized
+                else "learn from realized after-cost outcomes"
+            ),
         }
         self.store.save_reflection(session_id, reflection)
         rollback = None
@@ -1644,6 +1799,16 @@ class InvestmentExpertService:
                     metrics=summary,
                 ),
                 "model_event_id": self.store.rollback_last_model_promotion(
+                    reason=rollback_reason,
+                    metrics=summary,
+                ),
+                "strategy_parameter_event": (
+                    self.store.rollback_last_strategy_parameter_promotion(
+                        reason=rollback_reason,
+                        metrics=summary,
+                    )
+                ),
+                "expert_strategy_id": self.store.rollback_latest_expert_strategy(
                     reason=rollback_reason,
                     metrics=summary,
                 ),
@@ -1717,6 +1882,606 @@ class InvestmentExpertService:
         except Exception as exc:
             self._last_error = str(exc)[:500]
             logger.exception("investment expert evolution failed")
+            return {"status": "failed", "error": self._last_error}
+        finally:
+            self._operation_lock.release()
+
+    def _latest_orchestration_payload(self) -> dict[str, Any] | None:
+        """返回内存中或最近持久化的策略编排载荷。"""
+        if self._strategy_orchestration is not None:
+            return self._strategy_orchestration
+        persisted = self.store.latest_strategy_orchestration()
+        return persisted.get("payload") if persisted else None
+
+    def submit_strategy_optimization(self) -> dict[str, Any]:
+        """异步提交当前活动内置策略的参数优化任务。"""
+        orchestration = self._latest_orchestration_payload()
+        strategy_ids = [
+            str(item.get("strategy_id"))
+            for item in (orchestration or {}).get("allocations", [])
+            if item.get("source") == "builtin" and item.get("strategy_id")
+        ]
+        if not strategy_ids:
+            return {
+                "status": "deferred",
+                "task": "strategy_optimization",
+                "reason": "no_active_builtin_strategy_allocation",
+            }
+        with self._task_lock:
+            if self._active_future is not None and not self._active_future.done():
+                return {"status": "reused", "task": self._active_task}
+            self._active_task = "strategy_optimization"
+            self._active_future = self._executor_pool.submit(
+                self._run_strategy_optimization,
+                strategy_ids,
+            )
+        return {"status": "started", "task": "strategy_optimization"}
+
+    @staticmethod
+    def _optimizer_grid(
+        strategy: StrategyDef,
+        base_params: dict[str, Any],
+    ) -> dict[str, list[Any]]:
+        """为最多三个数值参数构造有界搜索网格。"""
+        grid: dict[str, list[Any]] = {}
+        for item in strategy.meta.get("params", []):
+            if not isinstance(item, dict) or item.get("type") not in {"float", "int"}:
+                continue
+            parameter_id = str(item.get("id") or "")
+            if not parameter_id:
+                continue
+            current = base_params.get(parameter_id, item.get("default"))
+            step = item.get("step")
+            if current is None or step is None:
+                continue
+            try:
+                current_value = float(current)
+                step_value = float(step)
+            except (TypeError, ValueError):
+                continue
+            if step_value <= 0:
+                continue
+            lower = max(
+                float(item.get("min", current_value - step_value)), current_value - step_value
+            )
+            upper = min(
+                float(item.get("max", current_value + step_value)), current_value + step_value
+            )
+            values = sorted({lower, current_value, upper})
+            if item.get("type") == "int":
+                values = sorted({round(value) for value in values})
+            grid[parameter_id] = values
+            # 3^3=27 trials per strategy; keep the multi-strategy task bounded.
+            if len(grid) >= 3:
+                break
+        return grid
+
+    def _strategy_backtest_service(self) -> StrategyBacktestService:
+        """构造策略实验使用的回测服务。"""
+        from app.backtest.engine import BacktestEngine
+        from app.backtest.strategy import StrategyBacktestService
+
+        return StrategyBacktestService(BacktestEngine(self.repo), self.strategy_engine)
+
+    def _run_strategy_backtest(
+        self,
+        service: StrategyBacktestService,
+        strategy_id: str,
+        params: dict[str, Any],
+        window: BacktestWindow,
+    ) -> StrategyBacktestResult:
+        """按投资专家统一交易约束运行一次策略回测。"""
+        from app.backtest.strategy import StrategyBacktestConfig
+
+        return service.run(
+            StrategyBacktestConfig(
+                strategy_id=strategy_id,
+                symbols=None,
+                start=window.start,
+                end=window.end,
+                params=params,
+                overrides={"max_hold_days": self.constitution.max_hold_trading_days},
+                matching="open_t+1",
+                entry_fill="open_t+1",
+                exit_fill="open_t+1",
+                max_positions=self.constitution.max_positions,
+                max_exposure_pct=self.constitution.max_exposure_pct,
+                initial_capital=self.constitution.initial_capital,
+                position_sizing="score_weight",
+                mode="full",
+                asset_type="stock",
+                holding_days=self.constitution.max_hold_trading_days,
+                min_hold_days=self.constitution.min_hold_trading_days,
+            )
+        )
+
+    @staticmethod
+    def _parameter_optimization_gate(
+        baseline: StrategyBacktestResult,
+        candidate: StrategyBacktestResult,
+    ) -> tuple[OptimizationOutcome, str]:
+        """使用独立保护集判断候选参数是否允许晋级。"""
+        if baseline.error:
+            return "rejected", "protected_baseline_backtest_failed"
+        if candidate.error:
+            return "rejected", "protected_backtest_failed"
+        candidate_stats = candidate.stats or {}
+        baseline_stats = baseline.stats or {}
+        if int(candidate_stats.get("n_trades") or 0) < 10:
+            return "rejected", "insufficient_protected_trades"
+        if float(candidate_stats.get("avg_pnl") or 0.0) <= float(
+            baseline_stats.get("avg_pnl") or 0.0
+        ):
+            return "rejected", "protected_expectancy_did_not_improve"
+        if float(candidate_stats.get("total_return") or 0.0) < float(
+            baseline_stats.get("total_return") or 0.0
+        ):
+            return "rejected", "protected_return_regressed"
+        if (
+            float(candidate_stats.get("max_drawdown") or 0.0)
+            < float(baseline_stats.get("max_drawdown") or 0.0) - 0.01
+        ):
+            return "rejected", "protected_drawdown_regressed"
+        return "promoted", "protected_strategy_optimization_passed"
+
+    def _optimizer_backtest_kwargs(self) -> dict[str, Any]:
+        """返回参数优化阶段统一使用的回测配置。"""
+        return {
+            "matching": "open_t+1",
+            "entry_fill": "open_t+1",
+            "exit_fill": "open_t+1",
+            "max_positions": self.constitution.max_positions,
+            "max_exposure_pct": self.constitution.max_exposure_pct,
+            "initial_capital": self.constitution.initial_capital,
+            "position_sizing": "score_weight",
+            "mode": "full",
+            "asset_type": "stock",
+            "holding_days": self.constitution.max_hold_trading_days,
+            "min_hold_days": self.constitution.min_hold_trading_days,
+        }
+
+    def _optimizer_config(
+        self,
+        strategy_id: str,
+        base_params: dict[str, Any],
+        grid: dict[str, list[Any]],
+        window: BacktestWindow,
+    ) -> OptimizeConfig:
+        """构造单个内置策略的训练窗优化配置。"""
+        from app.backtest.optimizer import OptimizeConfig
+
+        return OptimizeConfig(
+            strategy_id=strategy_id,
+            symbols=None,
+            start=window.start,
+            end=window.end,
+            param_grid=grid,
+            objective="sortino",
+            max_workers=1,
+            base_params=base_params,
+            overrides={"max_hold_days": self.constitution.max_hold_trading_days},
+            backtest_kwargs=self._optimizer_backtest_kwargs(),
+        )
+
+    @staticmethod
+    def _optimization_metrics(
+        optimized: dict[str, Any],
+        baseline: StrategyBacktestResult,
+        candidate: StrategyBacktestResult,
+        window: BacktestWindow,
+    ) -> dict[str, Any]:
+        """构造参数优化结果的训练与保护集审计指标。"""
+        return {
+            "train": {
+                "objective": optimized.get("objective"),
+                "best_score": optimized.get("best_score"),
+                "n_combinations": optimized.get("n_combinations"),
+            },
+            "protected": {
+                "start": window.start.isoformat(),
+                "end": window.end.isoformat(),
+                "baseline": baseline.stats,
+                "candidate": candidate.stats,
+            },
+        }
+
+    def _persist_optimization_candidate(
+        self,
+        strategy_id: str,
+        params: dict[str, Any],
+        metrics: dict[str, Any],
+        decision: tuple[OptimizationOutcome, str],
+    ) -> dict[str, Any]:
+        """保存参数候选，并在通过保护集时晋级。"""
+        outcome, reason = decision
+        version = self.store.save_strategy_parameter_version(
+            StrategyParameterCandidate(
+                strategy_id=strategy_id,
+                params=params,
+                metrics=metrics,
+                status=outcome,
+                reason=reason,
+            )
+        )
+        if outcome == "promoted":
+            self.store.promote_strategy_parameters(version["id"], reason=reason, metrics=metrics)
+        return {
+            "strategy_id": strategy_id,
+            "status": outcome,
+            "reason": reason,
+            "parameter_version_id": version["id"],
+            "params": params,
+        }
+
+    @staticmethod
+    def _strategy_base_params(
+        strategy: StrategyDef,
+        current_state: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """合并策略默认参数和当前活动参数。"""
+        defaults = InvestmentExpertService._strategy_default_params(strategy)
+        active = dict(current_state["params"]) if current_state else {}
+        return {**defaults, **active}
+
+    def _optimize_builtin_strategy(
+        self,
+        strategy_id: str,
+        context: StrategyOptimizationContext,
+    ) -> dict[str, Any]:
+        """优化并保护集评估一个内置策略。"""
+        strategy = self.strategy_engine.get(strategy_id)
+        if strategy.source != "builtin":
+            return {"strategy_id": strategy_id, "status": "skipped", "reason": "not_builtin"}
+        current_state = context.active_params.get(strategy_id)
+        base_params = self._strategy_base_params(strategy, current_state)
+        grid = self._optimizer_grid(strategy, base_params)
+        if not grid:
+            return {"strategy_id": strategy_id, "status": "skipped", "reason": "no_numeric_params"}
+        optimized = context.optimizer.optimize(
+            self._optimizer_config(strategy_id, base_params, grid, context.windows.train)
+        )
+        best = optimized.get("best_params")
+        if not best:
+            return {
+                "strategy_id": strategy_id,
+                "status": "rejected",
+                "reason": "optimizer_no_result",
+            }
+        candidate_params = {**base_params, **dict(best)}
+        baseline = self._run_strategy_backtest(
+            context.service, strategy_id, base_params, context.windows.protected
+        )
+        candidate = self._run_strategy_backtest(
+            context.service, strategy_id, candidate_params, context.windows.protected
+        )
+        decision = self._parameter_optimization_gate(baseline, candidate)
+        metrics = self._optimization_metrics(
+            optimized, baseline, candidate, context.windows.protected
+        )
+        return self._persist_optimization_candidate(
+            strategy_id, candidate_params, metrics, decision
+        )
+
+    def _optimize_strategy_safely(
+        self,
+        strategy_id: str,
+        context: StrategyOptimizationContext,
+    ) -> dict[str, Any]:
+        """隔离单策略异常，保证批次中其余策略继续执行。"""
+        try:
+            return self._optimize_builtin_strategy(strategy_id, context)
+        except Exception as exc:
+            logger.exception("investment expert strategy optimization item failed: %s", strategy_id)
+            return {
+                "strategy_id": strategy_id,
+                "status": "failed",
+                "reason": "strategy_optimization_failed",
+                "error": str(exc)[:500],
+            }
+
+    def _strategy_optimization_context(self, latest_date: date) -> StrategyOptimizationContext:
+        """构造一批内置策略参数优化共享的依赖与窗口。"""
+        from app.backtest.optimizer import StrategyOptimizer
+
+        if self.strategy_engine is None:
+            raise StrategyDependencyUnavailableError("策略运行时不可用")
+        service = self._strategy_backtest_service()
+        windows = StrategyOptimizationWindows(
+            train=BacktestWindow(
+                latest_date - timedelta(days=450), latest_date - timedelta(days=91)
+            ),
+            protected=BacktestWindow(latest_date - timedelta(days=90), latest_date),
+        )
+        return StrategyOptimizationContext(
+            service=service,
+            optimizer=StrategyOptimizer(service, self.strategy_engine),
+            active_params=self.store.active_strategy_parameters(),
+            windows=windows,
+        )
+
+    def _run_strategy_optimization(self, strategy_ids: list[str]) -> dict[str, Any]:
+        """串行优化内置策略，并对每个策略独立隔离失败。"""
+        if not self._operation_lock.acquire(blocking=False):
+            return {"status": "reused"}
+        try:
+            latest_date = self.repo.latest_daily_date()
+            if latest_date is None:
+                raise StrategyDependencyUnavailableError("日线行情不可用")
+            context = self._strategy_optimization_context(latest_date)
+            results = [
+                self._optimize_strategy_safely(strategy_id, context)
+                for strategy_id in dict.fromkeys(strategy_ids)
+            ]
+            return {"status": "succeeded", "results": results}
+        except Exception as exc:
+            self._last_error = str(exc)[:500]
+            logger.exception("investment expert strategy optimization failed")
+            return {"status": "failed", "error": self._last_error}
+        finally:
+            self._operation_lock.release()
+
+    def submit_strategy_generation(self) -> dict[str, Any]:
+        """在依赖可用时异步提交 AI 专家策略生成任务。"""
+        if self.strategy_engine is None:
+            return {
+                "status": "deferred",
+                "task": "strategy_generation",
+                "reason": "strategy_runtime_unavailable",
+            }
+        from app.services.ai_provider import ai_configured
+
+        if not ai_configured():
+            return {
+                "status": "deferred",
+                "task": "strategy_generation",
+                "reason": "ai_not_configured",
+            }
+        with self._task_lock:
+            if self._active_future is not None and not self._active_future.done():
+                return {"status": "reused", "task": self._active_task}
+            self._active_task = "strategy_generation"
+            self._active_future = self._executor_pool.submit(self._run_strategy_generation)
+        return {"status": "started", "task": "strategy_generation"}
+
+    def _strategy_generation_prompt(self, strategy_id: str) -> str:
+        """构造包含市场状态和历史实验反馈的策略生成提示词。"""
+        orchestration = self._latest_orchestration_payload() or {
+            "regime": {"state": "balanced"},
+            "allocations": [],
+        }
+        previous = self.store.list_expert_strategies(limit=10)
+        return f"""为 TickFlow 的 AI 投资专家生成一个新的 A 股日线选股策略。
+
+这是现有策略的补充，不得复制当前最强策略。策略将在最近历史训练窗优化，并在独立保护集回测；
+未通过不会参与模拟交易。只使用 T 日及更早数据产生信号，成交统一由系统在 T+1 执行。
+
+强制要求：
+- META.id 必须精确为 {strategy_id!r}
+- META 增加 expert_owned=True、asset_types=['stock']、timeframes=['1d']
+- 优先使用 matrix_native 协议；必须至少定义 1 个数值参数，并给出 default/min/max/step
+- 不写文件、不联网、不读取账户、不包含下单逻辑，只输出一个完整策略 Python 文件
+
+当前市场状态与动态策略分配：
+{json.dumps(orchestration, ensure_ascii=False, default=str)}
+
+之前生成策略及保护集结果（请针对失败原因提出不同假设）：
+{json.dumps(previous, ensure_ascii=False, default=str)}
+"""
+
+    @staticmethod
+    def _generated_strategy_gate(
+        result: StrategyBacktestResult,
+    ) -> tuple[OptimizationOutcome, str]:
+        """使用独立保护集判断 AI 候选策略是否允许晋级。"""
+        if result.error:
+            return "rejected", "protected_backtest_failed"
+        stats = result.stats or {}
+        if int(stats.get("n_trades") or 0) < 30:
+            return "rejected", "insufficient_protected_trades"
+        if float(stats.get("avg_pnl") or 0.0) <= 0:
+            return "rejected", "non_positive_protected_expectancy"
+        if float(stats.get("total_return") or 0.0) <= 0:
+            return "rejected", "non_positive_protected_return"
+        if float(stats.get("max_drawdown") or 0.0) < -0.20:
+            return "rejected", "protected_drawdown_limit_exceeded"
+        return "promoted", "protected_generated_strategy_passed"
+
+    def _generation_regime_and_parent(self) -> tuple[str, str | None]:
+        """读取生成任务对应的最新市场状态与父策略。"""
+        payload = self._latest_orchestration_payload() or {}
+        regime = str((payload.get("regime") or {}).get("state", "balanced"))
+        allocations = payload.get("allocations") or []
+        parent = str(allocations[0].get("strategy_id")) if allocations else None
+        return regime, parent
+
+    def _record_generated_strategy_shadow(
+        self,
+        strategy_id: str,
+        regime: str,
+        parent_strategy_id: str | None,
+    ) -> None:
+        """在生成代码前记录可恢复的影子策略。"""
+        self.store.record_expert_strategy(
+            ExpertStrategyRecord(
+                strategy_id=strategy_id,
+                parent_strategy_id=parent_strategy_id,
+                regime=regime,
+                status="shadow",
+                metrics={},
+                reason="awaiting_generation_and_protected_backtest",
+            )
+        )
+
+    def _generate_strategy_source(self, strategy_id: str, regime: str) -> str:
+        """调用 AI 生成策略并强制写入专家所有权元数据。"""
+        from app.strategy.ai_generator import AIStrategyGenerator, normalize_strategy_meta_fields
+
+        generator = AIStrategyGenerator()
+        generated = asyncio.run(generator.generate(self._strategy_generation_prompt(strategy_id)))
+        if not generated.get("valid"):
+            raise StrategyLabError(str(generated.get("error") or "AI 策略校验失败"))
+        code = normalize_strategy_meta_fields(
+            str(generated["code"]),
+            {
+                "id": strategy_id,
+                "name": f"AI投资专家·{regime}",
+                "description": "由 AI 投资专家生成并经过独立保护集门控的候选策略",
+                "expert_owned": True,
+                "expert_regime": regime,
+                "asset_types": ["stock"],
+                "timeframes": ["1d"],
+            },
+        )
+        validated = generator.validate_code(code)
+        if not validated.get("valid"):
+            raise StrategyLabError(str(validated.get("error") or "规范化后的策略无效"))
+        return code
+
+    def _install_generated_strategy(self, strategy_id: str, code: str) -> StrategyDef:
+        """原子写入 AI 策略文件并验证策略引擎加载结果。"""
+        if self.strategy_engine is None:
+            raise StrategyDependencyUnavailableError("策略运行时不可用")
+        out_dir = self.data_dir / "strategies" / "ai"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{strategy_id}.py"
+        if path.exists():
+            raise StrategyLabError(f"生成策略已存在：{strategy_id}")
+        temp_path = path.with_suffix(".py.tmp")
+        temp_path.write_text(code, encoding="utf-8")
+        temp_path.replace(path)
+        try:
+            self.strategy_engine.reload()
+            loaded = self.strategy_engine.get(strategy_id)
+            if loaded.source != "ai" or not loaded.meta.get("expert_owned"):
+                raise StrategyLabError("生成策略所有权校验失败")
+        except Exception:
+            path.unlink(missing_ok=True)
+            self.strategy_engine.reload()
+            raise
+        return loaded
+
+    @staticmethod
+    def _strategy_default_params(strategy: StrategyDef) -> dict[str, Any]:
+        """从策略元数据提取参数默认值。"""
+        return {
+            str(item["id"]): item.get("default")
+            for item in strategy.meta.get("params", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+
+    def _evaluate_generated_strategy(
+        self,
+        strategy_id: str,
+        strategy: StrategyDef,
+        latest_date: date,
+    ) -> GeneratedStrategyEvaluation:
+        """在训练窗优化 AI 策略，并在独立保护窗评估。"""
+        from app.backtest.optimizer import StrategyOptimizer
+
+        defaults = self._strategy_default_params(strategy)
+        grid = self._optimizer_grid(strategy, defaults)
+        if not grid:
+            raise StrategyLabError("生成策略没有可优化的数值参数")
+        windows = StrategyOptimizationWindows(
+            train=BacktestWindow(
+                latest_date - timedelta(days=730), latest_date - timedelta(days=366)
+            ),
+            protected=BacktestWindow(latest_date - timedelta(days=365), latest_date),
+        )
+        service = self._strategy_backtest_service()
+        optimized = StrategyOptimizer(service, self.strategy_engine).optimize(
+            self._optimizer_config(strategy_id, defaults, grid, windows.train)
+        )
+        best = optimized.get("best_params")
+        if not best:
+            raise StrategyLabError("生成策略优化器未返回候选参数")
+        params = {**defaults, **dict(best)}
+        result = self._run_strategy_backtest(service, strategy_id, params, windows.protected)
+        return GeneratedStrategyEvaluation(params, optimized, result, windows)
+
+    @staticmethod
+    def _generated_strategy_metrics(
+        evaluation: GeneratedStrategyEvaluation,
+    ) -> dict[str, Any]:
+        """构造 AI 策略训练与保护集审计指标。"""
+        optimized, windows = evaluation.optimization, evaluation.windows
+        return {
+            "train": {
+                "start": windows.train.start.isoformat(),
+                "end": windows.train.end.isoformat(),
+                "objective": optimized.get("objective"),
+                "best_score": optimized.get("best_score"),
+                "n_combinations": optimized.get("n_combinations"),
+            },
+            "protected": {
+                "start": windows.protected.start.isoformat(),
+                "end": windows.protected.end.isoformat(),
+                "stats": evaluation.result.stats,
+                "error": evaluation.result.error,
+            },
+        }
+
+    def _persist_generated_evaluation(
+        self,
+        strategy_id: str,
+        evaluation: GeneratedStrategyEvaluation,
+        decision: tuple[OptimizationOutcome, str],
+    ) -> dict[str, Any]:
+        """保存 AI 策略评估、参数版本和晋级事件。"""
+        outcome, reason = decision
+        metrics = self._generated_strategy_metrics(evaluation)
+        version = self.store.save_strategy_parameter_version(
+            StrategyParameterCandidate(
+                strategy_id=strategy_id,
+                params=evaluation.params,
+                metrics=metrics,
+                status=outcome,
+                reason=reason,
+            )
+        )
+        metrics["parameter_version_id"] = version["id"]
+        if outcome == "promoted":
+            self.store.promote_strategy_parameters(version["id"], reason=reason, metrics=metrics)
+        self.store.finish_expert_strategy_evaluation(
+            strategy_id, status=outcome, metrics=metrics, reason=reason
+        )
+        return {"status": outcome, "reason": reason, "strategy_id": strategy_id, "metrics": metrics}
+
+    def _mark_generation_failed(self, strategy_id: str, error: Exception) -> None:
+        """把已经登记的影子策略标记为拒绝。"""
+        with contextlib.suppress(ValueError):
+            self.store.finish_expert_strategy_evaluation(
+                strategy_id,
+                status="rejected",
+                metrics={},
+                reason=f"generation_or_evaluation_failed:{str(error)[:200]}",
+            )
+
+    def _run_strategy_generation(self) -> dict[str, Any]:
+        """生成、优化并保护集评估一个 AI 专家候选策略。"""
+        if not self._operation_lock.acquire(blocking=False):
+            return {"status": "reused"}
+        strategy_id = f"ai_expert_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:6]}"
+        recorded = False
+        try:
+            regime, parent_strategy_id = self._generation_regime_and_parent()
+            self._record_generated_strategy_shadow(strategy_id, regime, parent_strategy_id)
+            recorded = True
+            loaded = self._install_generated_strategy(
+                strategy_id, self._generate_strategy_source(strategy_id, regime)
+            )
+            latest_date = self.repo.latest_daily_date()
+            if latest_date is None:
+                raise StrategyDependencyUnavailableError("日线行情不可用")
+            evaluation = self._evaluate_generated_strategy(strategy_id, loaded, latest_date)
+            return self._persist_generated_evaluation(
+                strategy_id, evaluation, self._generated_strategy_gate(evaluation.result)
+            )
+        except Exception as exc:
+            if recorded:
+                self._mark_generation_failed(strategy_id, exc)
+            self._last_error = str(exc)[:500]
+            logger.exception("investment expert strategy generation failed")
             return {"status": "failed", "error": self._last_error}
         finally:
             self._operation_lock.release()
@@ -2159,6 +2924,8 @@ class InvestmentExpertService:
         return rows, unrealized_pnl, unpriced_count
 
     def status(self) -> dict[str, Any]:
+        from app.services.ai_provider import ai_configured
+
         future = self._active_future
         if future is None or future.done():
             self._refresh_historical_minute_provider()
@@ -2209,9 +2976,7 @@ class InvestmentExpertService:
         valuation_as_of = (
             snapshot.get("as_of")
             if snapshot
-            else self._last_processed_bar.isoformat()
-            if self._last_processed_bar
-            else None
+            else self._last_processed_bar.isoformat() if self._last_processed_bar else None
         )
         performance = {
             **execution_statistics,
@@ -2243,12 +3008,16 @@ class InvestmentExpertService:
                 **self._news_sentiment_context,
                 "items": list(self._news_sentiment_context.get("items") or [])[:8],
             }
+        persisted_orchestration = self.store.latest_strategy_orchestration()
+        strategy_orchestration = self._strategy_orchestration or (
+            persisted_orchestration.get("payload") if persisted_orchestration else None
+        )
         base.update(
             {
                 "running": bool(self._poll_thread and self._poll_thread.is_alive()),
-                "active_task": self._active_task
-                if future is not None and not future.done()
-                else None,
+                "active_task": (
+                    self._active_task if future is not None and not future.done() else None
+                ),
                 "last_error": self._last_error,
                 "session_id": self._session["id"] if self._session else None,
                 "candidate_count": len(self._candidates),
@@ -2280,10 +3049,22 @@ class InvestmentExpertService:
                     else None
                 ),
                 "pending_order_count": pending_order_count,
+                "holding_period": {
+                    "minimum_trading_days": self.constitution.min_hold_trading_days,
+                    "maximum_trading_days": self.constitution.max_hold_trading_days,
+                    "stop_loss_exempt": True,
+                },
                 "entries_enabled": bool(self._runtime is None or self._runtime.entries_enabled),
                 "risk_trip_reason": self._risk_trip_reason,
                 "overnight_us_market": self._overnight_us_context,
                 "news_sentiment": news_sentiment,
+                "strategy_orchestration": strategy_orchestration,
+                "expert_strategies": self.store.list_expert_strategies(limit=20),
+                "strategy_parameter_versions": self.store.active_strategy_parameters(),
+                "strategy_parameter_experiments": self.store.list_strategy_parameter_versions(
+                    limit=20
+                ),
+                "ai_strategy_generation_available": ai_configured(),
                 "session_prepare_error": self._prepare_failure_reason,
                 "minute_capable": bool(
                     self.capset is None or self.capset.has(Cap.KLINE_MINUTE_BATCH)

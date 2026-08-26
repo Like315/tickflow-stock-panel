@@ -364,12 +364,45 @@ def test_independent_candidates_apply_stop_loss():
         panel,
         entries,
         exits,
-        MatcherConfig(matching="close_t", fees_pct=0, slippage_bps=0, stop_loss_pct=0.1),
+        MatcherConfig(
+            matching="close_t",
+            fees_pct=0,
+            slippage_bps=0,
+            stop_loss_pct=0.1,
+            min_hold_days=3,
+        ),
     )
 
     assert len(result.trades) == 1
     assert result.trades[0].exit_reason == "stop_loss"
     assert result.trades[0].exit_price == 9.0
+
+
+def test_min_hold_blocks_early_signal_but_not_later_max_hold() -> None:
+    """最短持有期阻止过早信号退出，但不阻止后续最长持有期退出。"""
+    panel = _panel(["A"], days=6)
+    entries = _mask(panel, {("A", 0)})
+    exits = _mask(panel, {("A", 1)})
+
+    result = _engine().simulate_portfolio(
+        panel,
+        entries,
+        exits,
+        MatcherConfig(
+            matching="close_t",
+            fees_pct=0,
+            slippage_bps=0,
+            min_hold_days=3,
+            max_hold_days=4,
+            max_positions=1,
+            initial_capital=100_000,
+        ),
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason == "max_hold"
+    assert result.trades[0].duration == 4
+    assert result.stats["execution"]["sell_min_hold"] >= 1
 
 
 def test_signal_exit_takes_priority_over_max_hold():

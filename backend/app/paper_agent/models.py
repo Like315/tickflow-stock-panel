@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import math
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RiskConstitution(BaseModel):
-    """Non-evolvable execution and portfolio boundaries."""
+    """不可演进的交易执行与组合风控边界。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -29,10 +30,55 @@ class RiskConstitution(BaseModel):
     buy_order_ttl_minutes: int = Field(default=1, ge=1, le=30)
     max_daily_loss_pct: float = Field(default=0.03, gt=0, le=0.20)
     max_total_drawdown_pct: float = Field(default=0.15, gt=0, le=0.50)
+    # 除止损外，普通退出至少持有三个 A 股交易日。
+    min_hold_trading_days: int = Field(default=3, ge=1, le=30)
+    # 持有满十五个 A 股交易日后触发强制退出。
+    max_hold_trading_days: int = Field(default=15, ge=1, le=60)
+
+    @model_validator(mode="after")
+    def validate_holding_period(self) -> RiskConstitution:
+        """确保最短持有期不超过最长持有期。"""
+        if self.min_hold_trading_days > self.max_hold_trading_days:
+            raise ValueError("min_hold_trading_days must not exceed max_hold_trading_days")
+        return self
+
+
+class ExpertStrategyRecord(BaseModel):
+    """待持久化的 AI 专家策略登记信息。"""
+
+    strategy_id: str
+    regime: str
+    status: Literal["shadow", "promoted", "rejected"]
+    metrics: dict[str, Any]
+    reason: str
+    parent_strategy_id: str | None = None
+
+
+class StrategyParameterCandidate(BaseModel):
+    """待持久化的策略参数候选及其评估证据。"""
+
+    strategy_id: str
+    params: dict[str, Any]
+    metrics: dict[str, Any]
+    status: Literal["candidate", "promoted", "rejected"]
+    reason: str
+
+
+class StrategyParameterEventRecord(BaseModel):
+    """策略参数版本晋级或回滚的不可变事件。"""
+
+    id: str
+    strategy_id: str
+    parameter_version_id: str | None
+    previous_parameter_version_id: str | None
+    decision: Literal["promote", "rollback"]
+    reason: str
+    metrics: dict[str, Any]
+    created_at: str
 
 
 class ExpertPolicy(BaseModel):
-    """The only evolvable asset; every version is immutable once persisted."""
+    """唯一允许演进的执行策略，持久化后版本不可变。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -51,22 +97,24 @@ class ExpertPolicy(BaseModel):
     overnight_us_entry_weight: float = Field(default=0.10, ge=0, le=0.50)
     overnight_us_exit_weight: float = Field(default=0.08, ge=0, le=0.50)
     news_candidate_weight: float = Field(default=0.25, ge=0, le=0.50)
+    strategy_consensus_weight: float = Field(default=0.35, ge=0, le=0.75)
     exit_vwap_bias: float = Field(default=-0.002, ge=-0.10, le=0.05)
     stop_loss_pct: float = Field(default=-0.05, ge=-0.30, le=-0.001)
     take_profit_pct: float = Field(default=0.08, ge=0.001, le=0.50)
-    max_hold_days: int = Field(default=10, ge=1, le=60)
+    max_hold_days: int = Field(default=15, ge=1, le=60)
     target_position_pct: float = Field(default=0.10, gt=0, le=0.50)
     mutation_note: str = "baseline"
 
     @model_validator(mode="after")
     def validate_window(self) -> ExpertPolicy:
+        """确保入场开始时间早于结束时间。"""
         if self.entry_start >= self.entry_end:
             raise ValueError("entry_start must be earlier than entry_end")
         return self
 
 
 class TrainedDecisionModel(BaseModel):
-    """Immutable, chronologically trained probability model used only as an entry gate."""
+    """按时间顺序训练且仅用于入场门控的不可变概率模型。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -85,6 +133,7 @@ class TrainedDecisionModel(BaseModel):
 
     @model_validator(mode="after")
     def validate_vectors(self) -> TrainedDecisionModel:
+        """校验模型向量长度一致且缩放系数为正。"""
         size = len(self.feature_names)
         if size == 0 or not all(
             len(values) == size for values in (self.weights, self.means, self.scales)
@@ -95,6 +144,7 @@ class TrainedDecisionModel(BaseModel):
         return self
 
     def predict_probability(self, features: dict[str, Any]) -> float | None:
+        """在特征完整且有限时返回逻辑回归入场概率。"""
         values: list[float] = []
         for name in self.feature_names:
             raw = features.get(name)
@@ -119,8 +169,8 @@ class TrainedDecisionModel(BaseModel):
 
 class MinuteBar(BaseModel):
     symbol: str
-    datetime: datetime
-    received_at: datetime
+    datetime: dt.datetime
+    received_at: dt.datetime
     raw_open: float = Field(gt=0)
     raw_high: float = Field(gt=0)
     raw_low: float = Field(gt=0)
@@ -155,7 +205,7 @@ class OrderIntent(BaseModel):
     symbol: str
     side: Literal["buy", "sell"]
     shares: int = Field(gt=0)
-    signal_time: datetime
+    signal_time: dt.datetime
     reason: str
 
 
@@ -179,7 +229,7 @@ class ExecutionEvent(BaseModel):
         "order_blocked",
         "data_rejected",
     ]
-    occurred_at: datetime
+    occurred_at: dt.datetime
     order_id: str | None = None
     symbol: str | None = None
     side: Literal["buy", "sell"] | None = None

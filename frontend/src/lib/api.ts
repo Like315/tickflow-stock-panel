@@ -1752,7 +1752,44 @@ export interface InvestmentExpertPolicy {
   overnight_us_entry_weight: number
   overnight_us_exit_weight: number
   news_candidate_weight: number
+  strategy_consensus_weight: number
   stop_loss_pct: number
+}
+
+export interface InvestmentExpertStrategyAllocation {
+  strategy_id: string
+  name: string
+  source: 'builtin' | 'ai'
+  weight: number
+  profile: string
+  fit_score: number
+  reason: string
+  match_count?: number
+  parameter_version_id?: string | null
+}
+
+export interface InvestmentExpertStrategyOrchestration {
+  status: 'active' | 'degraded'
+  reason?: string
+  trade_date?: string
+  strategy_consensus_weight?: number
+  considered_count: number
+  considered_strategy_ids?: string[]
+  active_count: number
+  successful_count?: number
+  regime: {
+    state: 'risk_on' | 'risk_off' | 'volatile' | 'balanced'
+    source_date?: string | null
+    score: number
+    advance_ratio?: number | null
+    median_momentum_20d?: number | null
+    median_volatility_20d?: number | null
+    overnight_tilt: number
+    news_score: number
+    news_confidence: number
+  }
+  allocations: InvestmentExpertStrategyAllocation[]
+  errors: Array<{ strategy_id: string; error: string }>
 }
 
 export interface InvestmentExpertModel {
@@ -1881,6 +1918,11 @@ export interface InvestmentExpertStatus {
   }>
   performance?: InvestmentExpertPerformance
   pending_order_count: number
+  holding_period?: {
+    minimum_trading_days: number
+    maximum_trading_days: number
+    stop_loss_exempt: boolean
+  }
   entries_enabled?: boolean
   risk_trip_reason?: string | null
   session_prepare_error?: string | null
@@ -1923,6 +1965,35 @@ export interface InvestmentExpertStatus {
       sentiment: number
     }>
   } | null
+  strategy_orchestration?: InvestmentExpertStrategyOrchestration | null
+  expert_strategies?: Array<{
+    id: string
+    strategy_id: string
+    parent_strategy_id?: string | null
+    regime: string
+    status: 'shadow' | 'promoted' | 'rejected'
+    metrics: Record<string, unknown>
+    reason: string
+    created_at: string
+    evaluated_at?: string | null
+  }>
+  strategy_parameter_versions?: Record<string, {
+    version_id: string
+    version: number
+    params: Record<string, number | string | boolean | null>
+  }>
+  strategy_parameter_experiments?: Array<{
+    id: string
+    strategy_id: string
+    version: number
+    parent_id?: string | null
+    params: Record<string, number | string | boolean | null>
+    metrics: Record<string, unknown>
+    status: 'candidate' | 'promoted' | 'rejected'
+    reason: string
+    created_at: string
+  }>
+  ai_strategy_generation_available?: boolean
   minute_capable: boolean
   live_minute_source?: string
   live_minute_mode?: 'intraday_batch' | 'historical_batch_fallback'
@@ -3509,6 +3580,10 @@ export const api = {
     request<{ status: string; task: string }>('/api/investment-expert/training/run', { method: 'POST' }),
   investmentExpertEvolve: () =>
     request<{ status: string; task: string }>('/api/investment-expert/evolution/run', { method: 'POST' }),
+  investmentExpertOptimizeStrategies: () =>
+    request<{ status: string; task: string; reason?: string }>('/api/investment-expert/strategy/optimize', { method: 'POST' }),
+  investmentExpertGenerateStrategy: () =>
+    request<{ status: string; task: string; reason?: string }>('/api/investment-expert/strategy/generate', { method: 'POST' }),
   investmentExpertSessions: (limit = 20) =>
     request<{ sessions: InvestmentExpertSession[] }>(`/api/investment-expert/sessions?limit=${limit}`),
   investmentExpertTrades: (limit = 100) =>

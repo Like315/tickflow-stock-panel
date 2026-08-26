@@ -42,6 +42,8 @@ const TASK_LABELS: Record<string, string> = {
   evolution: '策略进化评估',
   dataset_bootstrap: '构建训练样本',
   model_training: '训练决策模型',
+  strategy_optimization: '回测优化当前内置策略',
+  strategy_generation: '生成并验证专家策略',
 }
 
 export function investmentExpertStatusLabel(status: string | null | undefined): string {

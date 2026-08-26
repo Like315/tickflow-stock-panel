@@ -3,13 +3,16 @@
 职责: 接收用户自然语言描述 → 读取 prompts/strategy-guide.md → 调用 LLM → 返回策略代码。
 不知道: 引擎内部、API、前端、配置持久化、回测。
 """
+
 from __future__ import annotations
 
 import ast
 import logging
 import math
 import re
+from collections.abc import Mapping
 from pathlib import Path
+from pprint import pformat
 
 from app.indicators.pipeline import ENRICHED_COLUMNS
 from app.strategy.scoring import VIRTUAL_SCORING_DEPENDENCIES
@@ -53,39 +56,71 @@ _POLARS_SCORING_FIELDS = frozenset(
     for name in ENRICHED_COLUMNS
     if name not in {"symbol", "date", "name"} and not name.startswith("signal_")
 ) | frozenset(VIRTUAL_SCORING_DEPENDENCIES)
-_MATRIX_SCORING_FIELDS = frozenset({
-    "open", "high", "low", "close", "volume", "amount", "turnover_rate",
-    "total_shares", "float_shares", "consecutive_limit_ups",
-    "consecutive_limit_downs", "prev_close", "change_pct", "change_amount",
-    "amplitude", "ma5", "ma10", "ma20", "ma30", "ma60", "boll_upper",
-    "boll_lower", "high_60d", "low_60d", "momentum_5d", "momentum_10d",
-    "momentum_20d", "momentum_30d", "momentum_60d", "annual_vol_20d",
-    "rsi_6", "rsi_14", "rsi_24", "vol_ratio_5d", "ma20_bias",
-})
+_MATRIX_SCORING_FIELDS = frozenset(
+    {
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "turnover_rate",
+        "total_shares",
+        "float_shares",
+        "consecutive_limit_ups",
+        "consecutive_limit_downs",
+        "prev_close",
+        "change_pct",
+        "change_amount",
+        "amplitude",
+        "ma5",
+        "ma10",
+        "ma20",
+        "ma30",
+        "ma60",
+        "boll_upper",
+        "boll_lower",
+        "high_60d",
+        "low_60d",
+        "momentum_5d",
+        "momentum_10d",
+        "momentum_20d",
+        "momentum_30d",
+        "momentum_60d",
+        "annual_vol_20d",
+        "rsi_6",
+        "rsi_14",
+        "rsi_24",
+        "vol_ratio_5d",
+        "ma20_bias",
+    }
+)
 
 
 def _top_level_assignment(
     tree: ast.Module,
     name: str,
 ) -> tuple[ast.Name, ast.expr | None] | None:
+    """返回模块顶层指定名称的赋值表达式。"""
     for node in tree.body:
         if isinstance(node, ast.Assign):
             target = next(
-                (item for item in node.targets
-                 if isinstance(item, ast.Name) and item.id == name),
+                (item for item in node.targets if isinstance(item, ast.Name) and item.id == name),
                 None,
             )
             if target is not None:
                 return target, node.value
-        elif isinstance(node, ast.AnnAssign) \
-                and isinstance(node.target, ast.Name) \
-                and node.target.id == name:
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+        ):
             return node.target, node.value
     return None
 
 
 def find_meta_assignment(code: str) -> tuple[ast.Name, ast.Dict] | None:
-    """Find a supported module-level META assignment without executing code."""
+    """在不执行源码的前提下查找受支持的 META 字典赋值。"""
     tree = ast.parse(code)
     for name in _META_NAMES:
         found = _top_level_assignment(tree, name)
@@ -97,11 +132,64 @@ def find_meta_assignment(code: str) -> tuple[ast.Name, ast.Dict] | None:
     return None
 
 
+def _literal_meta(
+    assignment: ast.Assign | ast.AnnAssign,
+    target: ast.Name,
+    value: ast.expr | None,
+) -> tuple[ast.Assign | ast.AnnAssign, dict[str, object]]:
+    """校验并解析一个策略 META 字面量赋值。"""
+    if not isinstance(value, ast.Dict):
+        raise ValueError(f"{target.id} 必须是字面量字典")
+    parsed = ast.literal_eval(value)
+    if not isinstance(parsed, dict) or not all(isinstance(key, str) for key in parsed):
+        raise ValueError("META 必须是字符串键的纯字面量字典")
+    return assignment, dict(parsed)
+
+
+def _find_literal_meta(
+    tree: ast.Module,
+) -> tuple[ast.Assign | ast.AnnAssign, dict[str, object]]:
+    """定位策略模块中的 META 字面量赋值。"""
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            target = next(
+                (
+                    item
+                    for item in node.targets
+                    if isinstance(item, ast.Name) and item.id in _META_NAMES
+                ),
+                None,
+            )
+            if target is not None:
+                return _literal_meta(node, target, node.value)
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id in _META_NAMES
+        ):
+            return _literal_meta(node, node.target, node.value)
+    raise ValueError("找不到 META 字典")
+
+
+def normalize_strategy_meta_fields(code: str, updates: Mapping[str, object]) -> str:
+    """用调用方字段覆盖经过字面量校验的策略 META。"""
+    assignment, meta = _find_literal_meta(ast.parse(code))
+    meta.update(updates)
+    replacement = f"META = {pformat(meta, width=100, sort_dicts=False)}"
+    lines = code.splitlines(keepends=True)
+    start = assignment.lineno - 1
+    end = assignment.end_lineno or assignment.lineno
+    suffix = "\n" if lines[end - 1].endswith(("\n", "\r")) else ""
+    lines[start:end] = [replacement + suffix]
+    return "".join(lines)
+
+
 def _strategy_execution_backend(tree: ast.Module, meta: dict | None = None) -> str:
+    """解析策略声明的执行后端。"""
     found = _top_level_assignment(tree, "EXECUTION_BACKEND")
     if found is not None:
         try:
-            value = ast.literal_eval(found[1])
+            value = ast.literal_eval(found[1]) if found[1] is not None else None
         except (ValueError, SyntaxError):
             value = None
         if isinstance(value, str):
@@ -109,8 +197,7 @@ def _strategy_execution_backend(tree: ast.Module, meta: dict | None = None) -> s
     if isinstance(meta, dict) and isinstance(meta.get("execution_backend"), str):
         return meta["execution_backend"]
     if any(
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == "filter_history"
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "filter_history"
         for node in tree.body
     ):
         return "python_history_legacy"
@@ -234,10 +321,15 @@ class AIStrategyGenerator:
     @staticmethod
     def needs_structural_repair(result: dict) -> bool:
         error = result.get("error") or ""
-        return error.startswith("解析META失败:") or error in {
-            _POLARS_ENTRYPOINT_ERROR,
-            _MATRIX_ENTRYPOINT_ERROR,
-        } or error.startswith(("META.params", "META.scoring"))
+        return (
+            error.startswith("解析META失败:")
+            or error
+            in {
+                _POLARS_ENTRYPOINT_ERROR,
+                _MATRIX_ENTRYPOINT_ERROR,
+            }
+            or error.startswith(("META.params", "META.scoring"))
+        )
 
     @staticmethod
     def _validate_meta_semantics(code: str, meta: dict) -> None:
@@ -256,8 +348,12 @@ class AIStrategyGenerator:
         for name, weight in scoring.items():
             if not isinstance(name, str) or not name:
                 raise ValueError("META.scoring 字段名必须是非空字符串")
-            if isinstance(weight, bool) or not isinstance(weight, (int, float)) \
-                    or not math.isfinite(float(weight)) or weight < 0:
+            if (
+                isinstance(weight, bool)
+                or not isinstance(weight, (int, float))
+                or not math.isfinite(float(weight))
+                or weight < 0
+            ):
                 raise ValueError(f"META.scoring[{name!r}] 权重必须是非负有限数值")
         total_weight = sum(float(weight) for weight in scoring.values())
         if not math.isclose(total_weight, 1.0, rel_tol=0.0, abs_tol=1e-6):
@@ -286,9 +382,7 @@ class AIStrategyGenerator:
                 "不得添加 filter() 或 filter_history()"
             )
         else:
-            entrypoint_requirement = (
-                "保留原执行后端，并定义对应的 filter() 或 filter_history()"
-            )
+            entrypoint_requirement = "保留原执行后端，并定义对应的 filter() 或 filter_history()"
         prompt = f"""上一次生成的策略代码未通过结构校验。
 
 校验错误：{error}
@@ -326,7 +420,10 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                 found = find_meta_assignment(candidate)
                 if found is not None:
                     meta = ast.literal_eval(found[1])
-                    if isinstance(meta, dict) and _strategy_entrypoint_error(candidate, meta) is None:
+                    if (
+                        isinstance(meta, dict)
+                        and _strategy_entrypoint_error(candidate, meta) is None
+                    ):
                         return candidate
             except (SyntaxError, ValueError):
                 continue
@@ -339,13 +436,15 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
 
     # import 白名单: Polars 与矩阵策略只开放执行协议所需模块。
     # 白名单而非黑名单 — 黑名单挡不住 ctypes/importlib/builtins/pickle 等未列出的危险模块。
-    _ALLOWED_IMPORT_MODULES = frozenset({
-        "polars",
-        "numpy",
-        "app.backtest.matrix",
-        "datetime",
-        "__future__",
-    })
+    _ALLOWED_IMPORT_MODULES = frozenset(
+        {
+            "polars",
+            "numpy",
+            "app.backtest.matrix",
+            "datetime",
+            "__future__",
+        }
+    )
 
     @classmethod
     def _validate_safety(
@@ -366,9 +465,21 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
 
         allowed_import_modules = cls._ALLOWED_IMPORT_MODULES | extra_allowed_import_modules
         forbidden_calls = {
-            "open", "exec", "eval", "compile", "__import__",
-            "globals", "locals", "vars", "dir", "getattr",
-            "setattr", "delattr", "type", "input", "breakpoint",
+            "open",
+            "exec",
+            "eval",
+            "compile",
+            "__import__",
+            "globals",
+            "locals",
+            "vars",
+            "dir",
+            "getattr",
+            "setattr",
+            "delattr",
+            "type",
+            "input",
+            "breakpoint",
         } - extra_allowed_calls
 
         def _module_allowed(module: str) -> bool:
@@ -379,13 +490,25 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
 
         # dunder 属性名: 访问这些属性可逃逸出策略沙箱拿到 os/subprocess 等
         forbidden_dunder_attrs = {
-            "__globals__", "__builtins__", "__class__", "__subclasses__",
-            "__mro__", "__bases__", "__base__", "__dict__", "__code__",
-            "__import__", "__loader__", "__spec__", "__wrapped__",
+            "__globals__",
+            "__builtins__",
+            "__class__",
+            "__subclasses__",
+            "__mro__",
+            "__bases__",
+            "__base__",
+            "__dict__",
+            "__code__",
+            "__import__",
+            "__loader__",
+            "__spec__",
+            "__wrapped__",
         }
         # 字符串下标访问的危险名: x["__builtins__"] / x["__import__"]
         forbidden_subscript_strs = {
-            "__builtins__", "__import__", "__globals__",
+            "__builtins__",
+            "__import__",
+            "__globals__",
         }
 
         for node in ast.walk(tree):
@@ -397,17 +520,23 @@ META = {{...}}，{entrypoint_requirement}。只输出完整 Python 代码。
                 mod = node.module or ""
                 if not _module_allowed(mod):
                     raise ValueError(f"禁止 from {node.module} import (不在策略安全白名单)")
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name) and node.func.id in forbidden_calls:
-                    raise ValueError(f"禁止调用 {node.func.id}()")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in forbidden_calls
+            ):
+                raise ValueError(f"禁止调用 {node.func.id}()")
             # 拦截 dunder 属性访问: x.__globals__ / ().__class__ 等
             if isinstance(node, ast.Attribute) and node.attr in forbidden_dunder_attrs:
                 raise ValueError(f"禁止访问属性 {node.attr} (策略不允许 dunder 遍历逃逸)")
             # 拦截字符串下标访问危险名: x["__builtins__"]
             if isinstance(node, ast.Subscript):
                 sl = node.slice
-                if isinstance(sl, ast.Constant) and isinstance(sl.value, str) \
-                        and sl.value in forbidden_subscript_strs:
+                if (
+                    isinstance(sl, ast.Constant)
+                    and isinstance(sl.value, str)
+                    and sl.value in forbidden_subscript_strs
+                ):
                     raise ValueError(f"禁止下标访问 {sl.value} (策略不允许 dunder 遍历逃逸)")
 
     @staticmethod

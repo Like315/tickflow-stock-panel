@@ -16,6 +16,8 @@ import {
   RefreshCw,
   Scale,
   ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
   Square,
   Target,
   TrendingUp,
@@ -72,12 +74,23 @@ function timestamp(value: string | null | undefined): string {
   })
 }
 
+function regimeLabel(value: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    risk_on: '进攻行情',
+    risk_off: '防御行情',
+    volatile: '高波动行情',
+    balanced: '均衡行情',
+  }
+  return value ? labels[value] ?? value : '--'
+}
+
 const DECISION_REASON_LABELS: Record<string, string> = {
   vwap_and_opening_range_confirmed: '候选池入选，价格站上 VWAP 且突破盘初高点',
   settled_position_stop_loss: '持仓收益触及止损线',
   settled_position_take_profit: '持仓收益触及止盈线',
   settled_position_max_hold: '持仓达到最长持有期限',
   settled_position_vwap_breakdown: '价格跌破持仓退出 VWAP 阈值',
+  position_min_hold_not_reached: '尚未达到最短持有期，继续持有',
 }
 
 type DecisionFeatures = InvestmentExpertTrade['decision_features']
@@ -193,6 +206,20 @@ function reasonLabel(reason: string): string {
     expectancy_did_not_improve: '交易期望未优于原冠军策略',
     max_drawdown_regressed: '最大回撤明显退化',
     net_return_regressed: '净收益低于原冠军策略',
+    protected_strategy_optimization_passed: '保护集回测通过，优化参数已启用',
+    protected_baseline_backtest_failed: '保护集基线回测执行失败',
+    protected_backtest_failed: '保护集回测执行失败',
+    insufficient_protected_trades: '保护集交易样本不足',
+    protected_expectancy_did_not_improve: '保护集单笔期望未改善',
+    protected_return_regressed: '保护集总收益退化',
+    protected_drawdown_regressed: '保护集最大回撤退化',
+    protected_generated_strategy_passed: '生成策略通过训练窗优化和保护集回测',
+    non_positive_protected_expectancy: '保护集单笔期望不为正',
+    non_positive_protected_return: '保护集总收益不为正',
+    protected_drawdown_limit_exceeded: '保护集最大回撤超过上限',
+  }
+  if (reason.startsWith('generation_or_evaluation_failed:')) {
+    return `生成或评估失败：${reason.slice(reason.indexOf(':') + 1)}`
   }
   return labels[reason] ?? reason
 }
@@ -253,11 +280,14 @@ export function InvestmentExpert() {
   })
   const train = useMutation({ mutationFn: api.investmentExpertTrain, onSuccess: invalidate })
   const evolve = useMutation({ mutationFn: api.investmentExpertEvolve, onSuccess: invalidate })
+  const optimizeStrategies = useMutation({ mutationFn: api.investmentExpertOptimizeStrategies, onSuccess: invalidate })
+  const generateStrategy = useMutation({ mutationFn: api.investmentExpertGenerateStrategy, onSuccess: invalidate })
   const openPortfolioSync = () => {
     setPortfolioSyncOpen(true)
   }
 
   const data = status.data
+  const orchestration = data?.strategy_orchestration
   const performance = data?.performance
   const historicalTrades = useMemo(
     () => tradeHistory.data?.trades ?? [],
@@ -373,7 +403,9 @@ export function InvestmentExpert() {
                 </label>
                 <ActionButton label={`构建${datasetYears}年历史样本`} icon={Database} pending={bootstrap.isPending || data?.active_task === 'dataset_bootstrap'} disabled={busy} onClick={() => bootstrap.mutate()} />
                 <ActionButton label="重新训练" icon={BrainCircuit} pending={train.isPending || data?.active_task === 'model_training'} disabled={busy} onClick={() => train.mutate()} />
-                <ActionButton label="发起进化" icon={FlaskConical} pending={evolve.isPending || data?.active_task === 'evolution'} disabled={busy} onClick={() => evolve.mutate()} />
+                <ActionButton label="进化执行规则" icon={FlaskConical} pending={evolve.isPending || data?.active_task === 'evolution'} disabled={busy} onClick={() => evolve.mutate()} />
+                <ActionButton label="优化策略参数" icon={SlidersHorizontal} pending={optimizeStrategies.isPending || data?.active_task === 'strategy_optimization'} disabled={busy || !orchestration?.allocations.some(item => item.source === 'builtin')} onClick={() => optimizeStrategies.mutate()} />
+                <ActionButton label="生成专家策略" icon={Sparkles} pending={generateStrategy.isPending || data?.active_task === 'strategy_generation'} disabled={busy || data?.ai_strategy_generation_available === false} onClick={() => generateStrategy.mutate()} />
               </div>
             </div>
             {data?.active_task && (
@@ -456,6 +488,101 @@ export function InvestmentExpert() {
             ) : null}
           </section>
 
+          <Panel
+            title="动态策略编排"
+            subtitle={orchestration
+              ? `${regimeLabel(orchestration.regime.state)} · T-1 数据 ${orchestration.regime.source_date ?? '--'} · ${orchestration.considered_count} 个可用策略中启用 ${orchestration.active_count} 个`
+              : '等待下一个交易会话生成市场状态与策略分配'}
+          >
+            {orchestration?.allocations.length ? (
+              <div className="space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {orchestration.allocations.map(item => (
+                    <div key={item.strategy_id} className="rounded-xl border border-border bg-card/70 p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="text-xs font-medium text-foreground">{item.name}</div>
+                          <div className="mt-1 font-mono text-[9px] text-muted">{item.strategy_id}</div>
+                        </div>
+                        <span className={cn(
+                          'rounded-full px-1.5 py-0.5 text-[9px]',
+                          item.source === 'ai'
+                            ? 'bg-violet-400/10 text-violet-300'
+                            : 'bg-blue-400/10 text-blue-300',
+                        )}>
+                          {item.source === 'ai' ? '专家生成' : '内置'}
+                        </span>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between text-[10px] text-muted">
+                        <span>{item.profile} · 命中 {item.match_count ?? 0}</span>
+                        <span className="font-mono text-foreground">权重 {percent(item.weight)}</span>
+                      </div>
+                      {item.parameter_version_id && (
+                        <div className="mt-1 truncate font-mono text-[9px] text-emerald-300" title={item.parameter_version_id}>
+                          已启用专家优化参数
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {orchestration.errors.length > 0 && (
+                  <div className="rounded-lg border border-amber-300/20 bg-amber-300/5 px-3 py-2 text-[10px] text-amber-200">
+                    {orchestration.errors.length} 个策略运行失败并已隔离，不影响其余策略与基础候选排序。
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-border bg-card/60 px-3 py-6 text-center text-xs text-muted">
+                暂无动态分配；启动盯盘后会使用前一交易日行情、隔夜美股与消息面选择策略。
+              </div>
+            )}
+            {data?.ai_strategy_generation_available === false && (
+              <div className="mt-3 rounded-lg border border-violet-400/20 bg-violet-400/5 px-3 py-2 text-xs text-violet-200">
+                生成专家策略需要先在设置页配置 AI Provider；动态使用内置策略和已晋升策略不受影响。
+              </div>
+            )}
+            {data?.strategy_parameter_experiments?.length ? (
+              <div className="mt-3 border-t border-border pt-3">
+                <div className="mb-2 text-[10px] font-medium text-muted">最近策略回测优化</div>
+                <div className="grid gap-2 lg:grid-cols-3">
+                  {data.strategy_parameter_experiments.slice(0, 3).map(item => (
+                    <div key={item.id} className="rounded-lg border border-border bg-card/50 px-3 py-2 text-[10px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-mono text-foreground">{item.strategy_id} · v{item.version}</span>
+                        <span className={cn('shrink-0 rounded-full px-1.5 py-0.5', statusClass(item.status))}>
+                          {item.status === 'promoted' ? '已启用' : item.status === 'rejected' ? '未通过' : '评估中'}
+                        </span>
+                      </div>
+                      <div className="mt-1 truncate text-muted" title={reasonLabel(item.reason)}>
+                        {reasonLabel(item.reason)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {data?.expert_strategies?.length ? (
+              <div className="mt-3 border-t border-border pt-3">
+                <div className="mb-2 text-[10px] font-medium text-muted">最近 AI 专家策略实验</div>
+                <div className="grid gap-2 lg:grid-cols-3">
+                  {data.expert_strategies.slice(0, 3).map(item => (
+                    <div key={item.id} className="rounded-lg border border-border bg-card/50 px-3 py-2 text-[10px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-mono text-foreground">{item.strategy_id}</span>
+                        <span className={cn('shrink-0 rounded-full px-1.5 py-0.5', statusClass(item.status))}>
+                          {item.status === 'promoted' ? '已晋升' : item.status === 'rejected' ? '已拒绝' : '影子评估'}
+                        </span>
+                      </div>
+                      <div className="mt-1 truncate text-muted" title={reasonLabel(item.reason)}>
+                        {regimeLabel(item.regime)} · {reasonLabel(item.reason)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </Panel>
+
           <section className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
             <MetricCard
               icon={CircleDollarSign}
@@ -496,7 +623,14 @@ export function InvestmentExpert() {
                 ? `${performance.unpriced_position_count} 个持仓批次等待最新价`
                 : `现金 ${money(data?.cash)} · 浮盈 ${signedMoney(performance?.unrealized_pnl)}`}
             />
-            <MetricCard icon={ShieldCheck} label="当前策略" value={data?.champion ? `v${data.champion.version}` : '--'} hint={data?.champion?.id ?? '尚未初始化'} />
+            <MetricCard
+              icon={ShieldCheck}
+              label="当前策略"
+              value={data?.champion ? `v${data.champion.version}` : '--'}
+              hint={data?.holding_period
+                ? `最短 ${data.holding_period.minimum_trading_days} / 最长 ${data.holding_period.maximum_trading_days} 个交易日`
+                : data?.champion?.id ?? '尚未初始化'}
+            />
             <MetricCard icon={BrainCircuit} label="训练模型" value={displayModel ? `v${displayModel.version}${modelStatusSuffix}` : '规则基线'} hint={modelDetail} />
             <MetricCard icon={Database} label="训练数据" value={data?.dataset ? investmentExpertStatusLabel(data.dataset.status) : '未构建'} hint={data?.dataset ? `${data.dataset.start_date} 至 ${data.dataset.end_date}` : '默认拉取近三年'} />
           </section>
@@ -542,7 +676,9 @@ export function InvestmentExpert() {
                           </td>
                           <td className="px-2 py-2.5 text-secondary">
                             <div>{position.acquired_date}</div>
-                            <div className="mt-0.5 whitespace-nowrap text-[10px] text-muted">次交易日起可卖</div>
+                            <div className="mt-0.5 whitespace-nowrap text-[10px] text-muted">
+                              普通退出至少持有 {data?.holding_period?.minimum_trading_days ?? 3} 个交易日
+                            </div>
                           </td>
                           <td className="px-2 py-2.5 text-right tabular-nums">{position.remaining_shares}</td>
                           <td className="px-2 py-2.5 text-right tabular-nums">{price(position.entry_price)}</td>

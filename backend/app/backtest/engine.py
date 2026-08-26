@@ -55,6 +55,8 @@ def _matrix_entry_prices(matrix: MarketMatrix, config: MatcherConfig) -> np.ndar
 
 @dataclass
 class MatcherConfig:
+    """回测撮合、成本、持仓期限和组合约束。"""
+
     # matching 为向后兼容入口: 仅传 matching 时, entry_fill/exit_fill 都取 matching 的值。
     # 显式传入 entry_fill/exit_fill 时以二者为准 (允许建仓/清仓口径不同)。
     matching: Literal["close_t", "open_t+1"] = "close_t"
@@ -71,6 +73,7 @@ class MatcherConfig:
     trailing_stop_pct: float | None = None
     trailing_take_profit_activate_pct: float | None = None
     trailing_take_profit_drawdown_pct: float | None = None
+    min_hold_days: int = 1
     max_hold_days: int | None = None
     max_positions: int = 10
     max_exposure_pct: float = 1.0
@@ -83,11 +86,16 @@ class MatcherConfig:
     minute_fill: bool = False
 
     def __post_init__(self) -> None:
+        """解析兼容成交口径并校验持仓期限。"""
         # 解析最终口径: 优先 entry_fill/exit_fill, 否则回退到 matching (向后兼容)。
         if self.entry_fill is None:
             self.entry_fill = self.matching
         if self.exit_fill is None:
             self.exit_fill = self.matching
+        if self.min_hold_days < 1:
+            raise ValueError("min_hold_days must be at least 1")
+        if self.max_hold_days is not None and self.max_hold_days < self.min_hold_days:
+            raise ValueError("max_hold_days must not be less than min_hold_days")
 
     def _commission_pct(self) -> float:
         # commission_pct 显式给出时优先, 否则回退 fees_pct (向后兼容双边佣金)。
@@ -373,9 +381,11 @@ class BacktestEngine:
             df = compute_limit_signals(
                 df,
                 instruments,
-                needed={"signal_limit_up", "signal_limit_down"}
-                if matrix_native
-                else set(feature_plan.signal_columns),
+                needed=(
+                    {"signal_limit_up", "signal_limit_down"}
+                    if matrix_native
+                    else set(feature_plan.signal_columns)
+                ),
                 historical_shares=(
                     self.repo.get_historical_shares()
                     if asset_type == "stock" and self.repo is not None
@@ -660,7 +670,7 @@ class BacktestEngine:
                             exit_reason = "stop_loss"
 
                     # 信号退出 (优先于 max_hold: 卖点信号是策略主动离场)
-                    if not exit_triggered and sym_ext[i]:
+                    if not exit_triggered and sym_ext[i] and hold_days >= config.min_hold_days:
                         exit_triggered = True
                         exit_reason = "signal"
 
@@ -932,6 +942,9 @@ class BacktestEngine:
             signal_date: str,
             override: float | None = None,
         ) -> bool:
+            if reason not in {"stop_loss", "end"} and pos["hold_days"] < config.min_hold_days:
+                _count("sell_min_hold")
+                return False
             signal_id = (
                 _signal_id(int(matrix.exit_signal_code[time_id, asset_id]), matrix.exit_signal_ids)
                 if reason == "signal"
@@ -996,9 +1009,11 @@ class BacktestEngine:
                     exit_signal_date=signal_date,
                     blocked_exit_days=int(pos["blocked_exit_days"]),
                     entry_signal_id=pos["entry_signal_id"],
-                    exit_signal_id=(pos.get("pending_exit_signal_id") or signal_id)
-                    if reason == "signal"
-                    else None,
+                    exit_signal_id=(
+                        (pos.get("pending_exit_signal_id") or signal_id)
+                        if reason == "signal"
+                        else None
+                    ),
                 )
             )
             return True
@@ -1402,6 +1417,9 @@ class BacktestEngine:
             signal_date: str,
             exit_price_override: float | None = None,
         ) -> bool:
+            if reason not in {"stop_loss", "end"} and pos["hold_days"] < config.min_hold_days:
+                _count("sell_min_hold")
+                return False
             ok, block_reason = _can_sell(idx, exit_price_override)
             if not ok:
                 if not pos.get("pending_exit_reason"):
@@ -1438,16 +1456,20 @@ class BacktestEngine:
                     entry_value=round(float(entry_value), 2),
                     exit_value=round(float(exit_value), 2),
                     pnl_amount=round(float(pnl_amount), 2),
-                    entry_score=round(float(pos["entry_score"]), 2)
-                    if pos.get("entry_score") is not None
-                    else None,
+                    entry_score=(
+                        round(float(pos["entry_score"]), 2)
+                        if pos.get("entry_score") is not None
+                        else None
+                    ),
                     entry_signal_date=pos.get("entry_signal_date"),
                     exit_signal_date=signal_date,
                     blocked_exit_days=int(pos.get("blocked_exit_days", 0)),
                     entry_signal_id=pos.get("entry_signal_id"),
-                    exit_signal_id=_resolve_signal_id(panel, idx, exit_signal_ids)
-                    if reason == "signal"
-                    else None,
+                    exit_signal_id=(
+                        _resolve_signal_id(panel, idx, exit_signal_ids)
+                        if reason == "signal"
+                        else None
+                    ),
                 )
             )
             return True
@@ -1950,13 +1972,16 @@ class BacktestEngine:
                     blocked_exit_days=int(pos["blocked_exit_days"]),
                     entry_signal_id=pos["entry_signal_id"],
                     exit_signal_id=(
-                        pos.get("pending_exit_signal_id")
-                        or _signal_id(
-                            int(matrix.exit_signal_code[time_id, asset_id]), matrix.exit_signal_ids
+                        (
+                            pos.get("pending_exit_signal_id")
+                            or _signal_id(
+                                int(matrix.exit_signal_code[time_id, asset_id]),
+                                matrix.exit_signal_ids,
+                            )
                         )
-                    )
-                    if reason == "signal"
-                    else None,
+                        if reason == "signal"
+                        else None
+                    ),
                 )
             )
 
@@ -1968,6 +1993,10 @@ class BacktestEngine:
             sold_today: set[int],
             override: float | None = None,
         ) -> bool:
+            pos = positions[asset_id]
+            if reason not in {"stop_loss", "end"} and pos["hold_days"] < config.min_hold_days:
+                _count("sell_min_hold")
+                return False
             signal_id = (
                 _signal_id(int(matrix.exit_signal_code[time_id, asset_id]), matrix.exit_signal_ids)
                 if reason == "signal"
@@ -2182,9 +2211,9 @@ class BacktestEngine:
                                 "entry_value": entry_value,
                                 "shares": shares,
                                 "lots": shares / 100,
-                                "position_pct": entry_value / equity_before
-                                if equity_before > 0
-                                else 0.0,
+                                "position_pct": (
+                                    entry_value / equity_before if equity_before > 0 else 0.0
+                                ),
                                 "entry_score": entry_score,
                                 "max_high": entry_price,
                                 "hold_days": 0,
@@ -2557,16 +2586,20 @@ class BacktestEngine:
                     entry_value=round(float(pos["entry_value"]), 2),
                     exit_value=round(float(exit_value), 2),
                     pnl_amount=round(float(pnl_amount), 2),
-                    entry_score=round(float(pos["entry_score"]), 2)
-                    if pos.get("entry_score") is not None
-                    else None,
+                    entry_score=(
+                        round(float(pos["entry_score"]), 2)
+                        if pos.get("entry_score") is not None
+                        else None
+                    ),
                     entry_signal_date=pos.get("entry_signal_date"),
                     exit_signal_date=signal_date,
                     blocked_exit_days=int(pos.get("blocked_exit_days", 0)),
                     entry_signal_id=pos.get("entry_signal_id"),
-                    exit_signal_id=_resolve_signal_id(panel, idx, exit_signal_ids)
-                    if reason == "signal"
-                    else None,
+                    exit_signal_id=(
+                        _resolve_signal_id(panel, idx, exit_signal_ids)
+                        if reason == "signal"
+                        else None
+                    ),
                 )
             )
 
@@ -2578,6 +2611,10 @@ class BacktestEngine:
             sold_today: set[str],
             exit_price_override: float | None = None,
         ) -> bool:
+            pos = positions[sym]
+            if reason not in {"stop_loss", "end"} and pos["hold_days"] < config.min_hold_days:
+                _count("sell_min_hold")
+                return False
             if idx is None:
                 _mark_pending(sym, reason, signal_date)
                 _count("sell_suspended")
@@ -2780,9 +2817,11 @@ class BacktestEngine:
                     "entry_value": entry_value,
                     "shares": shares,
                     "lots": shares / 100,
-                    "position_pct": entry_value / account_equity_before_buy
-                    if account_equity_before_buy > 0
-                    else 0.0,
+                    "position_pct": (
+                        entry_value / account_equity_before_buy
+                        if account_equity_before_buy > 0
+                        else 0.0
+                    ),
                     "entry_score": _score,
                     "max_high": entry_price,
                     "hold_days": 0,
@@ -3284,9 +3323,11 @@ class BacktestEngine:
             "max_drawdown": round(float(max_drawdown), 4),
             "sharpe": round(float(sharpe), 2),
             "sortino": round(float(sortino), 2) if sortino is not None else None,
-            "calmar": round(float(annual_return / abs(max_drawdown)), 2)
-            if abs(max_drawdown) > 0.001
-            else 0.0,
+            "calmar": (
+                round(float(annual_return / abs(max_drawdown)), 2)
+                if abs(max_drawdown) > 0.001
+                else 0.0
+            ),
             "win_rate": round(float(len(wins) / len(pnls)), 4) if len(pnls) else 0.0,
             "profit_factor": round(float(avg_win / avg_loss), 2) if avg_loss > 0 else None,
             "n_trades": len(trades),

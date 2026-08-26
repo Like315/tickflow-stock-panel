@@ -10,13 +10,25 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from app.paper_agent.models import ExecutionEvent, ExpertPolicy, TrainedDecisionModel
+from app.paper_agent.exceptions import PaperAgentSchemaMigrationError
+from app.paper_agent.models import (
+    ExecutionEvent,
+    ExpertPolicy,
+    ExpertStrategyRecord,
+    StrategyParameterCandidate,
+    StrategyParameterEventRecord,
+    TrainedDecisionModel,
+)
 
-_SCHEMA_VERSION = 1
+# 当前投资专家数据库结构版本。
+_SCHEMA_VERSION: int = 3
 
 
 class PaperAgentStore:
+    """投资专家策略、会话、执行事件与实验结果存储。"""
+
     def __init__(self, data_dir: Path) -> None:
+        """初始化用户数据库路径并执行兼容迁移。"""
         self.path = data_dir / "user_data" / "investment_expert_agent.db"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -24,6 +36,7 @@ class PaperAgentStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
+        """创建启用外键、WAL 和忙等待的 SQLite 连接。"""
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
@@ -31,154 +44,114 @@ class PaperAgentStore:
         conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
-    def _initialize(self) -> None:
-        with self._lock, self._connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS schema_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS policy_versions (
-                    id TEXT PRIMARY KEY,
-                    version INTEGER NOT NULL,
-                    parent_id TEXT REFERENCES policy_versions(id) ON DELETE RESTRICT,
-                    payload_json TEXT NOT NULL,
-                    payload_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(version)
-                );
-                CREATE TABLE IF NOT EXISTS promotion_events (
-                    id TEXT PRIMARY KEY,
-                    policy_id TEXT NOT NULL REFERENCES policy_versions(id) ON DELETE RESTRICT,
-                    previous_policy_id TEXT REFERENCES policy_versions(id) ON DELETE RESTRICT,
-                    decision TEXT NOT NULL CHECK(decision IN ('promote', 'rollback')),
-                    reason TEXT NOT NULL,
-                    metrics_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS trading_sessions (
-                    id TEXT PRIMARY KEY,
-                    trade_date TEXT NOT NULL,
-                    policy_id TEXT NOT NULL REFERENCES policy_versions(id) ON DELETE RESTRICT,
-                    mode TEXT NOT NULL CHECK(mode IN ('paper', 'replay', 'shadow')),
-                    status TEXT NOT NULL,
-                    candidate_json TEXT NOT NULL,
-                    started_at TEXT NOT NULL,
-                    finished_at TEXT,
-                    summary_json TEXT NOT NULL,
-                    UNIQUE(trade_date, policy_id, mode)
-                );
-                CREATE TABLE IF NOT EXISTS decision_snapshots (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL REFERENCES trading_sessions(id) ON DELETE RESTRICT,
-                    symbol TEXT NOT NULL,
-                    decision_time TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    feature_json TEXT NOT NULL,
-                    feature_hash TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS execution_events (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL REFERENCES trading_sessions(id) ON DELETE RESTRICT,
-                    event_type TEXT NOT NULL,
-                    occurred_at TEXT NOT NULL,
-                    order_id TEXT,
-                    symbol TEXT,
-                    payload_json TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_execution_session_time
-                    ON execution_events(session_id, occurred_at);
-                CREATE TABLE IF NOT EXISTS portfolio_snapshots (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL REFERENCES trading_sessions(id) ON DELETE RESTRICT,
-                    as_of TEXT NOT NULL,
-                    cash REAL NOT NULL,
-                    equity REAL NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS portfolio_sync_events (
-                    id TEXT PRIMARY KEY,
-                    source TEXT NOT NULL,
-                    mode TEXT NOT NULL CHECK(mode IN ('replace')),
-                    cash REAL NOT NULL,
-                    equity REAL NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    payload_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS daily_reflections (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL UNIQUE REFERENCES trading_sessions(id) ON DELETE RESTRICT,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS evolution_experiments (
-                    id TEXT PRIMARY KEY,
-                    champion_policy_id TEXT NOT NULL REFERENCES policy_versions(id) ON DELETE RESTRICT,
-                    candidate_policy_id TEXT NOT NULL REFERENCES policy_versions(id) ON DELETE RESTRICT,
-                    mutation_field TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    champion_metrics_json TEXT NOT NULL,
-                    candidate_metrics_json TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    finished_at TEXT
-                );
-                CREATE TABLE IF NOT EXISTS dataset_runs (
-                    id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    start_date TEXT NOT NULL,
-                    end_date TEXT NOT NULL,
-                    manifest_json TEXT NOT NULL,
-                    error TEXT,
-                    started_at TEXT NOT NULL,
-                    finished_at TEXT
-                );
-                CREATE TABLE IF NOT EXISTS runtime_settings (
-                    key TEXT PRIMARY KEY,
-                    value_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS model_versions (
-                    id TEXT PRIMARY KEY,
-                    version INTEGER NOT NULL UNIQUE,
-                    payload_json TEXT NOT NULL,
-                    payload_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS model_promotion_events (
-                    id TEXT PRIMARY KEY,
-                    model_id TEXT NOT NULL REFERENCES model_versions(id) ON DELETE RESTRICT,
-                    previous_model_id TEXT REFERENCES model_versions(id) ON DELETE RESTRICT,
-                    decision TEXT NOT NULL CHECK(decision IN ('promote', 'rollback')),
-                    reason TEXT NOT NULL,
-                    metrics_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS model_guard_events (
-                    id TEXT PRIMARY KEY,
-                    model_id TEXT NOT NULL REFERENCES model_versions(id) ON DELETE RESTRICT,
-                    action TEXT NOT NULL CHECK(action IN ('disable', 'rollback')),
-                    reason TEXT NOT NULL,
-                    metrics_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                """
+    @staticmethod
+    def _strategy_parameter_event_columns(
+        conn: sqlite3.Connection,
+    ) -> dict[str, sqlite3.Row]:
+        """返回策略参数事件表的字段元数据。"""
+        return {
+            str(row["name"]): row
+            for row in conn.execute(
+                "PRAGMA table_info(expert_strategy_parameter_events)"
+            ).fetchall()
+        }
+
+    @staticmethod
+    def _unresolved_strategy_parameter_event_count(conn: sqlite3.Connection) -> int:
+        """统计无法从参数版本反查策略标识的旧事件。"""
+        row = conn.execute("""
+            SELECT count(*)
+            FROM expert_strategy_parameter_events AS legacy
+            LEFT JOIN expert_strategy_parameter_versions AS current_version
+              ON current_version.id = legacy.parameter_version_id
+            LEFT JOIN expert_strategy_parameter_versions AS previous_version
+              ON previous_version.id = legacy.previous_parameter_version_id
+            WHERE current_version.strategy_id IS NULL
+              AND previous_version.strategy_id IS NULL
+            """).fetchone()
+        return int(row[0])
+
+    @staticmethod
+    def _rebuild_strategy_parameter_events(conn: sqlite3.Connection) -> None:
+        """在同一事务内重建策略参数事件表并回填策略标识。"""
+        conn.execute(
+            "ALTER TABLE expert_strategy_parameter_events "
+            "RENAME TO expert_strategy_parameter_events_legacy_v2"
+        )
+        conn.execute("""
+            CREATE TABLE expert_strategy_parameter_events (
+                id TEXT PRIMARY KEY,
+                strategy_id TEXT NOT NULL,
+                parameter_version_id TEXT
+                    REFERENCES expert_strategy_parameter_versions(id) ON DELETE RESTRICT,
+                previous_parameter_version_id TEXT
+                    REFERENCES expert_strategy_parameter_versions(id) ON DELETE RESTRICT,
+                decision TEXT NOT NULL CHECK(decision IN ('promote', 'rollback')),
+                reason TEXT NOT NULL, metrics_json TEXT NOT NULL, created_at TEXT NOT NULL
             )
+            """)
+        PaperAgentStore._copy_strategy_parameter_events(conn)
+        conn.execute("DROP TABLE expert_strategy_parameter_events_legacy_v2")
+
+    @staticmethod
+    def _copy_strategy_parameter_events(conn: sqlite3.Connection) -> None:
+        """把旧参数事件复制到带策略标识的新表。"""
+        conn.execute("""
+            INSERT INTO expert_strategy_parameter_events(
+                rowid, id, strategy_id, parameter_version_id,
+                previous_parameter_version_id, decision, reason, metrics_json, created_at
+            )
+            SELECT legacy.rowid, legacy.id,
+                   coalesce(current_version.strategy_id, previous_version.strategy_id),
+                   legacy.parameter_version_id, legacy.previous_parameter_version_id,
+                   legacy.decision, legacy.reason, legacy.metrics_json, legacy.created_at
+            FROM expert_strategy_parameter_events_legacy_v2 AS legacy
+            LEFT JOIN expert_strategy_parameter_versions AS current_version
+              ON current_version.id = legacy.parameter_version_id
+            LEFT JOIN expert_strategy_parameter_versions AS previous_version
+              ON previous_version.id = legacy.previous_parameter_version_id
+            ORDER BY legacy.rowid
+            """)
+
+    @classmethod
+    def _migrate_strategy_parameter_events(cls, conn: sqlite3.Connection) -> None:
+        """把 v2 参数事件表原子迁移到 v3。"""
+        columns = cls._strategy_parameter_event_columns(conn)
+        if "strategy_id" in columns and int(columns["parameter_version_id"]["notnull"]) == 0:
+            return
+        if cls._unresolved_strategy_parameter_event_count(conn):
+            raise PaperAgentSchemaMigrationError("存在无法关联参数版本的策略事件，数据库未执行迁移")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cls._rebuild_strategy_parameter_events(conn)
+        except sqlite3.Error as exc:
+            conn.rollback()
+            raise PaperAgentSchemaMigrationError("策略参数事件表迁移失败") from exc
+        else:
+            conn.commit()
+
+    def _initialize(self) -> None:
+        """创建当前结构并把受支持的旧版本迁移到最新版。"""
+        schema_path = Path(__file__).with_name("schema.sql")
+        with self._lock, self._connect() as conn:
+            conn.executescript(schema_path.read_text(encoding="utf-8"))
             row = conn.execute(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version'"
             ).fetchone()
-            if row is None:
+            version = int(row["value"]) if row is not None else None
+            if version is not None and version not in {1, 2, _SCHEMA_VERSION}:
+                raise PaperAgentSchemaMigrationError(f"不支持的投资专家数据库版本：{row['value']}")
+            self._migrate_strategy_parameter_events(conn)
+            if version is None:
                 conn.execute(
                     "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)",
                     (str(_SCHEMA_VERSION),),
                 )
-            elif int(row["value"]) != _SCHEMA_VERSION:
-                raise RuntimeError(f"unsupported investment expert schema: {row['value']}")
+            elif version != _SCHEMA_VERSION:
+                conn.execute(
+                    "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+                    (str(_SCHEMA_VERSION),),
+                )
 
     @staticmethod
     def _now() -> str:
@@ -249,14 +222,12 @@ class PaperAgentStore:
 
     def get_champion(self) -> ExpertPolicy | None:
         with self._lock, self._connect() as conn:
-            row = conn.execute(
-                """
+            row = conn.execute("""
                 SELECT policy.payload_json
                 FROM promotion_events AS promotion
                 JOIN policy_versions AS policy ON policy.id = promotion.policy_id
                 ORDER BY promotion.created_at DESC, promotion.rowid DESC LIMIT 1
-                """
-            ).fetchone()
+                """).fetchone()
         return ExpertPolicy.model_validate_json(row["payload_json"]) if row else None
 
     def promote(self, policy_id: str, *, reason: str, metrics: dict[str, Any]) -> dict[str, Any]:
@@ -298,13 +269,11 @@ class PaperAgentStore:
         metrics: dict[str, Any],
     ) -> dict[str, Any] | None:
         with self._lock, self._connect() as conn:
-            row = conn.execute(
-                """
+            row = conn.execute("""
                 SELECT policy_id, previous_policy_id, decision
                 FROM promotion_events
                 ORDER BY created_at DESC, rowid DESC LIMIT 1
-                """
-            ).fetchone()
+                """).fetchone()
             if row is None or row["decision"] == "rollback" or not row["previous_policy_id"]:
                 return None
             event = {
@@ -369,6 +338,7 @@ class PaperAgentStore:
     def finish_session(
         self, session_id: str, summary: dict[str, Any], status: str = "succeeded"
     ) -> None:
+        """完成尚未结束的交易会话并保存摘要。"""
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
@@ -379,8 +349,368 @@ class PaperAgentStore:
                 (status, self._json(summary), self._now(), session_id),
             )
 
+    def save_strategy_orchestration(
+        self,
+        session_id: str,
+        trade_date: date,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """幂等保存一次交易会话的策略编排快照。"""
+        created_at = self._now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO strategy_orchestration_snapshots(
+                    session_id, trade_date, payload_json, payload_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO NOTHING
+                """,
+                (
+                    session_id,
+                    trade_date.isoformat(),
+                    self._json(payload),
+                    self._hash(payload),
+                    created_at,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM strategy_orchestration_snapshots WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        result = dict(row)
+        result["payload"] = json.loads(result.pop("payload_json"))
+        return result
+
+    def latest_strategy_orchestration(self) -> dict[str, Any] | None:
+        """返回最近一次持久化的策略编排快照。"""
+        with self._lock, self._connect() as conn:
+            row = conn.execute("""
+                SELECT * FROM strategy_orchestration_snapshots
+                ORDER BY trade_date DESC, created_at DESC, rowid DESC LIMIT 1
+                """).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["payload"] = json.loads(result.pop("payload_json"))
+        return result
+
+    def record_expert_strategy(self, record: ExpertStrategyRecord) -> dict[str, Any]:
+        """登记一个 AI 专家策略及其初始评估状态。"""
+        row_id = f"expert_strategy_{uuid4().hex}"
+        created_at = self._now()
+        evaluated_at = created_at if record.status != "shadow" else None
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO expert_strategy_versions(
+                    id, strategy_id, parent_strategy_id, regime, status,
+                    metrics_json, reason, created_at, evaluated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row_id,
+                    record.strategy_id,
+                    record.parent_strategy_id,
+                    record.regime,
+                    record.status,
+                    self._json(record.metrics),
+                    record.reason,
+                    created_at,
+                    evaluated_at,
+                ),
+            )
+        return {
+            "id": row_id,
+            "strategy_id": record.strategy_id,
+            "parent_strategy_id": record.parent_strategy_id,
+            "regime": record.regime,
+            "status": record.status,
+            "metrics": record.metrics,
+            "reason": record.reason,
+            "created_at": created_at,
+            "evaluated_at": evaluated_at,
+        }
+
+    def finish_expert_strategy_evaluation(
+        self,
+        strategy_id: str,
+        *,
+        status: str,
+        metrics: dict[str, Any],
+        reason: str,
+    ) -> None:
+        """完成一个影子策略的保护集评估。"""
+        if status not in {"promoted", "rejected"}:
+            raise ValueError(f"invalid evaluated expert strategy status: {status}")
+        with self._lock, self._connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE expert_strategy_versions
+                SET status = ?, metrics_json = ?, reason = ?, evaluated_at = ?
+                WHERE strategy_id = ? AND status = 'shadow'
+                """,
+                (status, self._json(metrics), reason, self._now(), strategy_id),
+            ).rowcount
+        if updated != 1:
+            raise ValueError(f"unknown shadow expert strategy: {strategy_id}")
+
+    def list_expert_strategies(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """按创建时间倒序返回 AI 专家策略实验。"""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM expert_strategy_versions
+                ORDER BY created_at DESC, rowid DESC LIMIT ?
+                """,
+                (min(max(limit, 1), 500),),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["metrics"] = json.loads(item.pop("metrics_json"))
+            result.append(item)
+        return result
+
+    def promoted_expert_strategy_ids(self) -> set[str]:
+        """返回当前已晋级的 AI 专家策略标识。"""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT strategy_id FROM expert_strategy_versions WHERE status = 'promoted'"
+            ).fetchall()
+        return {str(row["strategy_id"]) for row in rows}
+
+    @staticmethod
+    def _next_strategy_parameter_version(
+        conn: sqlite3.Connection,
+        strategy_id: str,
+    ) -> tuple[int, str | None]:
+        """返回策略的下一个参数版本号和父版本标识。"""
+        previous = conn.execute(
+            """
+            SELECT id, version FROM expert_strategy_parameter_versions
+            WHERE strategy_id = ? ORDER BY version DESC LIMIT 1
+            """,
+            (strategy_id,),
+        ).fetchone()
+        if previous is None:
+            return 1, None
+        return int(previous["version"]) + 1, str(previous["id"])
+
+    def save_strategy_parameter_version(
+        self, candidate: StrategyParameterCandidate
+    ) -> dict[str, Any]:
+        """不可变保存一个策略参数候选版本。"""
+        with self._lock, self._connect() as conn:
+            version, parent_id = self._next_strategy_parameter_version(conn, candidate.strategy_id)
+            version_id = f"expert_params_{candidate.strategy_id}_v{version}_{uuid4().hex[:8]}"
+            conn.execute(
+                """
+                INSERT INTO expert_strategy_parameter_versions(
+                    id, strategy_id, version, parent_id, params_json, metrics_json,
+                    status, reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    candidate.strategy_id,
+                    version,
+                    parent_id,
+                    self._json(candidate.params),
+                    self._json(candidate.metrics),
+                    candidate.status,
+                    candidate.reason,
+                    self._now(),
+                ),
+            )
+        return {
+            "id": version_id,
+            "strategy_id": candidate.strategy_id,
+            "version": version,
+            "parent_id": parent_id,
+            "params": candidate.params,
+            "metrics": candidate.metrics,
+            "status": candidate.status,
+            "reason": candidate.reason,
+        }
+
+    @classmethod
+    def _insert_strategy_parameter_event(
+        cls,
+        conn: sqlite3.Connection,
+        event: StrategyParameterEventRecord,
+    ) -> None:
+        """写入一个已经校验的策略参数事件。"""
+        conn.execute(
+            """
+            INSERT INTO expert_strategy_parameter_events(
+                id, strategy_id, parameter_version_id, previous_parameter_version_id,
+                decision, reason, metrics_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id,
+                event.strategy_id,
+                event.parameter_version_id,
+                event.previous_parameter_version_id,
+                event.decision,
+                event.reason,
+                cls._json(event.metrics),
+                event.created_at,
+            ),
+        )
+
+    def promote_strategy_parameters(
+        self,
+        version_id: str,
+        *,
+        reason: str,
+        metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        """把参数版本设为策略当前活动版本并记录事件。"""
+        with self._lock, self._connect() as conn:
+            current = conn.execute(
+                """
+                SELECT id, strategy_id FROM expert_strategy_parameter_versions WHERE id = ?
+                """,
+                (version_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError(f"unknown strategy parameter version: {version_id}")
+            previous = conn.execute(
+                """
+                SELECT parameter_version_id AS id
+                FROM expert_strategy_parameter_events
+                WHERE strategy_id = ?
+                ORDER BY created_at DESC, rowid DESC LIMIT 1
+                """,
+                (str(current["strategy_id"]),),
+            ).fetchone()
+            event = StrategyParameterEventRecord(
+                id=f"expert_params_promotion_{uuid4().hex}",
+                strategy_id=str(current["strategy_id"]),
+                parameter_version_id=version_id,
+                previous_parameter_version_id=(
+                    str(previous["id"]) if previous is not None and previous["id"] else None
+                ),
+                decision="promote",
+                reason=reason,
+                metrics=metrics,
+                created_at=self._now(),
+            )
+            self._insert_strategy_parameter_event(conn, event)
+        return event.model_dump(mode="json")
+
+    def active_strategy_parameters(self) -> dict[str, dict[str, Any]]:
+        """返回每个策略最近一次参数事件指向的活动版本。"""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("""
+                SELECT version.strategy_id, version.id, version.version, version.params_json
+                FROM expert_strategy_parameter_events AS event
+                JOIN expert_strategy_parameter_versions AS version
+                  ON version.id = event.parameter_version_id
+                WHERE event.rowid IN (
+                    SELECT max(event2.rowid)
+                    FROM expert_strategy_parameter_events AS event2
+                    GROUP BY event2.strategy_id
+                )
+                  AND event.parameter_version_id IS NOT NULL
+                """).fetchall()
+        return {
+            str(row["strategy_id"]): {
+                "version_id": str(row["id"]),
+                "version": int(row["version"]),
+                "params": json.loads(row["params_json"]),
+            }
+            for row in rows
+        }
+
+    def rollback_last_strategy_parameter_promotion(
+        self,
+        *,
+        reason: str,
+        metrics: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """回滚最近一次参数晋级，必要时恢复到策略默认值。"""
+        with self._lock, self._connect() as conn:
+            latest = conn.execute("""
+                SELECT * FROM expert_strategy_parameter_events
+                ORDER BY created_at DESC, rowid DESC LIMIT 1
+                """).fetchone()
+            if latest is None or str(latest["decision"]) != "promote":
+                return None
+            event = StrategyParameterEventRecord(
+                id=f"expert_params_rollback_{uuid4().hex}",
+                strategy_id=str(latest["strategy_id"]),
+                parameter_version_id=(
+                    str(latest["previous_parameter_version_id"])
+                    if latest["previous_parameter_version_id"]
+                    else None
+                ),
+                previous_parameter_version_id=str(latest["parameter_version_id"]),
+                decision="rollback",
+                reason=reason,
+                metrics=metrics,
+                created_at=self._now(),
+            )
+            self._insert_strategy_parameter_event(conn, event)
+        return event.model_dump(mode="json")
+
+    def rollback_latest_expert_strategy(
+        self,
+        *,
+        reason: str,
+        metrics: dict[str, Any],
+    ) -> str | None:
+        """风险触发后停用最近晋级的 AI 专家策略。"""
+        with self._lock, self._connect() as conn:
+            row = conn.execute("""
+                SELECT strategy_id FROM expert_strategy_versions
+                WHERE status = 'promoted'
+                ORDER BY evaluated_at DESC, rowid DESC LIMIT 1
+                """).fetchone()
+            if row is None:
+                return None
+            strategy_id = str(row["strategy_id"])
+            conn.execute(
+                """
+                UPDATE expert_strategy_versions
+                SET status = 'rejected', metrics_json = ?, reason = ?, evaluated_at = ?
+                WHERE strategy_id = ? AND status = 'promoted'
+                """,
+                (self._json(metrics), reason, self._now(), strategy_id),
+            )
+        return strategy_id
+
+    def list_strategy_parameter_versions(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """返回不可变的策略参数优化实验记录。"""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, strategy_id, version, parent_id, params_json, metrics_json,
+                       status, reason, created_at
+                FROM expert_strategy_parameter_versions
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "id": str(row["id"]),
+                "strategy_id": str(row["strategy_id"]),
+                "version": int(row["version"]),
+                "parent_id": str(row["parent_id"]) if row["parent_id"] else None,
+                "params": json.loads(row["params_json"]),
+                "metrics": json.loads(row["metrics_json"]),
+                "status": str(row["status"]),
+                "reason": str(row["reason"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
     def recover_interrupted_records(self, *, before_trade_date: date) -> dict[str, int]:
-        """Close records whose in-memory worker cannot survive an application restart."""
+        """应用重启后关闭无法恢复的内存任务记录。"""
         finished_at = self._now()
         interruption = self._json({"reason": "interrupted_on_restart"})
         with self._lock, self._connect() as conn:
@@ -765,8 +1095,7 @@ class PaperAgentStore:
             if self._execution_statistics_cache is not None:
                 return dict(self._execution_statistics_cache)
             with self._connect() as conn:
-                row = conn.execute(
-                    """
+                row = conn.execute("""
                     WITH fills AS (
                         SELECT
                             coalesce(order_id, id) AS trade_key,
@@ -808,8 +1137,7 @@ class PaperAgentStore:
                             AS average_loss_pnl,
                         max(occurred_at) AS latest_fill_at
                     FROM orders
-                    """
-                ).fetchone()
+                    """).fetchone()
 
             closed = int(row["closed_trade_count"] or 0)
             wins = int(row["winning_trade_count"] or 0)
@@ -833,7 +1161,7 @@ class PaperAgentStore:
                 "average_loss_pnl": (round(average_loss, 2) if average_loss is not None else None),
                 "profit_loss_ratio": (
                     round(average_win / average_loss, 6)
-                    if average_win is not None and average_loss not in (None, 0)
+                    if average_win is not None and average_loss is not None and average_loss != 0
                     else None
                 ),
                 "latest_fill_at": row["latest_fill_at"],
@@ -996,14 +1324,12 @@ class PaperAgentStore:
 
     def get_active_model(self) -> TrainedDecisionModel | None:
         with self._lock, self._connect() as conn:
-            row = conn.execute(
-                """
+            row = conn.execute("""
                 SELECT model.payload_json
                 FROM model_promotion_events AS promotion
                 JOIN model_versions AS model ON model.id = promotion.model_id
                 ORDER BY promotion.created_at DESC, promotion.rowid DESC LIMIT 1
-                """
-            ).fetchone()
+                """).fetchone()
         if row is None:
             return None
         model = TrainedDecisionModel.model_validate_json(row["payload_json"])
@@ -1049,13 +1375,11 @@ class PaperAgentStore:
         metrics: dict[str, Any],
     ) -> str | None:
         with self._lock, self._connect() as conn:
-            row = conn.execute(
-                """
+            row = conn.execute("""
                 SELECT model_id, previous_model_id, decision
                 FROM model_promotion_events
                 ORDER BY created_at DESC, rowid DESC LIMIT 1
-                """
-            ).fetchone()
+                """).fetchone()
             if row is None or row["decision"] == "rollback":
                 return None
             if not row["previous_model_id"]:
