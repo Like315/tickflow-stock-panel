@@ -406,3 +406,12 @@ def weighted_consensus_scores(
             votes[symbol] = votes.get(symbol, 0.0) + allocation.weight
     normalized = {symbol: round(weight / successful_weight, 8) for symbol, weight in votes.items()}
     return normalized, match_counts
+
+
+def matched_strategy_ids_by_symbol(results: Mapping[str, Any]) -> dict[str, list[str]]:
+    """返回每只股票实际命中的成功策略标识。"""
+    matched: dict[str, list[str]] = {}
+    for strategy_id, result in results.items():
+        for symbol in _matched_symbols(result):
+            matched.setdefault(symbol, []).append(str(strategy_id))
+    return {symbol: sorted(strategy_ids) for symbol, strategy_ids in matched.items()}

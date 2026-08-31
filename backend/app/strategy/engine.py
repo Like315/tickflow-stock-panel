@@ -4,6 +4,7 @@
      通用评分排序。
 不知道: AI、API、前端、配置持久化、回测。
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -11,10 +12,11 @@ import logging
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -172,6 +174,7 @@ class CompositeSpec:
 @dataclass
 class StrategyDef:
     """加载后的策略定义（只读数据 + filter 函数引用）"""
+
     meta: dict
     basic_filter: dict
     entry_signals: list[str]
@@ -190,12 +193,14 @@ class StrategyDef:
     file_path: Path | None = None
     execution_backend: str = "polars_expr"
     matrix_strategy: Any | None = None
+    intraday_replay_fn: Callable[..., Any] | None = None
     composite: CompositeSpec | None = None  # 仅 backend=="composite" 时非空
 
 
 @dataclass
 class StrategyResult:
     """策略执行结果"""
+
     as_of: date
     strategy_id: str
     rows: list[dict] = field(default_factory=list)
@@ -253,20 +258,24 @@ class StrategyEngine:
                     s = self._load_file(f)
                     strategy_id = str(s.meta["id"])
                     if strategy_id in duplicate_ids:
-                        errors.append({
-                            "file": str(f),
-                            "error": f"duplicate strategy id {strategy_id!r}",
-                        })
+                        errors.append(
+                            {
+                                "file": str(f),
+                                "error": f"duplicate strategy id {strategy_id!r}",
+                            }
+                        )
                         continue
                     if strategy_id in candidates:
                         previous_path = candidate_paths.pop(strategy_id)
                         candidates.pop(strategy_id)
                         duplicate_ids.add(strategy_id)
                         message = f"duplicate strategy id {strategy_id!r}"
-                        errors.extend([
-                            {"file": str(previous_path), "error": message},
-                            {"file": str(f), "error": message},
-                        ])
+                        errors.extend(
+                            [
+                                {"file": str(previous_path), "error": message},
+                                {"file": str(f), "error": message},
+                            ]
+                        )
                         continue
                     candidates[strategy_id] = s
                     candidate_paths[strategy_id] = f
@@ -285,10 +294,12 @@ class StrategyEngine:
                 continue
             error = self._validate_composite_references(sid, strategy, candidates)
             if error is not None:
-                errors.append({
-                    "file": str(strategy.file_path) if strategy.file_path else sid,
-                    "error": error,
-                })
+                errors.append(
+                    {
+                        "file": str(strategy.file_path) if strategy.file_path else sid,
+                        "error": error,
+                    }
+                )
                 candidates.pop(sid, None)
                 candidate_paths.pop(sid, None)
 
@@ -358,14 +369,13 @@ class StrategyEngine:
         # 纵深防御: 执行前再跑一次 AST 安全校验, 防止策略文件被直接篡改
         # 绕过 API 校验后, 在 exec_module 时执行恶意代码。
         dependency_paths = [
-            candidate
-            for candidate in path.parent.glob("_*.py")
-            if candidate != path
+            candidate for candidate in path.parent.glob("_*.py") if candidate != path
         ]
         dependency_names = frozenset(candidate.stem for candidate in dependency_paths)
         try:
             code = path.read_text(encoding="utf-8")
             from app.strategy.ai_generator import AIStrategyGenerator
+
             AIStrategyGenerator._validate_safety(
                 code,
                 extra_allowed_import_modules=dependency_names,
@@ -373,11 +383,14 @@ class StrategyEngine:
             for dependency_path in dependency_paths:
                 AIStrategyGenerator._validate_safety(
                     dependency_path.read_text(encoding="utf-8"),
-                    extra_allowed_import_modules=frozenset({
-                        "collections.abc",
-                        "types",
-                        "typing",
-                    }),
+                    extra_allowed_import_modules=frozenset(
+                        {
+                            "collections.abc",
+                            "dataclasses",
+                            "types",
+                            "typing",
+                        }
+                    ),
                     extra_allowed_calls=frozenset({"vars"}),
                 )
         except ValueError:
@@ -481,6 +494,12 @@ class StrategyEngine:
             )
 
         matrix_strategy = getattr(mod, "MATRIX_STRATEGY", None)
+        intraday_replay_fn = getattr(mod, "INTRADAY_REPLAY", None)
+        if intraday_replay_fn is not None and not callable(intraday_replay_fn):
+            raise TypeError("INTRADAY_REPLAY must be callable")
+        min_hold_days = getattr(mod, "MIN_HOLD_DAYS", None)
+        if min_hold_days is not None:
+            meta["min_hold_days"] = int(min_hold_days)
         composite_spec: CompositeSpec | None = None
         if execution_backend == "matrix_native":
             from app.backtest.matrix import MatrixStrategy
@@ -530,15 +549,14 @@ class StrategyEngine:
             file_path=path,
             execution_backend=execution_backend,
             matrix_strategy=matrix_strategy,
+            intraday_replay_fn=intraday_replay_fn,
             composite=composite_spec,
         )
 
     def reload(self) -> None:
         """原子热重载；任一策略失败时保留上一版注册表。"""
         if not self._load_all(retain_previous_on_error=True):
-            details = "; ".join(
-                f"{item['file']}: {item['error']}" for item in self._load_errors
-            )
+            details = "; ".join(f"{item['file']}: {item['error']}" for item in self._load_errors)
             raise ValueError(f"strategy reload failed: {details}")
         with self._realtime_matrix_lock:
             self._realtime_matrices.clear()
@@ -551,11 +569,13 @@ class StrategyEngine:
         """返回所有策略的元信息"""
         result = []
         for s in self._strategies.values():
-            result.append({
-                **s.meta,
-                "source": s.source,
-                "execution_backend": s.execution_backend,
-            })
+            result.append(
+                {
+                    **s.meta,
+                    "source": s.source,
+                    "execution_backend": s.execution_backend,
+                }
+            )
         return result
 
     def strategy_definitions(self) -> tuple[StrategyDef, ...]:
@@ -953,7 +973,9 @@ class StrategyEngine:
         ]
         if not available:
             return []
-        hit_df = df.filter(pl.any_horizontal(pl.col(column).fill_null(False) for _, column in available))
+        hit_df = df.filter(
+            pl.any_horizontal(pl.col(column).fill_null(False) for _, column in available)
+        )
         return [
             {
                 "symbol": str(row["symbol"]),
@@ -1006,9 +1028,7 @@ class StrategyEngine:
 
             field_columns: set[str] = set()
             for sid, strategy in matrix_strats:
-                field_columns.update(
-                    self._matrix_field_columns(strategy, overrides_map.get(sid))
-                )
+                field_columns.update(self._matrix_field_columns(strategy, overrides_map.get(sid)))
             shared_matrix = build_market_data_matrix(
                 shared_history,
                 field_columns=field_columns,
@@ -1153,10 +1173,7 @@ class StrategyEngine:
             )
 
         target_frame = self._matrix_target_frame(source_panel, as_of)
-        row_by_symbol = {
-            str(row["symbol"]): row
-            for row in target_frame.iter_rows(named=True)
-        }
+        row_by_symbol = {str(row["symbol"]): row for row in target_frame.iter_rows(named=True)}
         ranked: list[tuple[float, dict]] = []
         for asset_id in selected_assets:
             symbol = market.symbols[int(asset_id)]
@@ -1274,11 +1291,13 @@ class StrategyEngine:
         if limit is not None:
             ranked_symbols = ranked_symbols[:limit]
 
-        rows = _sanitize([
-            {**row_by_symbol[sym], "score": merged.scores[sym]}
-            for sym in ranked_symbols
-            if sym in row_by_symbol
-        ])
+        rows = _sanitize(
+            [
+                {**row_by_symbol[sym], "score": merged.scores[sym]}
+                for sym in ranked_symbols
+                if sym in row_by_symbol
+            ]
+        )
         scores = {str(row["symbol"]): float(row.get("score") or 0.0) for row in rows}
 
         return StrategyResult(
@@ -1331,22 +1350,14 @@ class StrategyEngine:
         if bf.get("price_max") is not None:
             exprs.append(pl.col("close") <= bf["price_max"])
         if bf.get("market_cap_min") is not None and "total_shares" in df.columns:
-            exprs.append(
-                pl.col("close") * pl.col("total_shares") >= bf["market_cap_min"]
-            )
+            exprs.append(pl.col("close") * pl.col("total_shares") >= bf["market_cap_min"])
         if bf.get("market_cap_max") is not None and "total_shares" in df.columns:
-            exprs.append(
-                pl.col("close") * pl.col("total_shares") <= bf["market_cap_max"]
-            )
+            exprs.append(pl.col("close") * pl.col("total_shares") <= bf["market_cap_max"])
         # 流通市值
         if bf.get("float_cap_min") is not None and "float_shares" in df.columns:
-            exprs.append(
-                pl.col("close") * pl.col("float_shares") >= bf["float_cap_min"]
-            )
+            exprs.append(pl.col("close") * pl.col("float_shares") >= bf["float_cap_min"])
         if bf.get("float_cap_max") is not None and "float_shares" in df.columns:
-            exprs.append(
-                pl.col("close") * pl.col("float_shares") <= bf["float_cap_max"]
-            )
+            exprs.append(pl.col("close") * pl.col("float_shares") <= bf["float_cap_max"])
         if bf.get("amount_min") is not None:
             exprs.append(pl.col("amount") >= bf["amount_min"])
         if bf.get("amount_max") is not None:
@@ -1417,9 +1428,9 @@ class StrategyEngine:
             w = weight / total_weight
             col_min = value.min()
             col_range = value.max() - col_min
-            normalized = pl.when(col_range > 0).then(
-                (value - col_min) / col_range
-            ).otherwise(pl.lit(0.5))
+            normalized = (
+                pl.when(col_range > 0).then((value - col_min) / col_range).otherwise(pl.lit(0.5))
+            )
             score_parts.append(normalized * w)
 
         if not score_parts:

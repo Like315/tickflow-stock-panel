@@ -12,6 +12,7 @@ from app.paper_agent.strategy_orchestrator import (
     StrategyProfile,
     StrategySource,
     classify_market_regime,
+    matched_strategy_ids_by_symbol,
     plan_strategy_allocation,
     weighted_consensus_scores,
 )
@@ -166,3 +167,16 @@ def test_weighted_consensus_renormalizes_around_isolated_failures() -> None:
     assert scores["SH.600000"] == 1.0
     assert scores["SZ.000001"] == round(0.3 / 0.9, 8)
     assert counts == {"a": 1, "b": 2}
+
+
+def test_strategy_matches_are_preserved_per_symbol_for_intraday_execution() -> None:
+    """分钟运行时必须能区分每只股票由哪些策略选中。"""
+    results = {
+        "late_day": SimpleNamespace(rows=[{"symbol": "SH.600000"}]),
+        "trend": SimpleNamespace(rows=[{"symbol": "SH.600000"}, {"symbol": "SZ.000001"}]),
+    }
+
+    assert matched_strategy_ids_by_symbol(results) == {
+        "SH.600000": ["late_day", "trend"],
+        "SZ.000001": ["trend"],
+    }

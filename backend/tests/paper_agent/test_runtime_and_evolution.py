@@ -24,6 +24,36 @@ def _bar(minute: int, close: float, amount: float, *, day: int = 18) -> MinuteBa
     )
 
 
+def _late_day_bars(day: int = 18) -> list[MinuteBar]:
+    """构造截至14:30且最后一个10分钟 MA5 刚拐头的分钟线。"""
+    morning = datetime(2026, 8, day, 9, 31, tzinfo=UTC)
+    afternoon = datetime(2026, 8, day, 13, 1, tzinfo=UTC)
+    timestamps = [morning + timedelta(minutes=index) for index in range(120)] + [
+        afternoon + timedelta(minutes=index) for index in range(90)
+    ]
+    chunk_closes = [10.0] * 14 + [10.0, 10.0, 10.0, 10.0, 9.8, 9.8, 10.4]
+    result = []
+    for index, timestamp in enumerate(timestamps):
+        session_index = index if index < 120 else index - 120
+        chunk_id = index // 10 if index < 120 else 12 + session_index // 10
+        close = chunk_closes[chunk_id]
+        open_price = 9.9 if index == 0 else close
+        result.append(
+            MinuteBar(
+                symbol="A",
+                datetime=timestamp,
+                received_at=timestamp + timedelta(minutes=1, seconds=1),
+                raw_open=open_price,
+                raw_high=max(open_price, close) + 0.01,
+                raw_low=min(open_price, close) - 0.01,
+                raw_close=close,
+                volume=100,
+                amount=close * 10_000,
+            )
+        )
+    return result
+
+
 def test_runtime_submits_only_after_completed_bar_confirmation() -> None:
     executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
     policy = ExpertPolicy(
@@ -49,6 +79,98 @@ def test_runtime_submits_only_after_completed_bar_confirmation() -> None:
 
     third = runtime.on_bar(_bar(33, 10.3, 103_000))
     assert third.execution_events[0].event_type in {"order_filled", "order_partially_filled"}
+
+
+def test_late_day_strategy_buys_after_1430_and_exits_next_morning() -> None:
+    executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
+    runtime = InvestmentExpertRuntime(
+        InvestmentExpertRuntimeConfig(
+            session_id="late-day-entry",
+            policy=ExpertPolicy(id="late-day", version=1),
+            candidates={"A"},
+            executor=executor,
+            candidate_context={
+                "A": {
+                    "previous_close": 10.0,
+                    "intraday_change_rank": 1,
+                    "strategy_ids": ["late_day_first_bullish_ma5_turn"],
+                    "primary_strategy_id": "late_day_first_bullish_ma5_turn",
+                    "strategy_params": {"late_day_first_bullish_ma5_turn": {}},
+                }
+            },
+        )
+    )
+
+    last_step = None
+    for bar in _late_day_bars():
+        last_step = runtime.on_bar(bar)
+
+    assert last_step is not None
+    assert last_step.decision is not None
+    assert last_step.decision["action"] == "buy"
+    assert last_step.submitted_event is not None
+    fill_time = datetime(2026, 8, 18, 14, 31, tzinfo=UTC)
+    fill_step = runtime.on_bar(
+        MinuteBar(
+            symbol="A",
+            datetime=fill_time,
+            received_at=fill_time + timedelta(minutes=1, seconds=1),
+            raw_open=10.41,
+            raw_high=10.42,
+            raw_low=10.40,
+            raw_close=10.41,
+            volume=100,
+            amount=104_100,
+        )
+    )
+    assert fill_step.execution_events[0].event_type in {"order_filled", "order_partially_filled"}
+    assert executor.lots[0].strategy_id == "late_day_first_bullish_ma5_turn"
+
+    next_runtime = InvestmentExpertRuntime(
+        InvestmentExpertRuntimeConfig(
+            session_id="late-day-exit",
+            policy=ExpertPolicy(id="late-day", version=1),
+            candidates=set(),
+            executor=executor,
+        )
+    )
+    exit_signal = next_runtime.on_bar(_bar(31, 10.8, 108_000, day=19))
+    assert exit_signal.decision is not None
+    assert exit_signal.decision["action"] == "sell"
+    assert exit_signal.decision["reason"] == "late_day_next_morning_take_profit"
+    exit_fill = next_runtime.on_bar(_bar(32, 10.79, 107_900, day=19))
+    assert exit_fill.execution_events[0].event_type in {"order_filled", "order_partially_filled"}
+
+
+def test_late_day_strategy_forces_exit_on_second_trading_day() -> None:
+    executor = StrictMinuteExecutor(RiskConstitution(slippage_bps=0))
+    executor.lots.append(
+        PositionLot(
+            lot_id="late-day-max-hold",
+            symbol="A",
+            acquired_date=date(2026, 8, 18),
+            shares=100,
+            remaining_shares=100,
+            entry_price=10,
+            entry_cost=5,
+            strategy_id="late_day_first_bullish_ma5_turn",
+        )
+    )
+    runtime = InvestmentExpertRuntime(
+        InvestmentExpertRuntimeConfig(
+            session_id="late-day-max-hold",
+            policy=ExpertPolicy(id="late-day", version=1),
+            candidates=set(),
+            executor=executor,
+        )
+    )
+
+    step = runtime.on_bar(_bar(31, 10.0, 100_000, day=20))
+
+    assert step.decision is not None
+    assert step.decision["action"] == "sell"
+    assert step.decision["reason"] == "late_day_max_hold"
+    assert step.submitted_event is not None
 
 
 def test_runtime_applies_overnight_module_factor_to_entry_confirmation() -> None:

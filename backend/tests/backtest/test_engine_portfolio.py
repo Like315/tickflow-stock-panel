@@ -116,6 +116,38 @@ def test_market_matrix_entry_price_override_uses_confirmed_intraday_fill():
     assert result.trades[0].entry_price == 10.25
 
 
+def test_market_matrix_exit_price_override_uses_confirmed_intraday_fill():
+    panel = _panel(["A"], days=3)
+    market = build_market_data_matrix(panel)
+    entry = np.zeros(market.shape, dtype=np.uint8)
+    exit_ = np.zeros(market.shape, dtype=np.uint8)
+    entry[0, 0] = 1
+    exit_[1, 0] = 1
+    signals = make_signal_matrix(market.shape, entry=entry, exit=exit_)
+    fill = np.full(market.shape, np.nan, dtype=np.float32)
+    fill[1, 0] = 10.75
+    matrix = build_market_matrix_from_signals(
+        market,
+        signals,
+        exit_price_override=fill,
+    )
+
+    result = _engine().simulate_market_matrix(
+        matrix,
+        MatcherConfig(
+            entry_fill="close_t",
+            exit_fill="close_t",
+            fees_pct=0,
+            slippage_bps=0,
+            max_positions=1,
+            initial_capital=100_000,
+        ),
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_price == 10.75
+
+
 def test_one_price_limit_up_blocks_buy():
     panel = _panel(
         ["A"],

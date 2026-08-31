@@ -48,6 +48,14 @@ def _matrix_entry_prices(matrix: MarketMatrix, config: MatcherConfig) -> np.ndar
     return np.where(usable, override, base)
 
 
+def _matrix_exit_prices(matrix: MarketMatrix, config: MatcherConfig) -> np.ndarray:
+    """返回优先使用分钟回放覆盖价的卖出成交矩阵。"""
+    base = matrix.open if config.exit_fill == "open_t+1" else matrix.close
+    override = matrix.exit_price_override
+    usable = np.isfinite(override) & (override > 0)
+    return np.where(usable, override, base)
+
+
 # ================================================================
 # 数据结构
 # ================================================================
@@ -120,8 +128,10 @@ class TradeRecord:
     exit_price: float
     pnl_pct: float
     duration: int
-    exit_reason: str  # "signal" | "stop_loss" | "take_profit" | "trailing_stop" | "trailing_take_profit" | "max_hold" | "end"
-    # 退出优先级 (高→低): pending_exit(历史挂单) > 风控(止损/移动止损/移动止盈) > signal(卖点) > max_hold(到期) > end
+    # signal | stop_loss | take_profit | trailing_stop |
+    # trailing_take_profit | max_hold | end
+    exit_reason: str
+    # 退出优先级（高→低）：历史挂单 > 风控 > signal > max_hold > end。
     name: str = ""
     shares: float = 0.0
     lots: float = 0.0
@@ -779,7 +789,7 @@ class BacktestEngine:
     ) -> SimResult:
         options = options or SimulationOptions()
         entry_prices = _matrix_entry_prices(matrix, config)
-        exit_prices = matrix.open if config.exit_fill == "open_t+1" else matrix.close
+        exit_prices = _matrix_exit_prices(matrix, config)
         buy_cost_pct = config.buy_cost_pct()
         sell_cost_pct = config.sell_cost_pct()
         trades: list[TradeRecord] = []
@@ -1771,7 +1781,7 @@ class BacktestEngine:
         options = options or SimulationOptions()
         time_count, asset_count = matrix.shape
         entry_prices = _matrix_entry_prices(matrix, config)
-        exit_prices = matrix.open if config.exit_fill == "open_t+1" else matrix.close
+        exit_prices = _matrix_exit_prices(matrix, config)
         buy_cost_pct = config.buy_cost_pct()
         sell_cost_pct = config.sell_cost_pct()
         cash = float(config.initial_capital)
@@ -2853,8 +2863,8 @@ class BacktestEngine:
             for pos in positions.values():
                 pos["hold_days"] += 1
 
-            # 统一执行顺序 (不分口径): 风控(止损/移动止损/止盈) → 计划出场(signal/max_hold/end) → 建仓。
-            # 风控是保护性离场, 必须最先; 计划出场次之; 建仓最后 (卖出释放的现金/仓位先用于满足新买)。
+            # 统一执行顺序（不分口径）：风控 → 计划出场 → 建仓。
+            # 风控是保护性离场，必须最先；卖出释放的现金和仓位随后可用于新买。
             # 当天新建仓不会被风控误杀 (_process_risk_exits 跳过 entry_date == d_str 的仓位)。
             _process_risk_exits(d_str, row_by_symbol, sold_today)
             _process_scheduled_exits(d_idx, d_str, row_by_symbol, sold_today)

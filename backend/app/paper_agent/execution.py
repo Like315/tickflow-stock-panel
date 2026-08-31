@@ -192,6 +192,8 @@ class StrictMinuteExecutor:
                 remaining_shares=shares,
                 entry_price=price,
                 entry_cost=commission,
+                strategy_id=intent.strategy_id,
+                strategy_params=dict(intent.strategy_params),
             )
         )
         event_type = (

@@ -9,14 +9,13 @@ import polars as pl
 from app.api.investment_expert import (
     InvestmentExpertStatusResponse,
 )
-from app.api.investment_expert import (
-    status as investment_expert_status,
-)
+from app.api.investment_expert import status as investment_expert_status
 from app.data_providers.huggingface_archive import ArchiveCoverage
 from app.market_time import CN_TZ
 from app.paper_agent.execution import StrictMinuteExecutor
 from app.paper_agent.models import ExecutionEvent, PositionLot
 from app.services.investment_expert import InvestmentExpertService
+from app.strategy.engine import StrategyEngine
 from app.tickflow.capabilities import Cap, CapabilityLimits, CapabilitySet
 
 
@@ -194,6 +193,53 @@ class _NewsSentimentService:
             }
             for symbol in symbols
         }
+
+
+def test_intraday_change_rank_uses_only_current_candidate_pool(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 18)
+    service = InvestmentExpertService(_Repo(trade_date), tmp_path)
+    service._candidates = service.repo.symbols[:3]
+    service._candidate_context = {
+        symbol: {"previous_close": 10.0} for symbol in service._candidates
+    }
+    timestamp = datetime(2026, 8, 18, 14, 30)
+    minute = pl.DataFrame(
+        {
+            "symbol": [*service._candidates, service.repo.symbols[3]],
+            "datetime": [timestamp] * 4,
+            "close": [10.2, 10.5, 10.1, 11.0],
+        }
+    )
+    try:
+        ranks = service._intraday_change_ranks(
+            minute,
+            datetime(2026, 8, 18, 14, 31, tzinfo=CN_TZ),
+        )
+    finally:
+        service.close()
+
+    aware = timestamp.replace(tzinfo=CN_TZ)
+    assert ranks[(aware, service.repo.symbols[1])] == 1
+    assert ranks[(aware, service.repo.symbols[0])] == 2
+    assert all(key[1] != service.repo.symbols[3] for key in ranks)
+
+
+def test_late_day_strategy_keeps_one_day_minimum_in_optimizer(tmp_path: Path) -> None:
+    trade_date = date(2026, 8, 18)
+    service = InvestmentExpertService(_Repo(trade_date), tmp_path)
+    strategy_engine = StrategyEngine([])
+    strategy = StrategyEngine._load_file(
+        Path("app/strategy/builtin/late_day_first_bullish_ma5_turn.py")
+    )
+    strategy_engine._strategies = {str(strategy.meta["id"]): strategy}
+    service.strategy_engine = strategy_engine
+    try:
+        config = service._optimizer_backtest_kwargs(str(strategy.meta["id"]))
+    finally:
+        service.close()
+
+    assert config["min_hold_days"] == 1
+    assert config["holding_days"] == 2
 
 
 def test_service_never_replays_minutes_before_runtime_start(tmp_path: Path) -> None:

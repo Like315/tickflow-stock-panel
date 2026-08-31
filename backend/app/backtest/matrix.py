@@ -533,6 +533,7 @@ class MarketMatrix:
     limit_down_locked: np.ndarray
     reference_price: np.ndarray
     entry_price_override: np.ndarray
+    exit_price_override: np.ndarray
 
     entry_signal_time: np.ndarray
     exit_signal_time: np.ndarray
@@ -2220,6 +2221,7 @@ def build_market_matrix_from_signals(
     exit_delay_bars: int = 0,
     reference_price: np.ndarray | None = None,
     entry_price_override: np.ndarray | None = None,
+    exit_price_override: np.ndarray | None = None,
     minute_exit_trigger: bool = False,
 ) -> MarketMatrix:
     """Combine base data and strategy signals into the matcher input matrix."""
@@ -2269,6 +2271,21 @@ def build_market_matrix_from_signals(
             dtype=np.float32,
         )
 
+    if exit_price_override is not None:
+        if exit_price_override.shape != market.shape:
+            raise ValueError("exit_price_override shape does not match MarketDataMatrix")
+        resolved_exit_price_override = np.array(
+            exit_price_override,
+            dtype=np.float32,
+            copy=True,
+        )
+    else:
+        resolved_exit_price_override = np.full(
+            market.shape,
+            np.nan,
+            dtype=np.float32,
+        )
+
     if minute_exit_trigger:
         trigger_reference = build_minute_exit_reference(
             market.close,
@@ -2284,6 +2301,7 @@ def build_market_matrix_from_signals(
         exit_,
         resolved_reference_price,
         resolved_entry_price_override,
+        resolved_exit_price_override,
         entry_signal_time,
         exit_signal_time,
         entry_signal_code,
@@ -2309,6 +2327,7 @@ def build_market_matrix_from_signals(
         limit_down_locked=market.limit_down_locked,
         reference_price=resolved_reference_price,
         entry_price_override=resolved_entry_price_override,
+        exit_price_override=resolved_exit_price_override,
         entry_signal_time=entry_signal_time,
         exit_signal_time=exit_signal_time,
         entry_signal_code=entry_signal_code,

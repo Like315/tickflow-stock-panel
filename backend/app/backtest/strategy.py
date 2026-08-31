@@ -42,6 +42,7 @@ from app.indicators.pipeline import (
     LIMIT_SIGNAL_OUTPUTS,
     get_signal_dependencies,
 )
+from app.strategy.builtin._late_day_first_bullish import IntradayReplayResult
 from app.strategy.engine import StrategyDataContext, StrategyDef, StrategyEngine
 from app.strategy.scoring import scoring_dependencies, scoring_value_expr
 
@@ -623,6 +624,45 @@ class StrategyBacktestService:
         self.strategy_engine = strategy_engine
 
     @staticmethod
+    def _intraday_replay_requirements(
+        market: MarketDataMatrix,
+        signals,
+    ) -> tuple[list[str], list[date]]:
+        """返回分钟回放所需的候选股票和目标/退出交易日。"""
+        symbols: set[str] = set()
+        dates: set[date] = set()
+        for time_raw, asset_raw in np.argwhere(signals.entry != 0):
+            time_id, asset_id = int(time_raw), int(asset_raw)
+            if time_id + 2 >= market.shape[0]:
+                continue
+            symbols.add(market.symbols[asset_id])
+            dates.add(date.fromisoformat(market.timestamp_labels[time_id + 1][:10]))
+            dates.add(date.fromisoformat(market.timestamp_labels[time_id + 2][:10]))
+        return sorted(symbols), sorted(dates)
+
+    def _load_intraday_replay_minutes(
+        self,
+        market: MarketDataMatrix,
+        signals,
+        asset_type: str,
+    ) -> pl.DataFrame:
+        """按实际信号日加载分钟分区，缺少能力时返回空表。"""
+        symbols, dates = self._intraday_replay_requirements(market, signals)
+        loader = getattr(self.engine.repo, "get_minute_by_dates", None)
+        if not symbols or not dates or not callable(loader):
+            return pl.DataFrame()
+        frames: list[pl.DataFrame] = []
+        for start in range(0, len(dates), 50):
+            try:
+                frame = loader(symbols, dates[start : start + 50], asset_type=asset_type)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                logger.exception("策略分钟回放数据加载失败")
+                return pl.DataFrame()
+            if not frame.is_empty():
+                frames.append(frame)
+        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+    @staticmethod
     def _matrix_prepare_signature(config: StrategyBacktestConfig) -> tuple:
         return (
             config.strategy_id,
@@ -1023,6 +1063,7 @@ class StrategyBacktestService:
                 trailing_take_profit_drawdown, trailing_take_profit_activate
             )
         max_hold_days = self._override_value(overrides, "max_hold_days", s.max_hold_days)
+        min_hold_days = int(s.meta.get("min_hold_days") or config.min_hold_days)
         score_min, score_max = self._normalize_score_range(
             overrides.get("score_min"),
             overrides.get("score_max"),
@@ -1171,7 +1212,7 @@ class StrategyBacktestService:
             trailing_stop_pct=trailing_stop,
             trailing_take_profit_activate_pct=trailing_take_profit_activate,
             trailing_take_profit_drawdown_pct=trailing_take_profit_drawdown,
-            min_hold_days=config.min_hold_days,
+            min_hold_days=min_hold_days,
             max_hold_days=max_hold_days,
             max_positions=config.max_positions,
             max_exposure_pct=config.max_exposure_pct,
@@ -1184,6 +1225,7 @@ class StrategyBacktestService:
         t_signal = time.perf_counter()
         selection_stats: dict[str, int | bool]
         sector_context_metadata: dict[str, int | float | str] | None = None
+        intraday_replay: IntradayReplayResult | None = None
 
         if s.execution_backend == "composite":
             # composite 回测信号生成: 复用 matrix 数据加载, 逐子策略算信号后合并。
@@ -1388,8 +1430,26 @@ class StrategyBacktestService:
                 entry_time_mask[start_id:stop_id],
                 exit_time_mask[start_id:stop_id],
             )
+            if s.intraday_replay_fn is not None:
+                minute_frame = self._load_intraday_replay_minutes(
+                    sim_market_data,
+                    sim_signal_matrix,
+                    config.asset_type,
+                )
+                try:
+                    intraday_replay = s.intraday_replay_fn(
+                        sim_market_data,
+                        sim_signal_matrix,
+                        minute_frame,
+                        params,
+                    )
+                except (TypeError, ValueError) as exc:
+                    return _err(f"分钟策略回放失败: {exc}")
+                sim_signal_matrix = intraday_replay.signals
             timing_ms["signals_score"] = round((time.perf_counter() - t_signal) * 1000, 1)
             if not sim_signal_matrix.entry.any():
+                if s.intraday_replay_fn is not None:
+                    return _err("分钟数据不足或尾盘条件未确认，未产生买入信号")
                 return _err("在指定区间内未产生买入信号")
 
             raw_candidates = int(sim_signal_matrix.entry.sum())
@@ -1405,9 +1465,23 @@ class StrategyBacktestService:
             market_matrix = build_market_matrix_from_signals(
                 sim_market_data,
                 sim_signal_matrix,
-                entry_delay_bars=1 if matcher_config.entry_fill == "open_t+1" else 0,
-                exit_delay_bars=1 if matcher_config.exit_fill == "open_t+1" else 0,
+                entry_delay_bars=(
+                    0
+                    if intraday_replay is not None
+                    else 1 if matcher_config.entry_fill == "open_t+1" else 0
+                ),
+                exit_delay_bars=(
+                    0
+                    if intraday_replay is not None
+                    else 1 if matcher_config.exit_fill == "open_t+1" else 0
+                ),
                 reference_price=reference_price,
+                entry_price_override=(
+                    intraday_replay.entry_price_override if intraday_replay is not None else None
+                ),
+                exit_price_override=(
+                    intraday_replay.exit_price_override if intraday_replay is not None else None
+                ),
                 minute_exit_trigger=matcher_config.exit_fill == "signal_next_minute",
             )
             timing_ms["matrix_build"] = round((time.perf_counter() - t_matrix) * 1000, 1)
@@ -1528,6 +1602,8 @@ class StrategyBacktestService:
         result.stats["selection"] = selection_stats
         if sector_context_metadata is not None:
             result.stats["sector_context_filter"] = sector_context_metadata
+        if intraday_replay is not None:
+            result.stats["intraday_replay"] = intraday_replay.stats
         result.stats["shared_market_data"] = prepared is not None
         result.stats["matrix_data_cache_hit"] = matrix_data_cache_hit
         result.stats["matrix_data_cache_status"] = matrix_data_cache_status

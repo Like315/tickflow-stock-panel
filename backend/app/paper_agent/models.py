@@ -207,6 +207,8 @@ class OrderIntent(BaseModel):
     shares: int = Field(gt=0)
     signal_time: dt.datetime
     reason: str
+    strategy_id: str | None = None
+    strategy_params: dict[str, Any] = Field(default_factory=dict)
 
 
 class PositionLot(BaseModel):
@@ -217,6 +219,8 @@ class PositionLot(BaseModel):
     remaining_shares: int = Field(gt=0)
     entry_price: float = Field(gt=0)
     entry_cost: float = Field(ge=0)
+    strategy_id: str | None = None
+    strategy_params: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutionEvent(BaseModel):

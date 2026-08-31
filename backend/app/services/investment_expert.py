@@ -40,6 +40,7 @@ from app.paper_agent.store import PaperAgentStore
 from app.paper_agent.strategy_orchestrator import (
     MarketRegime,
     classify_market_regime,
+    matched_strategy_ids_by_symbol,
     plan_strategy_allocation,
     weighted_consensus_scores,
 )
@@ -1414,9 +1415,34 @@ class InvestmentExpertService:
         )
         latest = latest.sort(["_score", "symbol"], descending=[True, False]).head(limit)
         selected = [str(value) for value in latest["symbol"].to_list()]
+        matched_by_symbol = dict(orchestration.get("matched_strategy_ids_by_symbol") or {})
+        allocation_params = {
+            str(item.get("strategy_id")): dict(item.get("params") or {})
+            for item in orchestration.get("allocations", [])
+            if item.get("strategy_id")
+        }
+        allocation_weights = {
+            str(item.get("strategy_id")): float(item.get("weight") or 0.0)
+            for item in orchestration.get("allocations", [])
+            if item.get("strategy_id")
+        }
         context: dict[str, dict[str, Any]] = {}
         for row in latest.iter_rows(named=True):
             symbol = str(row["symbol"])
+            matched_strategy_ids = [
+                str(value) for value in matched_by_symbol.get(symbol, []) if value
+            ]
+            primary_strategy_id = (
+                min(
+                    matched_strategy_ids,
+                    key=lambda strategy_id: (
+                        -allocation_weights.get(strategy_id, 0.0),
+                        strategy_id,
+                    ),
+                )
+                if matched_strategy_ids
+                else None
+            )
             context[symbol] = {
                 "source_date": str(latest_date),
                 "previous_close": float(row.get("raw_close") or row["close"]),
@@ -1424,6 +1450,12 @@ class InvestmentExpertService:
                 "score": float(row["_score"]),
                 "daily_momentum_20d": float(row["_momentum"]),
                 "strategy_consensus": float(row["_strategy_score"]),
+                "strategy_ids": matched_strategy_ids,
+                "primary_strategy_id": primary_strategy_id,
+                "strategy_params": {
+                    strategy_id: allocation_params.get(strategy_id, {})
+                    for strategy_id in matched_strategy_ids
+                },
                 "strategy_regime": regime.state,
                 "market_score": float(row["_market_score"]),
                 "momentum_score": float(row["_news_momentum_preference"]),
@@ -1543,9 +1575,15 @@ class InvestmentExpertService:
                 payload["errors"].append({"strategy_id": strategy_id, "error": str(exc)[:300]})
 
         scores, match_counts = weighted_consensus_scores(allocations, results)
+        payload["matched_strategy_ids_by_symbol"] = matched_strategy_ids_by_symbol(results)
         for item in payload["allocations"]:
             strategy_id = str(item["strategy_id"])
             item["match_count"] = match_counts.get(strategy_id, 0)
+            strategy = self.strategy_engine.get(strategy_id)
+            item["params"] = self.strategy_engine.resolve_params(
+                strategy,
+                params_map.get(strategy_id),
+            )
             parameter_state = active_params.get(strategy_id)
             item["parameter_version_id"] = (
                 parameter_state.get("version_id") if parameter_state else None
@@ -1602,6 +1640,34 @@ class InvestmentExpertService:
             )
         self._runtime.candidate_context = self._candidate_context
 
+    def _intraday_change_ranks(
+        self,
+        minute: pl.DataFrame,
+        now: datetime,
+    ) -> dict[tuple[datetime, str], int]:
+        """按同一分钟的候选池涨幅生成可审计排名。"""
+        grouped: dict[datetime, list[tuple[str, float]]] = {}
+        for row in minute.iter_rows(named=True):
+            symbol = str(row.get("symbol") or "")
+            context = self._candidate_context.get(symbol)
+            previous_close = float((context or {}).get("previous_close") or 0.0)
+            bar_time = row.get("datetime")
+            close = float(row.get("raw_close", row.get("close")) or 0.0)
+            if not isinstance(bar_time, datetime) or symbol not in self._candidates:
+                continue
+            if bar_time.tzinfo is None:
+                bar_time = bar_time.replace(tzinfo=CN_TZ)
+            if bar_time + timedelta(minutes=1) > now or previous_close <= 0 or close <= 0:
+                continue
+            grouped.setdefault(bar_time, []).append((symbol, close / previous_close - 1))
+        ranks: dict[tuple[datetime, str], int] = {}
+        for bar_time, values in grouped.items():
+            values.sort(key=lambda item: (-item[1], item[0]))
+            ranks.update(
+                {(bar_time, symbol): rank for rank, (symbol, _) in enumerate(values, start=1)}
+            )
+        return ranks
+
     def _process_new_minute_bars(self, now: datetime) -> dict[str, Any]:
         if self._runtime is None or self._executor is None or self._session is None:
             return {"status": "degraded", "reason": "session_not_prepared"}
@@ -1632,6 +1698,7 @@ class InvestmentExpertService:
         if minute.is_empty():
             return {"status": "degraded", "reason": "minute_data_empty"}
         minute = minute.unique(subset=["symbol", "datetime"], keep="last")
+        change_ranks = self._intraday_change_ranks(minute, now)
         processed = 0
         decisions = 0
         event_count = 0
@@ -1655,6 +1722,7 @@ class InvestmentExpertService:
                 last_dt = bar_time if last_dt is None else max(last_dt, bar_time)
                 continue
             context = self._candidate_context.get(symbol, {})
+            context["intraday_change_rank"] = change_ranks.get((bar_time, symbol))
             is_limit_up, is_limit_down = self._limit_flags(
                 symbol=symbol,
                 name=str(context.get("name") or ""),
@@ -1973,6 +2041,13 @@ class InvestmentExpertService:
         """按投资专家统一交易约束运行一次策略回测。"""
         from app.backtest.strategy import StrategyBacktestConfig
 
+        strategy = self.strategy_engine.get(strategy_id)
+        min_hold_days = int(
+            strategy.meta.get("min_hold_days") or self.constitution.min_hold_trading_days
+        )
+        max_hold_days = int(
+            getattr(strategy, "max_hold_days", None) or self.constitution.max_hold_trading_days
+        )
         return service.run(
             StrategyBacktestConfig(
                 strategy_id=strategy_id,
@@ -1980,7 +2055,7 @@ class InvestmentExpertService:
                 start=window.start,
                 end=window.end,
                 params=params,
-                overrides={"max_hold_days": self.constitution.max_hold_trading_days},
+                overrides={"max_hold_days": max_hold_days},
                 matching="open_t+1",
                 entry_fill="open_t+1",
                 exit_fill="open_t+1",
@@ -1990,8 +2065,8 @@ class InvestmentExpertService:
                 position_sizing="score_weight",
                 mode="full",
                 asset_type="stock",
-                holding_days=self.constitution.max_hold_trading_days,
-                min_hold_days=self.constitution.min_hold_trading_days,
+                holding_days=max_hold_days,
+                min_hold_days=min_hold_days,
             )
         )
 
@@ -2024,8 +2099,15 @@ class InvestmentExpertService:
             return "rejected", "protected_drawdown_regressed"
         return "promoted", "protected_strategy_optimization_passed"
 
-    def _optimizer_backtest_kwargs(self) -> dict[str, Any]:
+    def _optimizer_backtest_kwargs(self, strategy_id: str) -> dict[str, Any]:
         """返回参数优化阶段统一使用的回测配置。"""
+        strategy = self.strategy_engine.get(strategy_id)
+        min_hold_days = int(
+            strategy.meta.get("min_hold_days") or self.constitution.min_hold_trading_days
+        )
+        max_hold_days = int(
+            getattr(strategy, "max_hold_days", None) or self.constitution.max_hold_trading_days
+        )
         return {
             "matching": "open_t+1",
             "entry_fill": "open_t+1",
@@ -2036,8 +2118,8 @@ class InvestmentExpertService:
             "position_sizing": "score_weight",
             "mode": "full",
             "asset_type": "stock",
-            "holding_days": self.constitution.max_hold_trading_days,
-            "min_hold_days": self.constitution.min_hold_trading_days,
+            "holding_days": max_hold_days,
+            "min_hold_days": min_hold_days,
         }
 
     def _optimizer_config(
@@ -2050,6 +2132,10 @@ class InvestmentExpertService:
         """构造单个内置策略的训练窗优化配置。"""
         from app.backtest.optimizer import OptimizeConfig
 
+        strategy = self.strategy_engine.get(strategy_id)
+        max_hold_days = int(
+            getattr(strategy, "max_hold_days", None) or self.constitution.max_hold_trading_days
+        )
         return OptimizeConfig(
             strategy_id=strategy_id,
             symbols=None,
@@ -2059,8 +2145,8 @@ class InvestmentExpertService:
             objective="sortino",
             max_workers=1,
             base_params=base_params,
-            overrides={"max_hold_days": self.constitution.max_hold_trading_days},
-            backtest_kwargs=self._optimizer_backtest_kwargs(),
+            overrides={"max_hold_days": max_hold_days},
+            backtest_kwargs=self._optimizer_backtest_kwargs(strategy_id),
         )
 
     @staticmethod

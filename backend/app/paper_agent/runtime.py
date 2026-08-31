@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import time, timedelta
 from typing import Any, Literal, TypeAlias, cast
 from uuid import NAMESPACE_URL, uuid5
 
@@ -17,6 +17,11 @@ from app.paper_agent.models import (
     OrderIntent,
     TrainedDecisionModel,
 )
+from app.strategy.builtin._late_day_first_bullish import STRATEGY_ID as LATE_DAY_STRATEGY_ID
+from app.strategy.builtin._late_day_first_bullish import (
+    completed_ten_minute_closes,
+    evaluate_late_entry,
+)
 
 
 @dataclass
@@ -27,6 +32,8 @@ class _SymbolState:
     cumulative_volume: float = 0.0
     cumulative_amount: float = 0.0
     previous_high: float | None = None
+    day_open: float | None = None
+    minute_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -102,6 +109,17 @@ class InvestmentExpertRuntime:
         state.bars += 1
         state.cumulative_volume += bar.volume
         state.cumulative_amount += bar.amount
+        if state.day_open is None:
+            state.day_open = bar.raw_open
+        state.minute_rows.append(
+            {
+                "datetime": bar.datetime,
+                "raw_open": bar.raw_open,
+                "raw_high": bar.raw_high,
+                "raw_low": bar.raw_low,
+                "raw_close": bar.raw_close,
+            }
+        )
         state.previous_high = (
             max(previous_high, bar.raw_high) if previous_high is not None else bar.raw_high
         )
@@ -119,6 +137,9 @@ class InvestmentExpertRuntime:
             for lot in open_lots
         }
         constitution = self.executor.constitution
+        late_lots = [lot for lot in open_lots if lot.strategy_id == LATE_DAY_STRATEGY_ID]
+        late_shares = sum(lot.remaining_shares for lot in late_lots)
+        late_invested = sum(lot.remaining_shares * lot.entry_price for lot in late_lots)
         return {
             "min_hold_trading_days": constitution.min_hold_trading_days,
             "max_hold_trading_days": constitution.max_hold_trading_days,
@@ -133,12 +154,21 @@ class InvestmentExpertRuntime:
                 for lot in open_lots
                 if holding_days[lot.lot_id] >= constitution.max_hold_trading_days
             ),
+            "late_day_settled_shares": sum(
+                lot.remaining_shares for lot in late_lots if lot.acquired_date < bar.datetime.date()
+            ),
+            "late_day_max_hold_shares": sum(
+                lot.remaining_shares for lot in late_lots if holding_days[lot.lot_id] >= 2
+            ),
+            "late_day_entry_price": late_invested / late_shares if late_shares else None,
+            "late_day_strategy_params": (dict(late_lots[0].strategy_params) if late_lots else {}),
         }
 
     def _candidate_features(self, symbol: str) -> dict[str, Any]:
         """提取候选股票的日线、隔夜美股和新闻特征。"""
         context = self.candidate_context.get(symbol, {})
         keys = (
+            "previous_close",
             "daily_momentum_20d",
             "score",
             "overnight_us_available",
@@ -152,6 +182,10 @@ class InvestmentExpertRuntime:
             "candidate_news_sentiment",
             "news_sentiment_confidence",
             "news_factor_score",
+            "strategy_ids",
+            "primary_strategy_id",
+            "strategy_params",
+            "intraday_change_rank",
         )
         result = {key: context.get(key) for key in keys}
         result["candidate_score"] = result.pop("score")
@@ -174,6 +208,11 @@ class InvestmentExpertRuntime:
             "vwap": vwap,
             "vwap_bias": (bar.raw_close / vwap - 1) if vwap else None,
             "previous_high": previous_high,
+            "day_open": state.day_open,
+            "ten_minute_closes": completed_ten_minute_closes(
+                state.minute_rows,
+                bar.datetime,
+            ),
             "breakout_pct": (bar.raw_close / previous_high - 1) if previous_high else None,
             "total_shares": self.executor.total_shares(bar.symbol),
             "settled_shares": self.executor.settled_shares(bar.symbol, bar.datetime.date()),
@@ -216,6 +255,16 @@ class InvestmentExpertRuntime:
             shares=shares,
             signal_time=bar.datetime + timedelta(minutes=1),
             reason=reason,
+            strategy_id=(
+                LATE_DAY_STRATEGY_ID
+                if action == "buy" and reason == "late_first_bullish_ma5_turn"
+                else None
+            ),
+            strategy_params=(
+                dict(features.get("active_late_day_strategy_params") or {})
+                if action == "buy" and reason == "late_first_bullish_ma5_turn"
+                else {}
+            ),
         )
         return self.executor.submit(intent)
 
@@ -252,6 +301,11 @@ class InvestmentExpertRuntime:
         pnl_pct = bar.raw_close / (invested / held) - 1 if held else None
         if pnl_pct is not None and pnl_pct <= self.policy.stop_loss_pct:
             return "sell", "settled_position_stop_loss"
+        late_exit = self._late_day_position_decision(bar, features)
+        if late_exit is not None:
+            return late_exit
+        if int(features.get("late_day_max_hold_shares") or 0) > 0:
+            return "sell", "late_day_max_hold"
         if int(features.get("min_hold_eligible_shares") or 0) <= 0:
             return "hold", "position_min_hold_not_reached"
         if pnl_pct is not None and pnl_pct >= thresholds[1]:
@@ -261,6 +315,35 @@ class InvestmentExpertRuntime:
         vwap_bias = features["vwap_bias"]
         if vwap_bias is not None and vwap_bias <= thresholds[0]:
             return "sell", "settled_position_vwap_breakdown"
+        return None
+
+    @staticmethod
+    def _late_day_position_decision(
+        bar: MinuteBar,
+        features: dict[str, Any],
+    ) -> Decision | None:
+        """按次日早盘止盈、峰值回撤、止损和超时规则退出。"""
+        if int(features.get("late_day_settled_shares") or 0) <= 0:
+            return None
+        clock = bar.datetime.time().replace(tzinfo=None)
+        if not time(9, 31) <= clock <= time(11, 25):
+            return None
+        entry_price = float(features.get("late_day_entry_price") or 0.0)
+        if entry_price <= 0:
+            return None
+        params = dict(features.get("late_day_strategy_params") or {})
+        pnl_pct = bar.raw_close / entry_price - 1
+        if pnl_pct <= float(params.get("morning_stop_loss_pct", -0.03)):
+            return "sell", "late_day_next_morning_stop_loss"
+        if pnl_pct >= float(params.get("morning_take_profit_pct", 0.03)):
+            return "sell", "late_day_next_morning_take_profit"
+        peak = max(float(features.get("previous_high") or entry_price), bar.raw_high)
+        activation = float(params.get("morning_trailing_activate_pct", 0.015))
+        drawdown = abs(float(params.get("morning_trailing_drawdown_pct", 0.008)))
+        if peak / entry_price - 1 >= activation and bar.raw_close / peak - 1 <= -drawdown:
+            return "sell", "late_day_next_morning_peak_drawdown"
+        if clock >= time(11, 25):
+            return "sell", "late_day_next_morning_timeout"
         return None
 
     def _entry_thresholds(self, features: dict[str, Any]) -> tuple[float, float, float]:
@@ -303,6 +386,8 @@ class InvestmentExpertRuntime:
             return "abstain", "carryover_exit_only_symbol"
         if not self.entries_enabled or (self.entry_guard is not None and not self.entry_guard()):
             return "abstain", "risk_kill_switch_entries_disabled"
+        if features.get("primary_strategy_id") == LATE_DAY_STRATEGY_ID:
+            return self._late_day_entry_decision(bar, features)
         clock = bar.datetime.strftime("%H:%M")
         if not (self.policy.entry_start <= clock <= self.policy.entry_end):
             return "abstain", "outside_entry_window"
@@ -319,6 +404,35 @@ class InvestmentExpertRuntime:
         if probability is not None and probability < required_probability:
             return "abstain", "trained_probability_below_threshold"
         return "buy", "vwap_and_opening_range_confirmed"
+
+    @staticmethod
+    def _late_day_entry_decision(bar: MinuteBar, features: dict[str, Any]) -> Decision:
+        """在14:30后的完整10分钟边界执行尾盘首阳门控。"""
+        clock = bar.datetime.time().replace(tzinfo=None)
+        if clock not in {time(14, 30), time(14, 40), time(14, 50)}:
+            return "abstain", "outside_late_day_checkpoints"
+        params_by_strategy = features.get("strategy_params") or {}
+        params = dict(params_by_strategy.get(LATE_DAY_STRATEGY_ID) or {})
+        features["active_late_day_strategy_params"] = params
+        evaluation = evaluate_late_entry(
+            ten_minute_closes=tuple(features.get("ten_minute_closes") or ()),
+            day_open=float(features.get("day_open") or 0.0),
+            current_close=bar.raw_close,
+            previous_close=float(features.get("previous_close") or 0.0),
+            change_rank=(
+                int(features["intraday_change_rank"])
+                if features.get("intraday_change_rank") is not None
+                else None
+            ),
+            params=params,
+        )
+        features["late_day_change_pct"] = evaluation.change_pct
+        features["late_day_ma5_slope_pct"] = evaluation.ma5_slope_pct
+        return (
+            ("buy", "late_first_bullish_ma5_turn")
+            if evaluation.matched
+            else ("abstain", evaluation.reason)
+        )
 
     def _decide(self, bar: MinuteBar, features: dict[str, Any]) -> Decision:
         """按持仓优先原则选择退出、持有、放弃或买入。"""
@@ -343,6 +457,8 @@ class InvestmentExpertRuntime:
     ) -> int:
         """按退出原因或目标仓位计算整手下单数量。"""
         if action == "sell":
+            if reason.startswith("late_day_"):
+                return int(features.get("late_day_settled_shares") or 0)
             if reason == "settled_position_max_hold":
                 return int(features.get("max_hold_expired_shares") or 0)
             if reason != "settled_position_stop_loss":
